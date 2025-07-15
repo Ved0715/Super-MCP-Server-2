@@ -401,52 +401,6 @@ class PerfectMCPServer:
                         },
                         "required": ["topic"]
                     }
-                ),
-                
-                Tool(
-                    name="generate_research_quiz",
-                    description="Generate comprehensive MCQ quiz from a specific research paper uploaded by user",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "user_id": {
-                                "type": "string",
-                                "description": "User identifier who uploaded the PDF"
-                            },
-                            "document_uuid": {
-                                "type": "string", 
-                                "description": "Unique identifier for the research paper"
-                            },
-                            "number_of_questions": {
-                                "type": "integer",
-                                "description": "Number of MCQ questions to generate",
-                                "default": 10,
-                                "minimum": 5,
-                                "maximum": 50
-                            },
-                            "difficulty_level": {
-                                "type": "string",
-                                "enum": ["easy", "medium", "hard", "mixed"],
-                                "default": "mixed",
-                                "description": "Difficulty level of questions"
-                            },
-                            "include_explanations": {
-                                "type": "boolean",
-                                "default": True,
-                                "description": "Include explanations for correct answers"
-                            },
-                            "question_categories": {
-                                "type": "array",
-                                "items": {
-                                    "type": "string",
-                                    "enum": ["conceptual", "methodological", "factual", "analytical", "application"]
-                                },
-                                "default": ["conceptual", "methodological", "factual", "analytical"],
-                                "description": "Categories of questions to include"
-                            }
-                        },
-                        "required": ["user_id", "document_uuid"]
-                    }
                 )
             ]
 
@@ -515,9 +469,6 @@ class PerfectMCPServer:
                 
                 elif name == "find_books_covering_topic":
                     return await self._handle_find_books_covering_topic(**arguments)
-                
-                elif name == "generate_research_quiz":
-                    return await self._handle_generate_research_quiz(**arguments)
                 
                 else:
                     return [TextContent(type="text", text=f"Unknown tool: {name}")]
@@ -1993,7 +1944,7 @@ Based on this analysis, provide your final recommendation in JSON format:
 
     async def _handle_semantic_search(self, query: str, paper_id: str = None,
                                     search_type: str = "general", max_results: int = 10,
-                                    similarity_threshold: float = 0.7) -> List[TextContent]:
+                                    similarity_threshold: float = 0.7, namespace: str = None) -> List[TextContent]:
         """Handle semantic search within papers"""
         try:
             if not self.vector_storage:
@@ -2004,23 +1955,26 @@ Based on this analysis, provide your final recommendation in JSON format:
             response_parts.append(f"**Search Type:** {search_type}")
             response_parts.append(f"**Similarity Threshold:** {similarity_threshold}")
             
-            if paper_id:
-                # Search specific paper
-                if paper_id not in self.processed_papers:
+            # Determine which namespace to use
+            target_namespace = namespace or paper_id
+            
+            if target_namespace:
+                # Search specific namespace/paper
+                if paper_id and paper_id not in self.processed_papers:
                     return [TextContent(type="text", text=f"Paper not found: {paper_id}")]
                 
-                response_parts.append(f"**Target Paper:** {paper_id}")
+                response_parts.append(f"**Target Namespace:** {target_namespace}")
                 
                 if search_type == "general":
                     results = await self.vector_storage.semantic_search(
                         query=query,
-                        namespace=paper_id,
+                        namespace=target_namespace,
                         top_k=max_results
                     )
                 else:
                     results = await self.vector_storage.contextual_search(
                         user_prompt=query,
-                        namespace=paper_id,
+                        namespace=target_namespace,
                         context_type=search_type
                     )
             else:
@@ -2724,367 +2678,6 @@ The operation has been successfully cancelled and will stop as soon as possible.
 
     # Additional tool implementations would continue here...
     # (Compare papers, generate insights, export summary methods)
-
-    async def _handle_generate_research_quiz(self, user_id: str, document_uuid: str, 
-                                           number_of_questions: int = 10,
-                                           difficulty_level: str = "mixed",
-                                           include_explanations: bool = True,
-                                           question_categories: List[str] = None) -> List[TextContent]:
-        """Handle research quiz generation from user-specific document"""
-        operation_id = self.create_operation_id()
-        
-        try:
-            self.start_operation(operation_id, "generate_research_quiz", f"Generating quiz for document: {document_uuid}")
-            
-            # Default question categories if not provided
-            if not question_categories:
-                question_categories = ["conceptual", "methodological", "factual", "analytical"]
-            
-            # Construct namespace for the specific document
-            namespace = f"user_{user_id}_doc_{document_uuid}"
-            
-            await self.send_progress_notification(operation_id, 10, "Validating document access...")
-            
-            # Validate namespace exists and get document content
-            logger.info(f"🔍 Searching for document in namespace: {namespace}")
-            
-            # Use vector storage to search the specific namespace
-            document_content = await self.vector_storage.search_in_namespace(
-                namespace=namespace,
-                query="research paper content methodology results",  # General query to get all content
-                max_results=50,  # Get comprehensive content
-                similarity_threshold=0.0  # Accept all content from this document
-            )
-            
-            if not document_content:
-                await self.send_log_notification("error", f"No content found in namespace: {namespace}")
-                self.complete_operation(operation_id)
-                return [TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "success": False,
-                        "error": f"No document found for user {user_id} with document UUID {document_uuid}",
-                        "namespace": namespace
-                    }, indent=2)
-                )]
-            
-            await self.send_progress_notification(operation_id, 30, f"Found {len(document_content)} content chunks")
-            
-            # Organize content by sections for better quiz generation
-            organized_content = self._organize_content_for_quiz(document_content)
-            
-            await self.send_progress_notification(operation_id, 50, "Analyzing content and generating questions...")
-            
-            # Generate quiz questions using AI
-            quiz_data = await self._generate_quiz_questions(
-                organized_content=organized_content,
-                number_of_questions=number_of_questions,
-                difficulty_level=difficulty_level,
-                include_explanations=include_explanations,
-                question_categories=question_categories,
-                user_id=user_id,
-                document_uuid=document_uuid
-            )
-            
-            await self.send_progress_notification(operation_id, 90, "Finalizing quiz...")
-            
-            if quiz_data.get("success"):
-                await self.send_progress_notification(operation_id, 100, "Quiz generation completed successfully!")
-                self.complete_operation(operation_id)
-                
-                # Format successful response
-                response_data = {
-                    "success": True,
-                    "quiz_metadata": {
-                        "user_id": user_id,
-                        "document_uuid": document_uuid,
-                        "namespace": namespace,
-                        "total_questions": len(quiz_data.get("questions", [])),
-                        "difficulty_level": difficulty_level,
-                        "question_categories": question_categories,
-                        "include_explanations": include_explanations,
-                        "content_chunks_analyzed": len(document_content),
-                        "generated_at": time.time()
-                    },
-                    "questions": quiz_data.get("questions", []),
-                    "content_analysis": quiz_data.get("content_analysis", {}),
-                    "generation_stats": quiz_data.get("generation_stats", {})
-                }
-                
-                return [TextContent(
-                    type="text",
-                    text=json.dumps(response_data, indent=2)
-                )]
-            else:
-                error_msg = quiz_data.get("error", "Quiz generation failed")
-                await self.send_log_notification("error", f"Quiz generation failed: {error_msg}")
-                self.complete_operation(operation_id)
-                
-                return [TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "success": False,
-                        "error": error_msg,
-                        "user_id": user_id,
-                        "document_uuid": document_uuid,
-                        "namespace": namespace
-                    }, indent=2)
-                )]
-                
-        except Exception as e:
-            await self.send_log_notification("error", f"Quiz generation error: {e}")
-            self.complete_operation(operation_id)
-            logger.error(f"Error generating research quiz: {e}")
-            
-            return [TextContent(
-                type="text",
-                text=json.dumps({
-                    "success": False,
-                    "error": str(e),
-                    "user_id": user_id,
-                    "document_uuid": document_uuid,
-                    "namespace": namespace
-                }, indent=2)
-            )]
-
-    def _organize_content_for_quiz(self, document_content: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Organize document content by sections for better quiz generation"""
-        try:
-            organized = {
-                "sections": {},
-                "all_content": [],
-                "metadata": {
-                    "total_chunks": len(document_content),
-                    "total_length": 0,
-                    "sections_found": set(),
-                    "paper_info": {}
-                }
-            }
-            
-            # Group content by sections
-            for chunk in document_content:
-                content = chunk.get("content", "")
-                metadata = chunk.get("metadata", {})
-                
-                organized["all_content"].append(content)
-                organized["metadata"]["total_length"] += len(content)
-                
-                # Extract section information
-                section = metadata.get("section", "general")
-                organized["metadata"]["sections_found"].add(section)
-                
-                if section not in organized["sections"]:
-                    organized["sections"][section] = []
-                
-                organized["sections"][section].append({
-                    "content": content,
-                    "metadata": metadata,
-                    "chunk_id": chunk.get("chunk_id", ""),
-                    "score": chunk.get("score", 0)
-                })
-                
-                # Extract paper metadata
-                if "paper_id" in metadata:
-                    organized["metadata"]["paper_info"]["paper_id"] = metadata["paper_id"]
-                if "user_id" in metadata:
-                    organized["metadata"]["paper_info"]["user_id"] = metadata["user_id"]
-                if "document_uuid" in metadata:
-                    organized["metadata"]["paper_info"]["document_uuid"] = metadata["document_uuid"]
-            
-            organized["metadata"]["sections_found"] = list(organized["metadata"]["sections_found"])
-            
-            return organized
-            
-        except Exception as e:
-            logger.error(f"Error organizing content for quiz: {e}")
-            return {
-                "sections": {"general": [{"content": chunk.get("content", ""), "metadata": chunk.get("metadata", {})} for chunk in document_content]},
-                "all_content": [chunk.get("content", "") for chunk in document_content],
-                "metadata": {"total_chunks": len(document_content), "sections_found": ["general"], "paper_info": {}}
-            }
-
-    async def _generate_quiz_questions(self, organized_content: Dict[str, Any], 
-                                     number_of_questions: int,
-                                     difficulty_level: str, 
-                                     include_explanations: bool,
-                                     question_categories: List[str],
-                                     user_id: str, 
-                                     document_uuid: str) -> Dict[str, Any]:
-        """Generate quiz questions using AI analysis of the document content"""
-        try:
-            import openai
-            client = openai.OpenAI(api_key=self.config.OPENAI_API_KEY)
-            
-            # Prepare content for AI analysis
-            content_summary = self._prepare_content_for_quiz_ai(organized_content)
-            
-            # Create comprehensive prompt for quiz generation
-            quiz_prompt = f"""You are an expert educational content creator. Generate a comprehensive multiple-choice quiz from the following research paper content.
-
-**DOCUMENT CONTENT:**
-{content_summary}
-
-**QUIZ REQUIREMENTS:**
-- Number of questions: {number_of_questions}
-- Difficulty level: {difficulty_level}
-- Question categories: {', '.join(question_categories)}
-- Include explanations: {include_explanations}
-
-**INSTRUCTIONS:**
-1. Analyze the content thoroughly to understand key concepts, methodologies, findings, and conclusions
-2. Create {number_of_questions} multiple-choice questions with 4 options each (A, B, C, D)
-3. Ensure questions cover different aspects: {', '.join(question_categories)}
-4. For difficulty level "{difficulty_level}": 
-   - easy: Focus on basic definitions and main concepts
-   - medium: Include application and analysis questions
-   - hard: Require deep understanding and critical thinking
-   - mixed: Combine all difficulty levels
-5. Each question should be answerable from the provided content
-6. Create realistic but incorrect distractors for multiple choice options
-7. If explanations are requested, provide clear reasoning for the correct answer
-
-**OUTPUT FORMAT (JSON):**
-{{
-    "questions": [
-        {{
-            "question_id": 1,
-            "question": "What is the primary research methodology used in this study?",
-            "options": {{
-                "A": "Qualitative analysis",
-                "B": "Quantitative experiment", 
-                "C": "Mixed methods approach",
-                "D": "Literature review"
-            }},
-            "correct_answer": "B",
-            "explanation": "The paper explicitly states in the methodology section that a quantitative experimental design was used...",
-            "category": "methodological",
-            "difficulty": "medium",
-            "content_source": "methodology section"
-        }}
-    ],
-    "content_analysis": {{
-        "main_topic": "Topic extracted from content",
-        "key_concepts": ["concept1", "concept2"],
-        "methodology_used": "research methodology",
-        "main_findings": ["finding1", "finding2"]
-    }}
-}}
-
-Generate the quiz now:"""
-
-            # Generate quiz using AI
-            response = client.chat.completions.create(
-                model=self.config.LLM_MODEL,
-                messages=[
-                    {"role": "system", "content": "You are an expert educational content creator specializing in research paper analysis and quiz generation. Always output valid JSON format."},
-                    {"role": "user", "content": quiz_prompt}
-                ],
-                temperature=0.3,  # Balanced creativity and consistency
-                max_tokens=4000  # Sufficient for comprehensive quiz
-            )
-            
-            ai_response = response.choices[0].message.content
-            
-            # Parse AI response to extract JSON
-            import re
-            import json
-            
-            # Extract JSON from response
-            json_match = re.search(r'\{.*\}', ai_response, re.DOTALL)
-            if json_match:
-                try:
-                    quiz_data = json.loads(json_match.group())
-                    
-                    # Validate quiz structure
-                    if "questions" in quiz_data and isinstance(quiz_data["questions"], list):
-                        # Ensure we have the requested number of questions
-                        questions = quiz_data["questions"][:number_of_questions]
-                        
-                        # Add metadata to each question
-                        for i, question in enumerate(questions):
-                            question["question_id"] = i + 1
-                            question["user_id"] = user_id
-                            question["document_uuid"] = document_uuid
-                            
-                            # Ensure all required fields exist
-                            if "category" not in question:
-                                question["category"] = question_categories[i % len(question_categories)]
-                            if "difficulty" not in question:
-                                question["difficulty"] = difficulty_level if difficulty_level != "mixed" else ["easy", "medium", "hard"][i % 3]
-                            if include_explanations and "explanation" not in question:
-                                question["explanation"] = "Explanation not provided by AI"
-                        
-                        return {
-                            "success": True,
-                            "questions": questions,
-                            "content_analysis": quiz_data.get("content_analysis", {}),
-                            "generation_stats": {
-                                "requested_questions": number_of_questions,
-                                "generated_questions": len(questions),
-                                "difficulty_level": difficulty_level,
-                                "categories_used": question_categories,
-                                "ai_model": self.config.LLM_MODEL
-                            }
-                        }
-                    else:
-                        raise ValueError("Invalid quiz structure in AI response")
-                        
-                except json.JSONDecodeError as e:
-                    logger.error(f"Failed to parse AI quiz response as JSON: {e}")
-                    return {"success": False, "error": f"AI response parsing failed: {e}"}
-            else:
-                logger.error("No JSON found in AI response")
-                return {"success": False, "error": "No valid JSON found in AI response"}
-                
-        except Exception as e:
-            logger.error(f"Error generating quiz questions: {e}")
-            return {"success": False, "error": str(e)}
-
-    def _prepare_content_for_quiz_ai(self, organized_content: Dict[str, Any]) -> str:
-        """Prepare content summary for AI quiz generation"""
-        try:
-            sections = organized_content.get("sections", {})
-            metadata = organized_content.get("metadata", {})
-            
-            content_parts = []
-            
-            # Add paper info
-            content_parts.append("=== RESEARCH PAPER ANALYSIS ===")
-            content_parts.append(f"Total Content Chunks: {metadata.get('total_chunks', 0)}")
-            content_parts.append(f"Sections Found: {', '.join(metadata.get('sections_found', []))}")
-            content_parts.append("")
-            
-            # Add content by sections
-            for section_name, section_content in sections.items():
-                content_parts.append(f"=== {section_name.upper()} SECTION ===")
-                
-                # Combine content from this section
-                section_text = []
-                for chunk in section_content[:3]:  # Limit to first 3 chunks per section
-                    content = chunk.get("content", "")
-                    if content and len(content.strip()) > 50:
-                        section_text.append(content[:500])  # Limit chunk size
-                
-                if section_text:
-                    content_parts.append("\n".join(section_text))
-                else:
-                    content_parts.append("No significant content in this section.")
-                
-                content_parts.append("")
-            
-            # Combine all parts
-            full_content = "\n".join(content_parts)
-            
-            # Limit total content length for AI processing
-            max_content_length = 8000  # Reasonable limit for AI processing
-            if len(full_content) > max_content_length:
-                full_content = full_content[:max_content_length] + "\n\n[Content truncated for processing...]"
-            
-            return full_content
-            
-        except Exception as e:
-            logger.error(f"Error preparing content for AI: {e}")
-            return "Error processing content for quiz generation."
 
     async def run(self):
         """Run the perfect MCP server with enhanced capabilities"""

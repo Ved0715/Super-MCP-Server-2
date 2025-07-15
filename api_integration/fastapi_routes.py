@@ -96,14 +96,7 @@ class KnowledgeBaseSearchRequest(BaseModel):
     namespace: str = "knowledge-base"
     index_name: str = "optimized-kb-index"
 
-class QuizGenerationRequest(BaseModel):
-    """Request model for quiz generation"""
-    user_id: str
-    document_uuid: str
-    number_of_questions: int = 10
-    difficulty_level: str = "mixed"
-    include_explanations: bool = True
-    question_categories: List[str] = ["conceptual", "methodological", "factual", "analytical"]
+
 
 # ============================================================================
 # MCP CLIENT DEPENDENCY
@@ -558,117 +551,6 @@ async def generate_insights(
     except Exception as e:
         logger.error(f"Insights generation failed: {e}")
         raise HTTPException(status_code=500, detail="Insights generation failed")
-
-# ============================================================================
-# QUIZ GENERATION ENDPOINTS
-# ============================================================================
-
-@router.post("/quiz/generate")
-async def generate_research_quiz(
-    request: QuizGenerationRequest,
-    background_tasks: BackgroundTasks,
-    mcp_client: MCPClient = Depends(get_mcp_client)
-):
-    """
-    Generate a comprehensive MCQ quiz from a specific research paper
-    
-    This endpoint generates multiple-choice questions from a research paper
-    stored in the user's namespace (user_{user_id}_doc_{document_uuid}).
-    
-    Parameters:
-    - user_id: User identifier who uploaded the PDF
-    - document_uuid: Unique identifier for the research paper
-    - number_of_questions: Number of MCQ questions to generate (5-50)
-    - difficulty_level: Difficulty level (easy/medium/hard/mixed)
-    - include_explanations: Whether to include answer explanations
-    - question_categories: Types of questions to generate
-    
-    Returns:
-    - JSON with quiz questions, metadata, and content analysis
-    """
-    start_time = time.time()
-    
-    try:
-        logger.info(f"🧠 NEW REQUEST: Quiz generation for research paper")
-        logger.info(f"👤 User ID: {request.user_id}")
-        logger.info(f"📄 Document UUID: {request.document_uuid}")
-        logger.info(f"❓ Questions: {request.number_of_questions}")
-        logger.info(f"🎯 Difficulty: {request.difficulty_level}")
-        logger.info(f"📚 Categories: {request.question_categories}")
-        
-        # Construct namespace
-        namespace = f"user_{request.user_id}_doc_{request.document_uuid}"
-        logger.info(f"📁 Target namespace: {namespace}")
-        
-        # Call MCP server for quiz generation
-        logger.info(f"🔗 Calling MCP server for quiz generation...")
-        mcp_start_time = time.time()
-        
-        result = await mcp_client.call_tool("generate_research_quiz", {
-            "user_id": request.user_id,
-            "document_uuid": request.document_uuid,
-            "number_of_questions": request.number_of_questions,
-            "difficulty_level": request.difficulty_level,
-            "include_explanations": request.include_explanations,
-            "question_categories": request.question_categories
-        })
-        
-        mcp_duration = time.time() - mcp_start_time
-        total_duration = time.time() - start_time
-        
-        logger.info(f"✅ MCP server call completed in {mcp_duration:.2f}s")
-        logger.info(f"🎉 Total API request completed in {total_duration:.2f}s")
-        
-        # Parse and validate result
-        if isinstance(result, list) and len(result) > 0:
-            result_text = result[0].get("text", "{}")
-            import json
-            try:
-                parsed_result = json.loads(result_text)
-                if parsed_result.get("success"):
-                    logger.info(f"✅ Quiz generation successful - {len(parsed_result.get('questions', []))} questions generated")
-                    return {
-                        "success": True,
-                        "message": "Quiz generated successfully",
-                        "data": parsed_result,
-                        "performance": {
-                            "total_time": total_duration,
-                            "mcp_time": mcp_duration,
-                            "processing_time": total_duration - mcp_duration
-                        }
-                    }
-                else:
-                    logger.warning(f"⚠️  Quiz generation failed: {parsed_result.get('error', 'Unknown error')}")
-                    return {
-                        "success": False,
-                        "error": parsed_result.get("error", "Quiz generation failed"),
-                        "data": parsed_result
-                    }
-            except json.JSONDecodeError as e:
-                logger.error(f"❌ Failed to parse MCP response: {e}")
-                return {
-                    "success": False,
-                    "error": "Invalid response format from MCP server",
-                    "raw_response": result_text
-                }
-        else:
-            logger.error(f"❌ Invalid MCP response format")
-            return {
-                "success": False,
-                "error": "Invalid response format from MCP server",
-                "raw_response": str(result)
-            }
-        
-    except Exception as e:
-        total_duration = time.time() - start_time
-        logger.error(f"❌ Quiz generation API error after {total_duration:.2f}s: {e}")
-        logger.error(f"🔍 Error details: {str(e)}")
-        import traceback
-        logger.error(f"📋 Full traceback: {traceback.format_exc()}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Quiz generation failed: {str(e)}"
-        )
 
 # ============================================================================
 # UTILITY ENDPOINTS

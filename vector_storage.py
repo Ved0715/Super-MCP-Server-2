@@ -60,7 +60,7 @@ class AdvancedVectorStorage:
             existing_indexes = [index.name for index in self.pc.list_indexes()]
             
             if self.index_name not in existing_indexes:
-                logger.info(f"Creating Pinecone index: {self.index_name}")
+                logger.info(f"🏗️  Creating new Pinecone index: {self.index_name}")
                 self.pc.create_index(
                     name=self.index_name,
                     dimension=self.dimensions,
@@ -73,21 +73,26 @@ class AdvancedVectorStorage:
                 # Wait for index to be ready
                 import time
                 time.sleep(10)
+                logger.info(f"✅ Successfully created Pinecone index: {self.index_name}")
             else:
-                logger.info(f"Using existing Pinecone index: {self.index_name}")
+                # Determine index purpose for better logging
+                index_purpose = "📄 Research Papers" if "pdf" in self.index_name.lower() else "📚 Knowledge Base"
+                logger.info(f"🔗 Connected to existing Pinecone index: {self.index_name} ({index_purpose})")
                 
         except Exception as e:
-            logger.error(f"Error initializing Pinecone index: {e}")
+            logger.error(f"❌ Error initializing Pinecone index {self.index_name}: {e}")
             raise
 
     async def process_and_store_document(self, 
                                        paper_content: Dict[str, Any],
                                        paper_id: str,
-                                       namespace: Optional[str] = None) -> Dict[str, Any]:
+                                       namespace: Optional[str] = None,
+                                       user_id: str = None,
+                                       document_uuid: str = None) -> Dict[str, Any]:
         """Process document and store in vector database"""
         try:
             # Create intelligent chunks
-            chunks = await self._create_intelligent_chunks(paper_content, paper_id)
+            chunks = await self._create_intelligent_chunks(paper_content, paper_id, user_id, document_uuid)
             
             # Generate embeddings in batches
             embedded_chunks = await self._generate_embeddings_batch(chunks)
@@ -100,7 +105,9 @@ class AdvancedVectorStorage:
                 "chunks_created": len(chunks),
                 "chunks_stored": len(embedded_chunks) if success else 0,
                 "namespace": namespace or paper_id,
-                "paper_id": paper_id
+                "paper_id": paper_id,
+                "user_id": user_id,
+                "document_uuid": document_uuid
             }
             
         except Exception as e:
@@ -180,9 +187,51 @@ class AdvancedVectorStorage:
             logger.error(f"Error in contextual search: {e}")
             return []
 
+    async def store_document_chunks(self, chunks: List[DocumentChunk], namespace: str, index_name: str = None) -> bool:
+        """
+        Store document chunks in the vector database
+        
+        Args:
+            chunks: List of DocumentChunk objects to store
+            namespace: Namespace for storage organization
+            index_name: Index name (for compatibility, not used with single index setup)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            if not chunks:
+                logger.warning("No chunks provided for storage")
+                return False
+            
+            logger.info(f"Storing {len(chunks)} chunks in namespace '{namespace}'")
+            
+            # Generate embeddings for all chunks
+            embedded_chunks = await self._generate_embeddings_batch(chunks)
+            
+            if not embedded_chunks:
+                logger.error("Failed to generate embeddings for chunks")
+                return False
+            
+            # Store in Pinecone
+            success = await self._store_chunks_in_pinecone(embedded_chunks, namespace)
+            
+            if success:
+                logger.info(f"Successfully stored {len(embedded_chunks)} chunks")
+            else:
+                logger.error("Failed to store chunks in vector database")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error storing document chunks: {e}")
+            return False
+
     async def _create_intelligent_chunks(self, 
                                        paper_content: Dict[str, Any],
-                                       paper_id: str) -> List[DocumentChunk]:
+                                       paper_id: str,
+                                       user_id: str = None,
+                                       document_uuid: str = None) -> List[DocumentChunk]:
         """Create intelligent chunks with research paper awareness"""
         chunks = []
         sections = paper_content.get("sections", {})
@@ -199,7 +248,9 @@ class AdvancedVectorStorage:
                 section_content, 
                 section_name,
                 paper_id,
-                chunk_id_counter
+                chunk_id_counter,
+                user_id,
+                document_uuid
             )
             chunks.extend(section_chunks)
             chunk_id_counter += len(section_chunks)
@@ -211,7 +262,9 @@ class AdvancedVectorStorage:
                     page.get("text", ""),
                     page.get("page_number", 1),
                     paper_id,
-                    chunk_id_counter
+                    chunk_id_counter,
+                    user_id,
+                    document_uuid
                 )
                 chunks.extend(page_chunks)
                 chunk_id_counter += len(page_chunks)
@@ -222,7 +275,9 @@ class AdvancedVectorStorage:
                                    content: str, 
                                    section_name: str,
                                    paper_id: str,
-                                   start_index: int) -> List[DocumentChunk]:
+                                   start_index: int,
+                                   user_id: str = None,
+                                   document_uuid: str = None) -> List[DocumentChunk]:
         """Chunk section content with academic awareness"""
         chunks = []
         
@@ -241,7 +296,9 @@ class AdvancedVectorStorage:
                     paper_id,
                     start_index + len(chunks),
                     section=section_name,
-                    sentences=current_sentences
+                    sentences=current_sentences,
+                    user_id=user_id,
+                    document_uuid=document_uuid
                 )
                 chunks.append(chunk)
                 
@@ -260,7 +317,9 @@ class AdvancedVectorStorage:
                 paper_id,
                 start_index + len(chunks),
                 section=section_name,
-                sentences=current_sentences
+                sentences=current_sentences,
+                user_id=user_id,
+                document_uuid=document_uuid
             )
             chunks.append(chunk)
         
@@ -272,7 +331,9 @@ class AdvancedVectorStorage:
                      chunk_index: int,
                      section: str = None,
                      page_number: int = None,
-                     sentences: List[str] = None) -> DocumentChunk:
+                     sentences: List[str] = None,
+                     user_id: str = None,
+                     document_uuid: str = None) -> DocumentChunk:
         """Create a document chunk with rich metadata"""
         
         # Generate unique ID
@@ -287,6 +348,12 @@ class AdvancedVectorStorage:
             "word_count": len(content.split()),
             "created_at": datetime.now().isoformat()
         }
+        
+        # Add user and document identifiers if provided
+        if user_id:
+            metadata["user_id"] = user_id
+        if document_uuid:
+            metadata["document_uuid"] = document_uuid
         
         if section:
             metadata["section"] = section
@@ -457,7 +524,8 @@ class AdvancedVectorStorage:
                 return True
         return False
 
-    def _chunk_page_content(self, content: str, page_number: int, paper_id: str, start_index: int) -> List[DocumentChunk]:
+    def _chunk_page_content(self, content: str, page_number: int, paper_id: str, start_index: int,
+                           user_id: str = None, document_uuid: str = None) -> List[DocumentChunk]:
         """Chunk page content as fallback"""
         chunks = []
         words = content.split()
@@ -474,7 +542,9 @@ class AdvancedVectorStorage:
                     chunk_content,
                     paper_id,
                     start_index + len(chunks),
-                    page_number=page_number
+                    page_number=page_number,
+                    user_id=user_id,
+                    document_uuid=document_uuid
                 )
                 chunks.append(chunk)
         
@@ -621,4 +691,182 @@ class AdvancedVectorStorage:
             logger.error(f"🔍 Error details: {str(e)}")
             import traceback
             logger.error(f"📋 Full traceback: {traceback.format_exc()}")
+            return []
+
+    # Enhanced Knowledge Base Retrieval Methods
+    
+    async def enhanced_knowledge_base_search(self, query: str, namespace: str = "knowledge-base", top_k: int = 5, index_name: str = None) -> List[Dict[str, Any]]:
+        """Enhanced search specifically optimized for knowledge base content"""
+        try:
+            # Use configured KB index if not specified
+            if index_name is None:
+                index_name = getattr(self.config, 'PINECONE_KB_INDEX_NAME', 'optimized-kb-index')
+                
+            print(f"🔍 Enhanced knowledge base search: '{query}'")
+            print(f"📚 Using Knowledge Base index: {index_name} (namespace: {namespace})")
+            
+            # Connect to knowledge base index
+            kb_index = self.pc.Index(index_name) if hasattr(self, 'pc') else self.index
+            
+            # Generate query embedding
+            query_embedding = await self._generate_single_embedding(query)
+            if not query_embedding:
+                print(f"❌ Failed to generate embedding for knowledge base search")
+                return []
+            
+            # Search in knowledge base index
+            results = kb_index.query(
+                vector=query_embedding,
+                top_k=top_k,
+                namespace=namespace,
+                include_metadata=True,
+                include_values=False
+            )
+            
+            # Format results with enhanced metadata
+            formatted_results = []
+            for match in results.matches:
+                result = {
+                    'chunk_id': match.id,
+                    'content': match.metadata.get('text', ''),
+                    'score': match.score,
+                    'confidence': match.score,
+                    'metadata': match.metadata,
+                    'book_name': match.metadata.get('book_name', 'Unknown'),
+                    'chunk_type': match.metadata.get('chunk_type', 'text'),
+                    'semantic_density': match.metadata.get('semantic_density', 0.0),
+                    'has_formulas': match.metadata.get('has_formulas', False),
+                    'chapters_found': match.metadata.get('chapters_found', []),
+                    'sections_found': match.metadata.get('sections_found', [])
+                }
+                formatted_results.append(result)
+            
+            print(f"✅ Knowledge base search returned {len(formatted_results)} results from {index_name}")
+            return formatted_results
+            
+        except Exception as e:
+            print(f"❌ Enhanced knowledge base search failed on {index_name}: {e}")
+            return []
+    
+    # search_with_enhanced_context() method removed - superseded by OpenAI-powered responses in knowledge_base_retrieval.py
+    
+    async def get_knowledge_base_inventory(self, namespace: str = "knowledge-base", index_name: str = None) -> Dict[str, Any]:
+        """Get comprehensive inventory of knowledge base content"""
+        try:
+            # Use configured KB index if not specified
+            if index_name is None:
+                index_name = getattr(self.config, 'PINECONE_KB_INDEX_NAME', 'optimized-kb-index')
+                
+            print(f"🔍 Analyzing knowledge base inventory...")
+            print(f"📚 Scanning index: {index_name} (namespace: {namespace})")
+            
+            # Connect to knowledge base index
+            kb_index = self.pc.Index(index_name) if hasattr(self, 'pc') else self.index
+            
+            # Get index statistics
+            stats = kb_index.describe_index_stats()
+            total_vectors = stats.namespaces.get(namespace, {}).get('vector_count', 0)
+            print(f"📊 Found {total_vectors} total chunks in {namespace} namespace")
+            
+            if total_vectors == 0:
+                print(f"⚠️  No content found in {namespace} namespace of {index_name}")
+                return {"books": [], "total_chunks": 0, "books_structure": {}}
+            
+            # Query with zero vector to get sample of all content
+            sample_size = min(total_vectors, 1000)  # Pinecone limit
+            print(f"🔬 Sampling {sample_size} chunks for analysis...")
+            
+            all_results = kb_index.query(
+                vector=[0.0] * 3072,  # text-embedding-3-large dimensions
+                top_k=sample_size,
+                namespace=namespace,
+                include_metadata=True
+            )
+            
+            # Analyze content structure
+            books_analysis = {}
+            unique_books = set()
+            
+            for match in all_results.matches:
+                metadata = match.metadata
+                book_name = metadata.get('book_name', 'Unknown Book')
+                unique_books.add(book_name)
+                
+                if book_name not in books_analysis:
+                    books_analysis[book_name] = {
+                        'chapters': set(),
+                        'sections': set(),
+                        'chunk_count': 0,
+                        'mathematical_content': 0,
+                        'total_words': 0,
+                        'chunk_types': {}
+                    }
+                
+                book_data = books_analysis[book_name]
+                book_data['chunk_count'] += 1
+                book_data['total_words'] += metadata.get('word_count', 0)
+                
+                if metadata.get('has_formulas', False):
+                    book_data['mathematical_content'] += 1
+                
+                # Track chunk types
+                chunk_type = metadata.get('chunk_type', 'text')
+                book_data['chunk_types'][chunk_type] = book_data['chunk_types'].get(chunk_type, 0) + 1
+                
+                # Extract chapters and sections
+                chapters = metadata.get('chapters_found', [])
+                sections = metadata.get('sections_found', [])
+                
+                for chapter in chapters:
+                    if chapter and len(chapter.strip()) > 5:
+                        book_data['chapters'].add(chapter.strip())
+                        
+                for section in sections:
+                    if section and len(section.strip()) > 5:
+                        book_data['sections'].add(section.strip())
+            
+            # Convert sets to lists for JSON serialization
+            for book_name, data in books_analysis.items():
+                data['chapters'] = sorted(list(data['chapters']))
+                data['sections'] = sorted(list(data['sections']))
+            
+            inventory = {
+                "books": sorted(list(unique_books)),
+                "total_chunks": total_vectors,
+                "books_structure": books_analysis,
+                "namespace": namespace,
+                "index_name": index_name
+            }
+            
+            print(f"✅ Knowledge base inventory complete: {len(unique_books)} books, {total_vectors} chunks in {index_name}")
+            return inventory
+            
+        except Exception as e:
+            print(f"❌ Error analyzing knowledge base inventory on {index_name}: {e}")
+            return {"books": [], "total_chunks": 0, "books_structure": {}}
+    
+    async def find_books_covering_topic(self, topic: str, namespace: str = "knowledge-base", index_name: str = None) -> List[str]:
+        """Find which books in the knowledge base cover a specific topic"""
+        try:
+            # Use configured KB index if not specified
+            if index_name is None:
+                index_name = getattr(self.config, 'PINECONE_KB_INDEX_NAME', 'optimized-kb-index')
+                
+            results = await self.enhanced_knowledge_base_search(
+                query=topic, 
+                namespace=namespace, 
+                top_k=20, 
+                index_name=index_name
+            )
+            
+            # Extract unique book names
+            books = set()
+            for result in results:
+                if result['score'] > 0.7:  # Only high relevance
+                    books.add(result['book_name'])
+            
+            return sorted(list(books))
+            
+        except Exception as e:
+            print(f"❌ Error finding books for topic '{topic}': {e}")
             return [] 

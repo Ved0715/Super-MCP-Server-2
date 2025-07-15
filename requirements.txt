@@ -114,7 +114,9 @@ regex==2024.11.6
 requests==2.32.4
 rich==14.0.0
 rpds-py==0.25.1
+rank-bm25==0.2.2
 scikit-learn==1.7.0
+sentence-transformers==2.2.2
 scipy==1.16.0
 seaborn==0.13.2
 setuptools==80.9.0

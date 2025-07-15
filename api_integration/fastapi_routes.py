@@ -47,15 +47,15 @@ class SemanticSearchRequest(BaseModel):
 
 class PresentationRequest(BaseModel):
     """Request model for presentation generation"""
-    paper_id: str
+    query: str
     user_prompt: str
     title: Optional[str] = None
     author: str = "AI Research Assistant"
     theme: str = "academic_professional"
     slide_count: int = 12
     audience_type: str = "academic"
-    include_search_results: bool = False
-    search_query: Optional[str] = None
+    include_web_references: bool = False
+    reference_query: Optional[str] = None
 
 class AnalysisRequest(BaseModel):
     """Request model for research analysis"""
@@ -82,6 +82,29 @@ class NamespacePresentationRequest(BaseModel):
     audience_type: str = "academic"
     search_query: Optional[str] = None
 
+class KnowledgeBaseRequest(BaseModel):
+    """Request model for knowledge base content processing"""
+    book_name: Optional[str] = None
+    enable_llamaparse: bool = True
+    extraction_mode: str = "knowledge_extraction"
+
+class KnowledgeBaseSearchRequest(BaseModel):
+    """Request model for knowledge base search"""
+    query: str
+    search_type: str = "enhanced"
+    max_results: int = 5
+    namespace: str = "knowledge-base"
+    index_name: str = "optimized-kb-index"
+
+class QuizGenerationRequest(BaseModel):
+    """Request model for quiz generation"""
+    user_id: str
+    document_uuid: str
+    number_of_questions: int = 10
+    difficulty_level: str = "mixed"
+    include_explanations: bool = True
+    question_categories: List[str] = ["conceptual", "methodological", "factual", "analytical"]
+
 # ============================================================================
 # MCP CLIENT DEPENDENCY
 # ============================================================================
@@ -99,6 +122,11 @@ async def get_mcp_client() -> MCPClient:
 
 # Create router that you can include in your main FastAPI app
 router = APIRouter(prefix="/api/v1/mcp", tags=["MCP Research"])
+
+# Create knowledge base retrieval router
+from kb_api import router as kb_router
+kb_router.prefix = "/api/v1/kb"
+kb_router.tags = ["Knowledge Base Retrieval"]
 
 # ============================================================================
 # HEALTH AND STATUS ENDPOINTS
@@ -196,6 +224,128 @@ async def get_paper_info(
         raise HTTPException(status_code=500, detail="Failed to retrieve paper information")
 
 # ============================================================================
+# NEW UNIVERSAL PROCESSING ENDPOINTS
+# ============================================================================
+
+@router.post("/process/research-paper")
+async def process_research_paper(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    paper_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    document_uuid: Optional[str] = None,
+    enable_research_analysis: bool = True,
+    analysis_depth: str = "comprehensive",
+    mcp_client: MCPClient = Depends(get_mcp_client)
+):
+    """
+    Process research papers using enhanced PDF processor
+    
+    This endpoint specifically handles research papers with academic analysis,
+    citation extraction, and storage in the all-pdf-index.
+    """
+    try:
+        # Validate file type
+        if not file.filename.lower().endswith('.pdf'):
+            raise HTTPException(status_code=400, detail="Only PDF files are supported")
+        
+        # Read file content
+        file_content = await file.read()
+        
+        # Use the universal processor via MCP tool
+        result = await mcp_client.call_tool("process_research_paper", {
+            "file_content": file_content.hex(),  # Convert bytes to hex string
+            "filename": file.filename,
+            "paper_id": paper_id,
+            "user_id": user_id,
+            "document_uuid": document_uuid,
+            "enable_research_analysis": enable_research_analysis,
+            "analysis_depth": analysis_depth
+        })
+        
+        # Generate namespace for response
+        namespace = None
+        if user_id and document_uuid:
+            namespace = f"user_{user_id}_doc_{document_uuid}"
+        elif user_id:
+            namespace = f"user_{user_id}_doc_{paper_id}"
+        elif document_uuid:
+            namespace = f"doc_{document_uuid}"
+        else:
+            namespace = paper_id
+            
+        return {
+            "success": True,
+            "message": "Research paper processed successfully",
+            "data": result,
+            "processing_type": "research_paper",
+            "index_used": "all-pdf-index",
+            "namespace": namespace,
+            "user_id": user_id,
+            "document_uuid": document_uuid
+        }
+        
+    except Exception as e:
+        logger.error(f"Research paper processing failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Research paper processing failed: {str(e)}")
+
+@router.post("/process/knowledge-base")
+async def process_knowledge_base(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    book_name: Optional[str] = None,
+    enable_llamaparse: bool = True,
+    extraction_mode: str = "knowledge_extraction",
+    mcp_client: MCPClient = Depends(get_mcp_client)
+):
+    """
+    Process knowledge base content (books, manuals, etc.)
+    
+    This endpoint specifically handles knowledge base content with optimized
+            chunking, mathematical entity extraction, and storage in optimized-kb-index.
+    """
+    try:
+        # Validate file type
+        if not file.filename.lower().endswith('.pdf'):
+            raise HTTPException(status_code=400, detail="Only PDF files are supported")
+        
+        # Read file content
+        file_content = await file.read()
+        
+        # Extract book name from filename if not provided
+        if not book_name:
+            book_name = Path(file.filename).stem.replace('_', ' ').replace('-', ' ').title()
+        
+        # Use the universal processor via MCP tool
+        result = await mcp_client.call_tool("process_knowledge_base", {
+            "file_content": file_content.hex(),  # Convert bytes to hex string
+            "filename": file.filename,
+            "book_name": book_name,
+            "enable_llamaparse": enable_llamaparse,
+            "extraction_mode": extraction_mode
+        })
+        
+        return {
+            "success": True,
+            "message": "Knowledge base content processed successfully",
+            "data": result,
+            "processing_type": "knowledge_base",
+            "index_used": "optimized-kb-index",
+            "book_name": book_name
+        }
+        
+    except Exception as e:
+        logger.error(f"Knowledge base processing failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Knowledge base processing failed: {str(e)}")
+
+# Legacy /search/knowledge-base endpoint removed - use /kb/query for intelligent knowledge base queries
+
+# Legacy /knowledge-base/inventory endpoint removed - use /kb/stats for knowledge base statistics
+
+# Legacy /knowledge-base/books/{topic} endpoint removed - use /kb/query for intelligent book analysis
+# Example: POST /kb/query {"query": "Analyze books about {topic}"}
+
+# ============================================================================
 # SEARCH ENDPOINTS
 # ============================================================================
 
@@ -256,21 +406,21 @@ async def generate_presentation(
     mcp_client: MCPClient = Depends(get_mcp_client)
 ):
     """
-    Generate a research presentation
+    Generate a research presentation from knowledge base using Chain-of-Thought reasoning
     
-    Your frontend can call this to create PowerPoint presentations from papers.
+    Your frontend can call this to create PowerPoint presentations from knowledge base content.
     """
     try:
         result = await mcp_client.create_presentation(
-            paper_id=request.paper_id,
+            query=request.query,
             user_prompt=request.user_prompt,
             title=request.title,
             author=request.author,
             theme=request.theme,
             slide_count=request.slide_count,
             audience_type=request.audience_type,
-            include_search_results=request.include_search_results,
-            search_query=request.search_query
+            include_web_references=request.include_web_references,
+            reference_query=request.reference_query
         )
         return result
     except Exception as e:
@@ -408,6 +558,117 @@ async def generate_insights(
     except Exception as e:
         logger.error(f"Insights generation failed: {e}")
         raise HTTPException(status_code=500, detail="Insights generation failed")
+
+# ============================================================================
+# QUIZ GENERATION ENDPOINTS
+# ============================================================================
+
+@router.post("/quiz/generate")
+async def generate_research_quiz(
+    request: QuizGenerationRequest,
+    background_tasks: BackgroundTasks,
+    mcp_client: MCPClient = Depends(get_mcp_client)
+):
+    """
+    Generate a comprehensive MCQ quiz from a specific research paper
+    
+    This endpoint generates multiple-choice questions from a research paper
+    stored in the user's namespace (user_{user_id}_doc_{document_uuid}).
+    
+    Parameters:
+    - user_id: User identifier who uploaded the PDF
+    - document_uuid: Unique identifier for the research paper
+    - number_of_questions: Number of MCQ questions to generate (5-50)
+    - difficulty_level: Difficulty level (easy/medium/hard/mixed)
+    - include_explanations: Whether to include answer explanations
+    - question_categories: Types of questions to generate
+    
+    Returns:
+    - JSON with quiz questions, metadata, and content analysis
+    """
+    start_time = time.time()
+    
+    try:
+        logger.info(f"🧠 NEW REQUEST: Quiz generation for research paper")
+        logger.info(f"👤 User ID: {request.user_id}")
+        logger.info(f"📄 Document UUID: {request.document_uuid}")
+        logger.info(f"❓ Questions: {request.number_of_questions}")
+        logger.info(f"🎯 Difficulty: {request.difficulty_level}")
+        logger.info(f"📚 Categories: {request.question_categories}")
+        
+        # Construct namespace
+        namespace = f"user_{request.user_id}_doc_{request.document_uuid}"
+        logger.info(f"📁 Target namespace: {namespace}")
+        
+        # Call MCP server for quiz generation
+        logger.info(f"🔗 Calling MCP server for quiz generation...")
+        mcp_start_time = time.time()
+        
+        result = await mcp_client.call_tool("generate_research_quiz", {
+            "user_id": request.user_id,
+            "document_uuid": request.document_uuid,
+            "number_of_questions": request.number_of_questions,
+            "difficulty_level": request.difficulty_level,
+            "include_explanations": request.include_explanations,
+            "question_categories": request.question_categories
+        })
+        
+        mcp_duration = time.time() - mcp_start_time
+        total_duration = time.time() - start_time
+        
+        logger.info(f"✅ MCP server call completed in {mcp_duration:.2f}s")
+        logger.info(f"🎉 Total API request completed in {total_duration:.2f}s")
+        
+        # Parse and validate result
+        if isinstance(result, list) and len(result) > 0:
+            result_text = result[0].get("text", "{}")
+            import json
+            try:
+                parsed_result = json.loads(result_text)
+                if parsed_result.get("success"):
+                    logger.info(f"✅ Quiz generation successful - {len(parsed_result.get('questions', []))} questions generated")
+                    return {
+                        "success": True,
+                        "message": "Quiz generated successfully",
+                        "data": parsed_result,
+                        "performance": {
+                            "total_time": total_duration,
+                            "mcp_time": mcp_duration,
+                            "processing_time": total_duration - mcp_duration
+                        }
+                    }
+                else:
+                    logger.warning(f"⚠️  Quiz generation failed: {parsed_result.get('error', 'Unknown error')}")
+                    return {
+                        "success": False,
+                        "error": parsed_result.get("error", "Quiz generation failed"),
+                        "data": parsed_result
+                    }
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ Failed to parse MCP response: {e}")
+                return {
+                    "success": False,
+                    "error": "Invalid response format from MCP server",
+                    "raw_response": result_text
+                }
+        else:
+            logger.error(f"❌ Invalid MCP response format")
+            return {
+                "success": False,
+                "error": "Invalid response format from MCP server",
+                "raw_response": str(result)
+            }
+        
+    except Exception as e:
+        total_duration = time.time() - start_time
+        logger.error(f"❌ Quiz generation API error after {total_duration:.2f}s: {e}")
+        logger.error(f"🔍 Error details: {str(e)}")
+        import traceback
+        logger.error(f"📋 Full traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Quiz generation failed: {str(e)}"
+        )
 
 # ============================================================================
 # UTILITY ENDPOINTS

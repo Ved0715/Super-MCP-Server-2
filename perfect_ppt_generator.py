@@ -95,6 +95,69 @@ class PerfectPPTGenerator:
             logger.error(f"Error creating perfect presentation: {e}")
             raise
 
+    async def _create_references_slide(self, prs, references: List[Dict[str, Any]], theme_config: Dict[str, Any]):
+        """Create a professional references slide with proper citations"""
+        try:
+            logger.info(f"📚 Creating references slide with {len(references)} sources")
+            
+            # Add references slide
+            slide_layout = prs.slide_layouts[5]  # Blank layout
+            slide = prs.slides.add_slide(slide_layout)
+            
+            # Add title
+            title_shape = slide.shapes.title
+            title_shape.text = "References"
+            title_shape.text_frame.paragraphs[0].font.size = Pt(36)
+            title_shape.text_frame.paragraphs[0].font.bold = True
+            title_shape.text_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+            
+            # Add references content
+            left = Inches(0.5)
+            top = Inches(1.5)
+            width = Inches(12.3)
+            height = Inches(5.5)
+            
+            text_box = slide.shapes.add_textbox(left, top, width, height)
+            text_frame = text_box.text_frame
+            text_frame.word_wrap = True
+            text_frame.margin_left = Inches(0.1)
+            text_frame.margin_right = Inches(0.1)
+            text_frame.margin_top = Inches(0.1)
+            text_frame.margin_bottom = Inches(0.1)
+            
+            # Clear default paragraph
+            text_frame.clear()
+            
+            # Add each reference
+            for i, ref in enumerate(references):
+                p = text_frame.add_paragraph()
+                p.text = f"{i+1}. {ref.get('source', 'Unknown Source')}"
+                p.font.size = Pt(16)
+                p.font.name = "Arial"
+                p.space_after = Pt(6)
+                
+                # Add relevance score if available
+                if 'relevance_score' in ref:
+                    p.text += f" (Relevance: {ref['relevance_score']:.2f})"
+                
+                # Add type if available
+                if 'type' in ref:
+                    p.text += f" [{ref['type']}]"
+            
+            # Apply theme colors
+            if theme_config:
+                primary_color = theme_config.get('primary_color', RGBColor(0, 51, 102))
+                title_shape.text_frame.paragraphs[0].font.color.rgb = primary_color
+                
+                for paragraph in text_frame.paragraphs:
+                    paragraph.font.color.rgb = RGBColor(51, 51, 51)
+            
+            logger.info(f"✅ References slide created successfully")
+            
+        except Exception as e:
+            logger.error(f"❌ Error creating references slide: {e}")
+            # Continue without references slide rather than failing
+
     async def _analyze_presentation_requirements(self,
                                                user_prompt: str,
                                                paper_content: Dict[str, Any],
@@ -349,6 +412,10 @@ class PerfectPPTGenerator:
                     await self._create_conclusion_slide(prs, slide_info, theme_config)
                 else:
                     await self._create_content_slide(prs, slide_info, theme_config)
+            
+            # Add references slide if paper content contains references
+            if paper_content.get("references"):
+                await self._create_references_slide(prs, paper_content["references"], theme_config)
             
             # Apply advanced styling
             self._apply_advanced_theme(prs, theme_config)
@@ -661,7 +728,18 @@ class PerfectPPTGenerator:
         
         sections = paper_content.get("sections", {})
         for section_name, content in sections.items():
-            context_parts.append(f"{section_name.upper()}: {content[:200]}...")
+            # Handle both string content and dictionary content (from knowledge base)
+            if isinstance(content, dict):
+                # Knowledge base format with nested content
+                actual_content = content.get("content", "")
+                if actual_content:
+                    context_parts.append(f"{section_name.upper()}: {actual_content[:200]}...")
+            elif isinstance(content, str):
+                # Traditional string format
+                context_parts.append(f"{section_name.upper()}: {content[:200]}...")
+            else:
+                # Fallback for any other format
+                context_parts.append(f"{section_name.upper()}: {str(content)[:200]}...")
         
         if relevant_content.get("general"):
             context_parts.append(f"RELEVANT CONTENT: {relevant_content['general'][0][:200]}...")
@@ -702,37 +780,60 @@ class PerfectPPTGenerator:
             "content_source": "metadata"
         })
         
-        # Content slides based on available sections
-        slide_templates = [
-            ("research_context", "Research Background", "introduction"),
-            ("methodology", "Research Methodology", "methodology"),
-            ("findings", "Key Findings", "results"),
-            ("implications", "Research Implications", "discussion"),
-            ("conclusion", "Conclusions", "conclusion")
-        ]
-        
+        # Use actual sections from the knowledge base content
         slide_counter = 2
-        for slide_type, title, section_key in slide_templates:
-            if slide_counter > slide_count:
+        available_sections = list(sections.keys())
+        
+        logger.info(f"📊 Available sections for slides: {available_sections}")
+        
+        # Create slides from available sections
+        for section_name in available_sections:
+            if slide_counter > slide_count - 1:  # Reserve last slide for references
                 break
                 
-            section_content = sections.get(section_key, "")
+            section_data = sections.get(section_name, {})
+            section_content = section_data.get("content", "") if isinstance(section_data, dict) else str(section_data)
+            
             if section_content:
-                # Create bullet points from section
-                sentences = section_content.split('.')[:4]
-                content = [s.strip() for s in sentences if s.strip()]
+                # Create bullet points from section content
+                sentences = section_content.split('.')[:5]  # Take first 5 sentences
+                content = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 20]
+                
+                # Clean section name for title
+                title = section_name.replace('_', ' ').title()
+                if title.lower() == 'general':
+                    title = "Overview"
                 
                 slides.append({
                     "slide_number": slide_counter,
-                    "type": slide_type,
+                    "type": "content",
                     "title": title,
-                    "content": content,
+                    "content": content[:4],  # Limit to 4 bullet points
                     "speaker_notes": f"Detailed discussion of {title.lower()}",
-                    "visual_elements": ["charts" if "result" in section_key else "diagrams"],
-                    "content_source": section_key
+                    "visual_elements": ["diagrams", "charts"],
+                    "content_source": section_name
                 })
                 slide_counter += 1
         
+        # If we still need more slides, create summary slides
+        if slide_counter <= slide_count - 1:
+            # Add a summary slide
+            slides.append({
+                "slide_number": slide_counter,
+                "type": "conclusion",
+                "title": "Key Takeaways",
+                "content": [
+                    "Summary of main concepts covered",
+                    "Practical applications discussed",
+                    "Important considerations highlighted",
+                    "Future directions identified"
+                ],
+                "speaker_notes": "Summarize the key points from the presentation",
+                "visual_elements": ["summary_chart"],
+                "content_source": "summary"
+            })
+        
+        logger.info(f"📊 Created {len(slides)} slides in fallback plan")
         return slides
 
     def get_available_themes(self) -> List[str]:

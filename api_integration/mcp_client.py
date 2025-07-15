@@ -325,43 +325,43 @@ class MCPClient:
     
     async def create_presentation(
         self,
-        paper_id: str,
+        query: str,
         user_prompt: str,
         title: Optional[str] = None,
         author: str = "AI Research Assistant",
         theme: str = "academic_professional",
         slide_count: int = 12,
         audience_type: str = "academic",
-        include_search_results: bool = False,
-        search_query: Optional[str] = None
+        include_web_references: bool = False,
+        reference_query: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Create a research presentation
+        Create a research presentation from knowledge base using Chain-of-Thought reasoning
         
         Args:
-            paper_id: ID of the processed paper
+            query: Topic/query for presentation content
             user_prompt: User requirements for the presentation
             title: Presentation title
             author: Author name
             theme: Presentation theme
             slide_count: Number of slides
             audience_type: Target audience
-            include_search_results: Whether to include web search results
-            search_query: Search query for additional context
+            include_web_references: Whether to include web search for reference links
+            reference_query: Query for additional reference links
         
         Returns:
             Presentation creation result
         """
         arguments = {
-            "paper_id": paper_id,
+            "query": query,
             "user_prompt": user_prompt,
             "title": title,
             "author": author,
             "theme": theme,
             "slide_count": slide_count,
             "audience_type": audience_type,
-            "include_search_results": include_search_results,
-            "search_query": search_query
+            "include_web_references": include_web_references,
+            "reference_query": reference_query
         }
         
         return await self.call_tool("create_perfect_presentation", arguments)

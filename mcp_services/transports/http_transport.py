@@ -99,10 +99,24 @@ class MCPHTTPTransport:
             allow_headers=["*"],
         )
         
+        # Add Knowledge Base Retrieval API
+        self._setup_kb_api()
+        
         # Setup routes
         self._setup_routes()
         
         logger.info(f"MCP HTTP Transport initialized on {host}:{port}")
+    
+    def _setup_kb_api(self):
+        """Setup Knowledge Base Retrieval API"""
+        try:
+            from kb_api import router as kb_router
+            self.app.include_router(kb_router, prefix="/kb", tags=["Knowledge Base Retrieval"])
+            logger.info("✅ Knowledge Base Retrieval API integrated successfully")
+        except ImportError as e:
+            logger.warning(f"⚠️ Knowledge Base Retrieval API not available: {e}")
+        except Exception as e:
+            logger.error(f"❌ Failed to setup Knowledge Base Retrieval API: {e}")
     
     def _setup_routes(self):
         """Setup all HTTP routes for MCP communication"""
@@ -163,6 +177,8 @@ class MCPHTTPTransport:
         async def upload_and_process_paper(
             file: UploadFile = File(...),
             paper_id: str = "auto",
+            user_id: Optional[str] = None,
+            document_uuid: Optional[str] = None,
             enable_research_analysis: bool = True,
             enable_vector_storage: bool = True,
             analysis_depth: str = "comprehensive"
@@ -189,6 +205,8 @@ class MCPHTTPTransport:
                     "file_content": file_content_b64,
                     "file_name": file.filename,
                     "paper_id": paper_id,
+                    "user_id": user_id,
+                    "document_uuid": document_uuid,
                     "enable_research_analysis": enable_research_analysis,
                     "enable_vector_storage": enable_vector_storage,
                     "analysis_depth": analysis_depth
@@ -330,6 +348,28 @@ class MCPHTTPTransport:
                 result = await self.mcp_server._handle_list_papers(**arguments)
             elif tool_name == "system_status":
                 result = await self.mcp_server._handle_system_status(**arguments)
+            # NEW ENHANCED MCP TOOLS
+            elif tool_name == "ai_enhanced_analysis":
+                result = await self.mcp_server._handle_ai_enhanced_analysis(**arguments)
+            elif tool_name == "cancel_operation":
+                result = await self.mcp_server._handle_cancel_operation(**arguments)
+            elif tool_name == "list_active_operations":
+                result = await self.mcp_server._handle_list_operations(**arguments)
+            elif tool_name == "compare_research_papers":
+                result = await self.mcp_server._handle_compare_papers(**arguments)
+            elif tool_name == "export_research_summary":
+                result = await self.mcp_server._handle_export_summary(**arguments)
+            # UNIVERSAL PROCESSOR TOOLS
+            elif tool_name == "process_research_paper_universal":
+                result = await self.mcp_server._handle_universal_research_paper(**arguments)
+            elif tool_name == "process_knowledge_base":
+                result = await self.mcp_server._handle_universal_knowledge_base(**arguments)
+            elif tool_name == "search_knowledge_base":
+                result = await self.mcp_server._handle_search_knowledge_base(**arguments)
+            elif tool_name == "get_knowledge_base_inventory":
+                result = await self.mcp_server._handle_get_knowledge_base_inventory(**arguments)
+            elif tool_name == "find_books_covering_topic":
+                result = await self.mcp_server._handle_find_books_covering_topic(**arguments)
             else:
                 raise ValueError(f"Unknown tool: {tool_name}")
             
@@ -365,7 +405,7 @@ class MCPHTTPTransport:
                 
                 return tools
             else:
-                # Fallback: return hardcoded tool list
+                # Fallback: return complete enhanced tool list
                 return [
                     {
                         "name": "advanced_search_web",
@@ -379,13 +419,89 @@ class MCPHTTPTransport:
                     },
                     {
                         "name": "create_perfect_presentation",
-                        "description": "Create perfect research presentation",
-                        "input_schema": {"type": "object", "properties": {"paper_id": {"type": "string"}}}
+                        "description": "Create perfect research presentation from knowledge base using Chain-of-Thought reasoning",
+                        "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}}
+                    },
+                    {
+                        "name": "create_presentation_from_namespace",
+                        "description": "Create presentation from namespace aggregation",
+                        "input_schema": {"type": "object", "properties": {"namespace": {"type": "string"}}}
                     },
                     {
                         "name": "semantic_paper_search",
                         "description": "Perform semantic search within processed papers",
                         "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}}
+                    },
+                    {
+                        "name": "research_intelligence_analysis",
+                        "description": "Comprehensive research intelligence analysis",
+                        "input_schema": {"type": "object", "properties": {"paper_id": {"type": "string"}}}
+                    },
+                    {
+                        "name": "compare_research_papers",
+                        "description": "Compare multiple research papers",
+                        "input_schema": {"type": "object", "properties": {"paper_ids": {"type": "array"}}}
+                    },
+                    {
+                        "name": "generate_research_insights",
+                        "description": "Generate advanced research insights",
+                        "input_schema": {"type": "object", "properties": {"paper_id": {"type": "string"}}}
+                    },
+                    {
+                        "name": "export_research_summary",
+                        "description": "Export comprehensive research summary",
+                        "input_schema": {"type": "object", "properties": {"paper_ids": {"type": "array"}}}
+                    },
+                    {
+                        "name": "list_processed_papers",
+                        "description": "List all processed research papers",
+                        "input_schema": {"type": "object", "properties": {}}
+                    },
+                    {
+                        "name": "system_status",
+                        "description": "Get comprehensive system status",
+                        "input_schema": {"type": "object", "properties": {}}
+                    },
+                    {
+                        "name": "ai_enhanced_analysis",
+                        "description": "Use AI sampling to enhance research analysis with advanced insights",
+                        "input_schema": {"type": "object", "properties": {"paper_id": {"type": "string"}, "enhancement_type": {"type": "string"}}}
+                    },
+                    {
+                        "name": "cancel_operation",
+                        "description": "Cancel a running operation by its ID",
+                        "input_schema": {"type": "object", "properties": {"operation_id": {"type": "string"}}}
+                    },
+                    {
+                        "name": "list_active_operations",
+                        "description": "List all currently active operations with their status and progress",
+                        "input_schema": {"type": "object", "properties": {"include_completed": {"type": "boolean"}}}
+                    },
+                    # UNIVERSAL PROCESSOR TOOLS
+                    {
+                        "name": "process_research_paper_universal",
+                        "description": "Process research papers using universal processor with all-pdf-index storage",
+                        "input_schema": {"type": "object", "properties": {"file_content": {"type": "string"}, "filename": {"type": "string"}}}
+                    },
+                    {
+                        "name": "process_knowledge_base",
+                        "description": "Process knowledge base content using optimized pipeline with optimized-kb-index storage",
+                        "input_schema": {"type": "object", "properties": {"file_content": {"type": "string"}, "filename": {"type": "string"}}}
+                    },
+                    {
+                        "name": "search_knowledge_base",
+                        "description": "Search knowledge base content with enhanced retrieval capabilities",
+                        "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}}
+                    },
+                    {
+                        "name": "get_knowledge_base_inventory",
+                        "description": "Get comprehensive inventory of knowledge base content including books and chapters",
+                        "input_schema": {"type": "object", "properties": {}}
+                    },
+                    {
+                        "name": "find_books_covering_topic",
+                        "description": "Find which books in the knowledge base cover a specific topic",
+                        "input_schema": {"type": "object", "properties": {"topic": {"type": "string"}}}
                     }
                 ]
                 

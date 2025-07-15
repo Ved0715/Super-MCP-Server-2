@@ -60,12 +60,36 @@ def main():
     print(f"Server URL: http://{args.host}:{args.port}")
     print("=" * 60)
     print()
-    print("Available endpoints:")
-    print(f"  Health Check: http://{args.host}:{args.port}/health")
-    print(f"  Tool Call:    http://{args.host}:{args.port}/mcp/call")
-    print(f"  Upload:       http://{args.host}:{args.port}/mcp/upload-and-process")
-    print(f"  List Tools:   http://{args.host}:{args.port}/mcp/list-tools")
-    print(f"  Downloads:    http://{args.host}:{args.port}/presentations/{{filename}}")
+    print("🔧 Core MCP Endpoints:")
+    print(f"  📊 Health Check:     http://{args.host}:{args.port}/health")
+    print(f"  🛠️  Tool Call:        http://{args.host}:{args.port}/mcp/call")
+    print(f"  📤 Upload & Process: http://{args.host}:{args.port}/mcp/upload-and-process")
+    print(f"  📋 List Tools:       http://{args.host}:{args.port}/mcp/list-tools")
+    print(f"  📥 Downloads:        http://{args.host}:{args.port}/presentations/{{filename}}")
+    print()
+    print("🧠 Knowledge Base API (Intelligent):")
+    print(f"  🔍 Smart Query:      http://{args.host}:{args.port}/kb/query")
+    print(f"  📊 KB Statistics:    http://{args.host}:{args.port}/kb/stats") 
+    print(f"  📚 Books Inventory:  http://{args.host}:{args.port}/kb/books")
+    print(f"  ⚡ KB Health:        http://{args.host}:{args.port}/kb/health")
+    print(f"  📝 Query Examples:   http://{args.host}:{args.port}/kb/examples")
+    print(f"  🔧 Diagnostics:      http://{args.host}:{args.port}/kb/diagnostics")
+    print()
+    print("💾 Vector Databases:")
+    
+    # Import config to get actual index names
+    try:
+        from config import AdvancedConfig
+        config = AdvancedConfig()
+        research_index = config.PINECONE_INDEX_NAME or "all-pdfs-index"
+        kb_index = config.PINECONE_KB_INDEX_NAME or "optimized-kb-index"
+        print(f"  📄 Research Papers:  {research_index}")
+        print(f"  📚 Knowledge Base:   {kb_index}")
+    except Exception:
+        # Fallback to default names if config fails
+        print(f"  📄 Research Papers:  all-pdfs-index")
+        print(f"  📚 Knowledge Base:   optimized-kb-index")
+    
     print("=" * 60)
     print()
     print("Press Ctrl+C to stop the server")

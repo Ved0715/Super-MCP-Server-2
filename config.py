@@ -25,7 +25,7 @@ class AdvancedConfig:
         # ============================================================================
         # AI MODEL SETTINGS
         # ============================================================================
-        self.LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o")
+        self.LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
         self.LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", 0.0))
         self.EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
         self.EMBEDDING_DIMENSIONS = 3072
@@ -33,7 +33,8 @@ class AdvancedConfig:
         # ============================================================================
         # VECTOR STORAGE SETTINGS
         # ============================================================================
-        self.PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "research-papers-index")
+        self.PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")  # For research papers
+        self.PINECONE_KB_INDEX_NAME = os.getenv("PINECONE_KB_INDEX_NAME", "optimized-kb-index")  # For knowledge base
         self.PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "us-east-1")
         self.VECTOR_SIMILARITY_THRESHOLD = float(os.getenv("VECTOR_SIMILARITY_THRESHOLD", 0.7))
         self.MAX_RETRIEVAL_RESULTS = int(os.getenv("MAX_RETRIEVAL_RESULTS", 20))

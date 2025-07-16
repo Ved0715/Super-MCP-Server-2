@@ -481,6 +481,23 @@ class PerfectMCPServer:
                         },
                         "required": ["user_id", "document_uuid", "num_questions"]
                     }
+                ),
+                
+                Tool(
+                    name="generate_knowledge_base_quiz",
+                    description="Generate MCQ quiz from knowledge base content based on topic and search query",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "topic_description": {"type": "string", "description": "Description of the topic to quiz about"},
+                            "search_query": {"type": "string", "description": "Specific query to search the knowledge base"},
+                            "max_chunks": {"type": "integer", "minimum": 5, "maximum": 100, "default": 30, "description": "Maximum number of chunks to analyze"},
+                            "num_questions": {"type": "integer", "minimum": 3, "maximum": 25, "default": 10, "description": "Number of questions to generate"},
+                            "difficulty_mix": {"type": "object", "description": "Custom difficulty distribution (optional)", "properties": {"easy": {"type": "integer"}, "medium": {"type": "integer"}, "hard": {"type": "integer"}}},
+                            "namespace": {"type": "string", "description": "Specific namespace to search (optional)"}
+                        },
+                        "required": ["topic_description", "search_query"]
+                    }
                 )
                  
             ]
@@ -513,6 +530,9 @@ class PerfectMCPServer:
                 
                 elif name == "generate_paper_quiz":
                     return await self._handle_generate_paper_quiz(**arguments)
+                
+                elif name == "generate_knowledge_base_quiz":
+                    return await self._handle_generate_knowledge_base_quiz(**arguments)
                 
                 elif name == "compare_research_papers":
                     return await self._handle_compare_papers(**arguments)
@@ -2131,6 +2151,41 @@ class PerfectMCPServer:
             
         except Exception as e:
             logger.error(f"Quiz generation error: {e}")
+            return [TextContent(
+                type="text", 
+                text=json.dumps({"success": False, "error": str(e)}, indent=2)
+            )]
+
+    async def _handle_generate_knowledge_base_quiz(self, topic_description: str, search_query: str, 
+                                                 max_chunks: int = 30, num_questions: int = 10,
+                                                 difficulty_mix: Optional[Dict[str, int]] = None,
+                                                 namespace: Optional[str] = None, **kwargs) -> List[TextContent]:
+        """Handle knowledge base quiz generation"""
+        try:
+            # Import here to avoid circular imports
+            from retrieval.knowledge_base.kb_quiz import KnowledgeBaseQuizGenerator, KBQuizRequest
+            
+            if not hasattr(self, 'kb_quiz_generator'):
+                self.kb_quiz_generator = KnowledgeBaseQuizGenerator()
+            
+            request = KBQuizRequest(
+                topic_description=topic_description,
+                search_query=search_query,
+                max_chunks=max_chunks,
+                num_questions=num_questions,
+                difficulty_mix=difficulty_mix,
+                namespace=namespace
+            )
+            
+            result = await self.kb_quiz_generator.generate_kb_quiz(request)
+            
+            return [TextContent(
+                type="text",
+                text=json.dumps(result, indent=2)
+            )]
+            
+        except Exception as e:
+            logger.error(f"KB Quiz generation error: {e}")
             return [TextContent(
                 type="text", 
                 text=json.dumps({"success": False, "error": str(e)}, indent=2)

@@ -34,6 +34,25 @@ from processors.universal_document_processor import UniversalDocumentProcessor
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Add HybridRetriever imports
+try:
+    from retrieval.kb_retrieval import HybridRetriever
+    HYBRID_RETRIEVER_AVAILABLE = True
+    logger.info("✅ HybridRetriever imported successfully")
+except ImportError as e:
+    HYBRID_RETRIEVER_AVAILABLE = False
+    
+    logger.warning(f"⚠️ HybridRetriever not available: {e}")
+
+# Import prompt template functions
+try:
+    from retrieval.prompt_templates import detect_query_type, format_system_prompt, get_prompt_template
+    PROMPT_TEMPLATES_AVAILABLE = True
+    logger.info("✅ Prompt templates imported successfully")
+except ImportError as e:
+    PROMPT_TEMPLATES_AVAILABLE = False
+    logger.warning(f"⚠️ Prompt templates not available: {e}")
+
 class PerfectMCPServer:
     """Perfect MCP Server with complete research capabilities"""
     
@@ -55,6 +74,17 @@ class PerfectMCPServer:
         # Initialize universal document processor
         self.universal_processor = UniversalDocumentProcessor()
         
+        # Initialize HybridRetriever for enhanced knowledge base search
+        if HYBRID_RETRIEVER_AVAILABLE:
+            try:
+                self.hybrid_retriever = HybridRetriever()
+                logger.info("✅ HybridRetriever initialized successfully")
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize HybridRetriever: {e}")
+                self.hybrid_retriever = None
+        else:
+            self.hybrid_retriever = None
+            
         # Paper storage
         self.processed_papers = {}
         
@@ -2379,83 +2409,164 @@ The operation has been successfully cancelled and will stop as soon as possible.
 
     async def _handle_search_knowledge_base(self, query: str, search_type: str = "enhanced",
                                           max_results: int = 5, namespace: str = "knowledge-base",
-                                          index_name: str = "optimized-kb-index") -> List[TextContent]:
-        """Handle knowledge base search using enhanced retrieval with OpenAI-powered responses"""
+                                          index_name: str = "optimized-kb-index", **kwargs) -> List[TextContent]:
+        """
+        Handle knowledge base search using HybridRetriever with intelligent query routing
+        
+        This method now uses the sophisticated HybridRetriever system that can:
+        - Detect different types of queries (study plans, topic location, comprehensive analysis)
+        - Route queries intelligently to specialized handlers
+        - Generate contextual responses using specialized prompt templates
+        - Provide comprehensive book analysis and chapter information
+        """
+        # Parameter validation and filtering
+        if kwargs:
+            unexpected_params = list(kwargs.keys())
+            logger.warning(f"⚠️ Received unexpected parameters for search_knowledge_base: {unexpected_params}")
+            
+            # Check for the specific bug mentioned in conversation summary
+            if 'use_chain_of_thought' in kwargs:
+                logger.error(f"❌ BUG DETECTED: 'use_chain_of_thought' parameter incorrectly passed to search_knowledge_base")
+                logger.error(f"🔧 This parameter should only be used with 'create_perfect_presentation' tool")
+        
         try:
-            # Import the advanced knowledge base retriever
-            from knowledge_base_retrieval import AdvancedKnowledgeBaseRetriever
+            # Use HybridRetriever if available, otherwise fallback to basic search
+            if self.hybrid_retriever is not None:
+                logger.info(f"🧠 Using HybridRetriever for query: '{query[:100]}...'")
+                
+                # Check for special query types that need specialized handling
+                special_indicators = [
+                    'what books', 'what do you have', 'knowledge base', 'inventory', 'available content',
+                    'study plan', 'learning plan', 'study schedule', 'learning path', 'study guide',
+                    'where is', 'where can i find', 'location of', 'find topic', 'covered in',
+                    'what topics', 'what are the topics', 'topics covered', 'topics in this book',
+                    'what chapters', 'chapters in', 'all topics', 'complete topics', 'chapters covered',
+                    'full content', 'everything covered', 'all chapters', 'book contents', 'chapters name'
+                ]
+                
+                query_lower = query.lower()
+                
+                # Use specialized content search for special queries
+                if any(indicator in query_lower for indicator in special_indicators):
+                    logger.info(f"🎯 Detected special query type, using search_knowledge_base_contents")
+                    response_text = self.hybrid_retriever.search_knowledge_base_contents(query)
+                    
+                    response_data = {
+                        "success": True,
+                        "query": query,
+                        "search_type": "specialized_content_search",
+                        "results": response_text,
+                        "namespace": namespace,
+                        "index_name": index_name,
+                        "query_type": "special"
+                    }
+                else:
+                    # For regular queries, use the answer_question method with enhanced retrieval
+                    logger.info(f"🔍 Regular query, using enhanced answer_question method")
+                    response_text = await self._run_hybrid_retriever_async(query, max_results)
+                    
+                    response_data = {
+                        "success": True,
+                        "query": query,
+                        "search_type": "enhanced_rag",
+                        "results": response_text,
+                        "namespace": namespace,
+                        "index_name": index_name,
+                        "query_type": "regular"
+                    }
+                
+                return [TextContent(
+                    type="text",
+                    text=json.dumps(response_data, indent=2)
+                )]
+                
+            else:
+                # Fallback to basic search if HybridRetriever not available
+                logger.warning("⚠️ HybridRetriever not available, using fallback search")
+                return await self._fallback_basic_search(query, search_type, max_results, namespace, index_name)
+                
+        except Exception as e:
+            logger.error(f"❌ HybridRetriever search failed: {e}")
+            # Fallback to basic search on any error
+            return await self._fallback_basic_search(query, search_type, max_results, namespace, index_name)
+    
+    async def _run_hybrid_retriever_async(self, query: str, max_results: int) -> str:
+        """Run HybridRetriever answer_question in async context"""
+        try:
+            # Run the synchronous method in a thread pool to avoid blocking
+            import asyncio
+            import functools
             
-            # Create retriever instance
-            kb_retriever = AdvancedKnowledgeBaseRetriever()
+            # Create a partial function with the query
+            answer_func = functools.partial(self.hybrid_retriever.answer_question, query, max_results)
             
-            # Perform intelligent search with OpenAI-powered response
-            result = await kb_retriever.intelligent_search(
+            # Run in thread pool
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, answer_func)
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Error running HybridRetriever async: {e}")
+            return f"Error generating answer: {str(e)}"
+    
+    def _get_query_type_info(self, query: str) -> dict:
+        """Get query type information using prompt template detection if available"""
+        try:
+            if PROMPT_TEMPLATES_AVAILABLE:
+                query_type = detect_query_type(query)
+                return {"type": query_type, "source": "prompt_templates"}
+            else:
+                # Simple fallback query type detection
+                query_lower = query.lower()
+                if any(word in query_lower for word in ['study plan', 'learning plan', 'curriculum']):
+                    return {"type": "study_plan", "source": "simple_fallback"}
+                elif any(word in query_lower for word in ['chapters', 'chapter list', 'table of contents']):
+                    return {"type": "chapter_analysis", "source": "simple_fallback"}
+                elif any(word in query_lower for word in ['where is', 'location of', 'find topic']):
+                    return {"type": "topic_location", "source": "simple_fallback"}
+                else:
+                    return {"type": "concept_explanation", "source": "simple_fallback"}
+                    
+        except Exception as e:
+            logger.warning(f"⚠️ Query type detection failed: {e}")
+            return {"type": "concept_explanation", "source": "error_fallback"}
+    
+    async def _fallback_basic_search(self, query: str, search_type: str, max_results: int, 
+                                   namespace: str, index_name: str) -> List[TextContent]:
+        """Fallback to basic vector search if HybridRetriever fails"""
+        try:
+            results = await self.vector_storage.enhanced_knowledge_base_search(
                 query=query,
-                top_k=max_results,
                 namespace=namespace,
+                top_k=max_results,
                 index_name=index_name
             )
-            
-            # Extract the AI-generated response or fallback to formatted results
-            if result.get("success") and "ai_response" in result:
-                # Use the AI-generated response as the primary output
-                response_text = result["ai_response"]
-                
-                # Also include search metadata
-                response_data = {
-                    "success": True,
-                    "query": query,
-                    "search_type": "enhanced",
-                    "results": response_text,  # This is now the AI-generated answer
-                    "namespace": namespace,
-                    "index_name": index_name,
-                    "total_sources": result.get("total_results", 0)
-                }
-            else:
-                # Fallback for other response types (study plans, book analysis, etc.)
-                response_data = result
+            formatted_results = "\n\n".join([f"[Source {i+1}]:\n{r['content']}" for i, r in enumerate(results)])
             
             return [TextContent(
                 type="text",
-                text=json.dumps(response_data, indent=2)
+                text=json.dumps({
+                    "success": True,
+                    "query": query,
+                    "search_type": "basic_fallback",
+                    "results": formatted_results,
+                    "namespace": namespace,
+                    "index_name": index_name,
+                    "note": "Using basic search - HybridRetriever not available"
+                }, indent=2)
             )]
             
-        except Exception as e:
-            logger.error(f"Enhanced knowledge base search failed: {e}")
-            
-            # Fallback to basic search if enhanced fails
-            try:
-                results = await self.vector_storage.enhanced_knowledge_base_search(
-                    query=query,
-                    namespace=namespace,
-                    top_k=max_results,
-                    index_name=index_name
-                )
-                formatted_results = "\n\n".join([f"[Source {i+1}]:\n{r['content']}" for i, r in enumerate(results)])
-                
-                return [TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "success": True,
-                        "query": query,
-                        "search_type": "basic_fallback",
-                        "results": formatted_results,
-                        "namespace": namespace,
-                        "index_name": index_name,
-                        "note": "Using basic search due to enhanced search failure"
-                    }, indent=2)
-                )]
-                
-            except Exception as fallback_error:
-                logger.error(f"Basic search fallback also failed: {fallback_error}")
-                return [TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "success": False,
-                        "error": f"Both enhanced and basic search failed: {str(e)}, {str(fallback_error)}",
-                        "query": query
-                    }, indent=2)
-                )]
+        except Exception as fallback_error:
+            logger.error(f"❌ Basic search fallback also failed: {fallback_error}")
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "success": False,
+                    "error": f"Both HybridRetriever and basic search failed: {str(fallback_error)}",
+                    "query": query
+                }, indent=2)
+            )]
 
     async def _handle_get_knowledge_base_inventory(self, namespace: str = "knowledge-base",
                                                  index_name: str = "optimized-kb-index") -> List[TextContent]:
@@ -2570,6 +2681,8 @@ The operation has been successfully cancelled and will stop as soon as possible.
         
         return "\n".join(response_parts)
 
+    
+
     async def _generate_smart_recommendations(self, research_analysis: Dict[str, Any]) -> List[str]:
         """Generate smart recommendations based on research analysis"""
         recommendations = []
@@ -2607,6 +2720,583 @@ The operation has been successfully cancelled and will stop as soon as possible.
 
     # Additional tool implementations would continue here...
     # (Compare papers, generate insights, export summary methods)
+
+
+    def get_comprehensive_book_analysis(self) -> str:
+        """Get comprehensive analysis of ALL topics, chapters, and content in ALL books"""
+        if not self.index:
+            return "❌ No index available for analysis"
+        
+        # Always try to use the enhanced approach first
+        # Note: chunks_data may be empty if this is a new session
+        print("🔍 Performing comprehensive book analysis using enhanced approach...")
+        
+        # If we have chunks_data in memory, use it (best option)
+        if self.chunks_data:
+            print("✅ Using full chunk data from memory")
+            return self._analyze_from_memory_chunks()
+        
+        # Otherwise, try to get more comprehensive results from index
+        print("⚠️ No chunk data in memory - using enhanced index analysis")
+        
+        try:
+            # Check if we have enhanced metadata
+            sample_result = self.index.query(
+                vector=[0.0] * config.embedding_dimension,
+                top_k=1,
+                namespace=config.namespace,
+                include_metadata=True
+            )
+            
+            has_enhanced_metadata = False
+            if sample_result.matches:
+                metadata = sample_result.matches[0].metadata
+                if 'chapters_found' in metadata:
+                    has_enhanced_metadata = True
+            
+            if has_enhanced_metadata:
+                print("🔍 Performing comprehensive book analysis using enhanced metadata...")
+                print("✅ Using stored chapter information from upload time")
+            else:
+                print("🔍 Performing comprehensive book analysis from basic metadata...")
+                print("⚠️ Note: Using basic metadata - may miss some chapters")
+            
+            # Get ALL vectors from the index (not just a sample)
+            stats = self.index.describe_index_stats()
+            total_vectors = stats.total_vector_count if hasattr(stats, 'total_vector_count') else 1000
+            
+            # Query with zero vector to get ALL content (up to limit)
+            all_results = self.index.query(
+                vector=[0.0] * config.embedding_dimension,
+                top_k=min(total_vectors, 1000),  # Get up to 1000 chunks (Pinecone limit)
+                namespace=config.namespace,
+                include_metadata=True
+            )
+            
+            # Organize by books
+            books_analysis = {}
+            
+            for match in all_results.matches:
+                metadata = match.metadata
+                book_name = metadata.get('book_name', 'Unknown Book')
+                text = metadata.get('text', '')  # This is truncated to 1000 chars!
+                
+                if book_name not in books_analysis:
+                    books_analysis[book_name] = {
+                        'chapters': set(),
+                        'sections': set(),
+                        'topics': set(),
+                        'algorithms': set(),
+                        'techniques': set(),
+                        'concepts': set(),
+                        'chunk_count': 0,
+                        'mathematical_content': 0,
+                        'total_words': 0
+                    }
+                
+                book_data = books_analysis[book_name]
+                book_data['chunk_count'] += 1
+                book_data['total_words'] += metadata.get('word_count', 0)
+                
+                if metadata.get('has_formulas', False):
+                    book_data['mathematical_content'] += 1
+                
+                # Use stored chapter information from metadata (BETTER!)
+                stored_chapters = metadata.get('chapters_found', [])
+                stored_sections = metadata.get('sections_found', [])
+                
+                # Add chapters with enhanced deduplication
+                import re
+                for chapter in stored_chapters:
+                    # Clean any remaining TOC artifacts
+                    clean_chapter = re.sub(r'\.{3,}.*$', '', chapter)
+                    clean_chapter = re.sub(r'\s*\d+$', '', clean_chapter).strip()
+                    if len(clean_chapter) > 5:  # Only keep substantial titles
+                        book_data['chapters'].add(clean_chapter)
+                        
+                for section in stored_sections:
+                    clean_section = re.sub(r'\.{3,}.*$', '', section)
+                    clean_section = re.sub(r'\s*\d+$', '', clean_section).strip()
+                    if len(clean_section) > 5:
+                        book_data['sections'].add(clean_section)
+                
+                # Extract comprehensive content analysis from available text
+                content_lower = text.lower()
+                
+                # Still extract topics, algorithms, and concepts from available text
+                self._extract_comprehensive_topics(content_lower, book_data)
+            
+            # Format the comprehensive response
+            response_parts = ["📚 **COMPREHENSIVE KNOWLEDGE BASE ANALYSIS**\n"]
+            response_parts.append(f"🔢 **Total Books:** {len(books_analysis)}")
+            response_parts.append(f"📊 **Total Content Pieces:** {sum(book['chunk_count'] for book in books_analysis.values())}")
+            response_parts.append(f"📝 **Total Words:** {sum(book['total_words'] for book in books_analysis.values()):,}\n")
+            
+            # Detailed analysis for each book
+            for book_name, analysis in books_analysis.items():
+                response_parts.append(f"## 📖 **{book_name}**")
+                response_parts.append(f"📊 **Stats:** {analysis['chunk_count']} sections, {analysis['total_words']:,} words")
+                
+                math_percent = round((analysis['mathematical_content'] / analysis['chunk_count']) * 100, 1) if analysis['chunk_count'] > 0 else 0
+                response_parts.append(f"🔢 **Mathematical Content:** {math_percent}%")
+                
+                # Chapters and Sections
+                if analysis['chapters']:
+                    sorted_chapters = sorted(list(analysis['chapters']))
+                    response_parts.append(f"\n📑 **Chapters/Main Sections ({len(sorted_chapters)}):**")
+                    for chapter in sorted_chapters[:20]:  # Limit to 20 for readability
+                        response_parts.append(f"  • {chapter}")
+                    if len(sorted_chapters) > 20:
+                        response_parts.append(f"  • ... and {len(sorted_chapters) - 20} more")
+                
+                # Topics and Concepts
+                if analysis['topics']:
+                    sorted_topics = sorted(list(analysis['topics']))
+                    response_parts.append(f"\n🎯 **Topics Covered ({len(sorted_topics)}):**")
+                    for topic in sorted_topics:
+                        response_parts.append(f"  • {topic}")
+                
+                # Algorithms
+                if analysis['algorithms']:
+                    sorted_algorithms = sorted(list(analysis['algorithms']))
+                    response_parts.append(f"\n⚙️ **Algorithms ({len(sorted_algorithms)}):**")
+                    for algorithm in sorted_algorithms:
+                        response_parts.append(f"  • {algorithm}")
+                
+                # Techniques
+                if analysis['techniques']:
+                    sorted_techniques = sorted(list(analysis['techniques']))
+                    response_parts.append(f"\n🛠️ **Techniques ({len(sorted_techniques)}):**")
+                    for technique in sorted_techniques:
+                        response_parts.append(f"  • {technique}")
+                
+                # Concepts
+                if analysis['concepts']:
+                    sorted_concepts = sorted(list(analysis['concepts']))
+                    response_parts.append(f"\n💡 **Key Concepts ({len(sorted_concepts)}):**")
+                    for concept in sorted_concepts:
+                        response_parts.append(f"  • {concept}")
+                
+                response_parts.append("")  # Add space between books
+            
+            # Summary
+            all_topics = set()
+            all_algorithms = set()
+            for book_data in books_analysis.values():
+                all_topics.update(book_data['topics'])
+                all_algorithms.update(book_data['algorithms'])
+            
+            response_parts.append(f"## 🌟 **OVERALL SUMMARY**")
+            response_parts.append(f"📚 **Total Unique Topics:** {len(all_topics)}")
+            response_parts.append(f"⚙️ **Total Unique Algorithms:** {len(all_algorithms)}")
+            response_parts.append(f"📖 **Books Available:** {len(books_analysis)}")
+            
+            response_parts.append(f"\n💡 **You can now ask about:**")
+            response_parts.append("  • Any specific topic from the lists above")
+            response_parts.append("  • Detailed explanations of algorithms")
+            response_parts.append("  • Comparisons between different techniques")
+            response_parts.append("  • Study plans for specific books")
+            response_parts.append("  • Where specific topics are covered")
+            
+            return "\n".join(response_parts)
+            
+        except Exception as e:
+            return f"❌ Error in comprehensive analysis: {e}"
+    
+
+    def get_book_specific_analysis(self, book_name: str) -> str:
+        """Get comprehensive analysis for a specific book only"""
+        try:
+            print(f"🔍 Performing comprehensive analysis for: {book_name}")
+            
+            # Get ALL vectors and filter for specific book
+            stats = self.index.describe_index_stats()
+            total_vectors = stats.total_vector_count if hasattr(stats, 'total_vector_count') else 1000
+            
+            all_results = self.index.query(
+                vector=[0.0] * config.embedding_dimension,
+                top_k=min(total_vectors, 1000),
+                namespace=config.namespace,
+                include_metadata=True
+            )
+            
+            # Filter to only the specified book
+            book_chapters = set()
+            book_sections = set()
+            chunk_count = 0
+            math_content = 0
+            total_words = 0
+            
+            import re
+            for match in all_results.matches:
+                metadata = match.metadata
+                result_book = metadata.get('book_name', '')
+                
+                # Check if this chunk belongs to the specified book
+                if book_name.lower() in result_book.lower():
+                    chunk_count += 1
+                    total_words += metadata.get('word_count', 0)
+                    
+                    if metadata.get('has_formulas', False):
+                        math_content += 1
+                    
+                    # Get chapters for this book
+                    stored_chapters = metadata.get('chapters_found', [])
+                    for chapter in stored_chapters:
+                        clean_chapter = re.sub(r'\.{3,}.*$', '', chapter)
+                        clean_chapter = re.sub(r'\s*\d+$', '', clean_chapter).strip()
+                        if len(clean_chapter) > 5:
+                            book_chapters.add(clean_chapter)
+            
+            if chunk_count == 0:
+                return f"❌ No content found for book: {book_name}"
+            
+            # If chapters look like random numbers/references, try TOC search instead
+            if book_chapters:
+                print(f"🔍 DEBUG: Found {len(book_chapters)} chapters: {list(book_chapters)[:3]}")
+                is_suspicious = self._chapters_look_suspicious(book_chapters)
+                print(f"🔍 DEBUG: Chapters suspicious? {is_suspicious}")
+                
+                if is_suspicious:
+                    print("⚠️ Stored chapters appear to be references, searching for actual TOC...")
+                    toc_info = self._search_for_table_of_contents(book_name)
+                    if toc_info:
+                        print(f"✅ Found {len(toc_info)} actual chapters via TOC search")
+                        book_chapters = toc_info
+                    else:
+                        print("❌ TOC search failed, using stored chapters")
+                else:
+                    print("✅ Chapters appear legitimate")
+            
+            # Format response for specific book
+            response_parts = [f"📚 **COMPREHENSIVE ANALYSIS: {book_name}**\n"]
+            response_parts.append(f"📊 **Book Statistics:**")
+            response_parts.append(f"• Content pieces: {chunk_count}")
+            response_parts.append(f"• Total words: {total_words:,}")
+            
+            math_percent = round((math_content / chunk_count) * 100, 1) if chunk_count > 0 else 0
+            response_parts.append(f"• Mathematical content: {math_percent}%\n")
+            
+            # Chapters - sorted by number
+            if book_chapters:
+                def extract_chapter_num(ch):
+                    match = re.match(r'(\d+)', ch)
+                    return int(match.group(1)) if match else 999
+                
+                sorted_chapters = sorted(list(book_chapters), key=extract_chapter_num)
+                response_parts.append(f"📑 **All Chapters ({len(sorted_chapters)}):**")
+                for chapter in sorted_chapters:
+                    response_parts.append(f"  • {chapter}")
+            else:
+                response_parts.append("📑 **Chapters:** No chapter structure detected")
+            
+            response_parts.append(f"\n💡 **You can now ask about:**")
+            response_parts.append(f"  • Any specific chapter or topic from {book_name}")
+            response_parts.append(f"  • Study plan for this book specifically")
+            response_parts.append(f"  • Where specific topics are covered in this book")
+            
+            return "\n".join(response_parts)
+            
+        except Exception as e:
+            return f"❌ Error in book-specific analysis: {e}"
+
+    def _chapters_look_suspicious(self, chapters: set) -> bool:
+        """Check if chapters look like references/citations rather than real chapters"""
+        import re
+        
+        suspicious_patterns = [
+            r'^\d{3,4}\.',      # Years like "2001.", "1176."  
+            r'[A-Z]\.,\s*[A-Z]',  # Author initials like "D., Hernandez, M.,"
+            r'pp\.\s*\d+',      # Page references  
+            r'et al\.',         # Citations
+            r'Vol\.\s*\d+',     # Volume references
+            r'\b(?:Burdick|Hernandez|Krishnamurthy|Ho|Koutrika)\b',  # Author surnames
+            r'calendar days.*messages',  # Text fragments
+            r'DW-statistic|autocorrela|re-assignments',  # Technical fragments
+            r'^\d+\.\s+[A-Z][^A-Z]*\b(?:D|M|H|G)\.,',  # Patterns like "1176. Burdick, D.,"
+            r'This results in \d+',  # "This results in 88 calendar days"
+            r'algorithm converges when no',  # Technical algorithm descriptions
+            r'profit maximizing.*bid',  # Business/economic fragments
+        ]
+        
+        suspicious_count = 0
+        print(f"🔍 DEBUG: Checking {len(chapters)} chapters for suspicious patterns...")
+        
+        for chapter in chapters:
+            is_chapter_suspicious = False
+            for pattern in suspicious_patterns:
+                if re.search(pattern, chapter):
+                    print(f"🔍 DEBUG: SUSPICIOUS: '{chapter[:50]}...' matches pattern '{pattern}'")
+                    suspicious_count += 1
+                    is_chapter_suspicious = True
+                    break
+            if not is_chapter_suspicious:
+                print(f"🔍 DEBUG: OK: '{chapter[:50]}...' looks legitimate")
+        
+        print(f"🔍 DEBUG: {suspicious_count}/{len(chapters)} chapters are suspicious")
+        threshold = 0.3  # Lowered from 0.6 to 0.3 for better detection
+        result = suspicious_count / len(chapters) > threshold
+        print(f"🔍 DEBUG: Threshold: {threshold}, Ratio: {suspicious_count/len(chapters):.2f}, Result: {result}")
+        
+        return result
+    
+     
+    def _analyze_from_memory_chunks(self) -> str:
+        """Analyze using full chunk data from memory (not truncated metadata)"""
+        try:
+            # Organize by books using FULL chunk content
+            books_analysis = {}
+            
+            for chunk_id, chunk in self.chunks_data.items():
+                book_name = chunk.metadata.get('book_name', 'Unknown Book')
+                text = chunk.content  # FULL CONTENT, not truncated!
+                
+                if book_name not in books_analysis:
+                    books_analysis[book_name] = {
+                        'chapters': set(),
+                        'sections': set(),
+                        'topics': set(),
+                        'algorithms': set(),
+                        'techniques': set(),
+                        'concepts': set(),
+                        'chunk_count': 0,
+                        'mathematical_content': 0,
+                        'total_words': 0
+                    }
+                
+                book_data = books_analysis[book_name]
+                book_data['chunk_count'] += 1
+                book_data['total_words'] += chunk.metadata.get('word_count', 0)
+                
+                if chunk.metadata.get('has_formulas', False):
+                    book_data['mathematical_content'] += 1
+                
+                # Extract comprehensive content analysis using FULL TEXT
+                content_lower = text.lower()
+                
+                # Extract chapter titles and sections from FULL CONTENT
+                self._extract_structure_elements(text, book_data)
+                
+                # Extract topics, algorithms, and concepts from FULL CONTENT
+                self._extract_comprehensive_topics(content_lower, book_data)
+            
+            # Format the comprehensive response (same formatting as before)
+            response_parts = ["📚 **COMPREHENSIVE KNOWLEDGE BASE ANALYSIS** (Using Full Content)\n"]
+            response_parts.append(f"🔢 **Total Books:** {len(books_analysis)}")
+            response_parts.append(f"📊 **Total Content Pieces:** {sum(book['chunk_count'] for book in books_analysis.values())}")
+            response_parts.append(f"📝 **Total Words:** {sum(book['total_words'] for book in books_analysis.values()):,}\n")
+            
+            # Detailed analysis for each book
+            for book_name, analysis in books_analysis.items():
+                response_parts.append(f"## 📖 **{book_name}**")
+                response_parts.append(f"📊 **Stats:** {analysis['chunk_count']} sections, {analysis['total_words']:,} words")
+                
+                math_percent = round((analysis['mathematical_content'] / analysis['chunk_count']) * 100, 1) if analysis['chunk_count'] > 0 else 0
+                response_parts.append(f"🔢 **Mathematical Content:** {math_percent}%")
+                
+                # Chapters and Sections - should now be complete!
+                if analysis['chapters']:
+                    sorted_chapters = sorted(list(analysis['chapters']), key=lambda x: self._extract_chapter_number(x))
+                    response_parts.append(f"\n📑 **Chapters/Main Sections ({len(sorted_chapters)}):**")
+                    for chapter in sorted_chapters:
+                        response_parts.append(f"  • {chapter}")
+                
+                # Topics and Concepts
+                if analysis['topics']:
+                    sorted_topics = sorted(list(analysis['topics']))
+                    response_parts.append(f"\n🎯 **Topics Covered ({len(sorted_topics)}):**")
+                    for topic in sorted_topics:
+                        response_parts.append(f"  • {topic}")
+                
+                # Algorithms
+                if analysis['algorithms']:
+                    sorted_algorithms = sorted(list(analysis['algorithms']))
+                    response_parts.append(f"\n⚙️ **Algorithms ({len(sorted_algorithms)}):**")
+                    for algorithm in sorted_algorithms:
+                        response_parts.append(f"  • {algorithm}")
+                
+                # Techniques
+                if analysis['techniques']:
+                    sorted_techniques = sorted(list(analysis['techniques']))
+                    response_parts.append(f"\n🛠️ **Techniques ({len(sorted_techniques)}):**")
+                    for technique in sorted_techniques:
+                        response_parts.append(f"  • {technique}")
+                
+                # Concepts
+                if analysis['concepts']:
+                    sorted_concepts = sorted(list(analysis['concepts']))
+                    response_parts.append(f"\n💡 **Key Concepts ({len(sorted_concepts)}):**")
+                    for concept in sorted_concepts:
+                        response_parts.append(f"  • {concept}")
+                
+                response_parts.append("")  # Add space between books
+            
+            # Summary
+            all_topics = set()
+            all_algorithms = set()
+            for book_data in books_analysis.values():
+                all_topics.update(book_data['topics'])
+                all_algorithms.update(book_data['algorithms'])
+            
+            response_parts.append(f"## 🌟 **OVERALL SUMMARY**")
+            response_parts.append(f"📚 **Total Unique Topics:** {len(all_topics)}")
+            response_parts.append(f"⚙️ **Total Unique Algorithms:** {len(all_algorithms)}")
+            response_parts.append(f"📖 **Books Available:** {len(books_analysis)}")
+            
+            response_parts.append(f"\n💡 **You can now ask about:**")
+            response_parts.append("  • Any specific topic from the lists above")
+            response_parts.append("  • Detailed explanations of algorithms")
+            response_parts.append("  • Comparisons between different techniques")
+            response_parts.append("  • Study plans for specific books")
+            response_parts.append("  • Where specific topics are covered")
+            
+            return "\n".join(response_parts)
+            
+        except Exception as e:
+            return f"❌ Error in memory-based analysis: {e}"
+    
+    def _extract_chapter_number(self, chapter_str: str) -> int:
+        """Extract chapter number for sorting"""
+        import re
+        match = re.match(r'(\d+)', chapter_str)
+        return int(match.group(1)) if match else 999
+
+    def _extract_structure_elements(self, text: str, book_data: Dict):
+        """Extract chapters, sections, and structural elements"""
+        import re
+        
+        # Look through ALL text, not just first 10 lines
+        # Split into sentences and lines for comprehensive search
+        lines = text.split('\n')
+        sentences = text.split('.')
+        
+        # STRICT chapter patterns for memory analysis
+        chapter_patterns = [
+            # Must contain "Chapter" keyword + substantial title
+            r'Chapter\s+(\d+)[:\.]?\s*([A-Z][A-Za-z\s\-\(\)]{10,80})',
+            
+            # Must contain "Part" keyword + substantial title  
+            r'Part\s+([IVX]+)[:\.]?\s*([A-Z][A-Za-z\s\-\(\)]{10,80})',
+            
+            # Standalone numbered sections - must be substantial, proper capitalization
+            r'^(\d{1,2})\.\s+([A-Z][A-Za-z\s\-\(\):]{15,100})(?:\s*\n|\.|\s*$)',
+            r'Section\s+(\d+\.\d*)[:\.]?\s*([^.\n]+)',
+            r'(\d+)\.\s+([A-Z][A-Za-z\s]{10,80}?)(?:\s*[-–—]\s*|\.|\n|$)',
+            r'Chapter\s*(\d+)\s*:\s*([^.\n]+)',
+        ]
+        
+        # Search in lines first
+        for line in lines:
+            line_clean = line.strip()
+            if not line_clean or len(line_clean) < 5:
+                continue
+            
+            for pattern in chapter_patterns:
+                match = re.search(pattern, line_clean, re.IGNORECASE)
+                if match:
+                    if len(match.groups()) >= 2:
+                        chapter_num = match.group(1).strip()
+                        chapter_title = match.group(2).strip()
+                        # Clean up the title
+                        chapter_title = re.sub(r'\s+', ' ', chapter_title)
+                        chapter_title = chapter_title.rstrip('.-–—')
+                        
+                        if len(chapter_title) > 5:  # Only keep meaningful titles
+                            full_title = f"{chapter_num}. {chapter_title}"
+                            book_data['chapters'].add(full_title)
+                    break
+        
+        # Also search in the full text for chapter mentions
+        full_text_patterns = [
+            r'Chapter\s+(\d+)[:\.]?\s*([A-Z][^.\n]{10,100})',
+            r'(\d+)\.\s+([A-Z][A-Za-z\s]{15,80}?)(?:\s*(?:This chapter|In this chapter|Chapter))',
+        ]
+        
+        for pattern in full_text_patterns:
+            matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE)
+            for match in matches:
+                chapter_num = match.group(1).strip()
+                chapter_title = match.group(2).strip()
+                chapter_title = re.sub(r'\s+', ' ', chapter_title)
+                chapter_title = chapter_title.rstrip('.-–—')
+                
+                if len(chapter_title) > 10:  # Only keep substantial titles
+                    full_title = f"{chapter_num}. {chapter_title}"
+                    book_data['chapters'].add(full_title)
+    
+    def _extract_comprehensive_topics(self, content_lower: str, book_data: Dict):
+        """Extract comprehensive topics, algorithms, techniques, and concepts"""
+        
+        # Expanded algorithm keywords
+        algorithms = [
+            'linear regression', 'logistic regression', 'decision tree', 'random forest',
+            'support vector machine', 'svm', 'naive bayes', 'k-means', 'clustering',
+            'neural network', 'deep learning', 'cnn', 'rnn', 'lstm', 'transformer',
+            'gradient descent', 'backpropagation', 'reinforcement learning',
+            'q-learning', 'genetic algorithm', 'principal component analysis', 'pca',
+            'singular value decomposition', 'svd', 'k-nearest neighbors', 'knn',
+            'ensemble methods', 'boosting', 'adaboost', 'xgboost', 'lightgbm',
+            'apriori algorithm', 'fp-growth', 'dbscan', 'hierarchical clustering',
+            'gaussian mixture model', 'hidden markov model', 'markov chain'
+        ]
+        
+        # Expanded technique keywords
+        techniques = [
+            'cross validation', 'feature selection', 'feature engineering',
+            'dimensionality reduction', 'regularization', 'normalization',
+            'standardization', 'data preprocessing', 'data cleaning',
+            'hyperparameter tuning', 'grid search', 'random search',
+            'early stopping', 'dropout', 'batch normalization',
+            'data augmentation', 'transfer learning', 'fine tuning',
+            'ensemble learning', 'bagging', 'stacking', 'voting',
+            'time series analysis', 'forecasting', 'anomaly detection'
+        ]
+        
+        # Expanded concept keywords
+        concepts = [
+            'supervised learning', 'unsupervised learning', 'semi-supervised learning',
+            'classification', 'regression', 'clustering', 'association rules',
+            'bias-variance tradeoff', 'overfitting', 'underfitting',
+            'confusion matrix', 'precision', 'recall', 'f1-score', 'accuracy',
+            'roc curve', 'auc', 'statistical significance', 'p-value',
+            'hypothesis testing', 'correlation', 'causation', 'feature importance',
+            'model interpretability', 'explainable ai', 'fairness', 'ethics',
+            'probability distribution', 'bayes theorem', 'maximum likelihood',
+            'information theory', 'entropy', 'mutual information'
+        ]
+        
+        # General topic keywords
+        topics = [
+            'machine learning', 'artificial intelligence', 'data science',
+            'deep learning', 'neural networks', 'computer vision',
+            'natural language processing', 'nlp', 'reinforcement learning',
+            'statistics', 'probability', 'linear algebra', 'calculus',
+            'optimization', 'mathematics', 'python', 'r programming',
+            'data visualization', 'big data', 'distributed computing',
+            'cloud computing', 'model deployment', 'mlops', 'data engineering'
+        ]
+        
+        # Search for algorithms
+        for algorithm in algorithms:
+            if algorithm in content_lower:
+                book_data['algorithms'].add(algorithm.title())
+        
+        # Search for techniques
+        for technique in techniques:
+            if technique in content_lower:
+                book_data['techniques'].add(technique.title())
+        
+        # Search for concepts
+        for concept in concepts:
+            if concept in content_lower:
+                book_data['concepts'].add(concept.title())
+        
+        # Search for general topics
+        for topic in topics:
+            if topic in content_lower:
+                book_data['topics'].add(topic.title())
+
+    
 
     async def run(self):
         """Run the perfect MCP server with enhanced capabilities"""
@@ -2692,5 +3382,52 @@ async def main():
         logger.error(f"Server error: {e}")
         raise
 
+async def test_hybrid_retriever_integration():
+    """Test function to verify HybridRetriever integration"""
+    print("🧪 Testing HybridRetriever Integration...")
+    
+    try:
+        # Create server instance
+        server = PerfectMCPServer()
+        
+        # Test basic initialization
+        if server.hybrid_retriever is not None:
+            print("✅ HybridRetriever initialized successfully")
+        else:
+            print("⚠️ HybridRetriever not available")
+            return
+            
+        # Test search functionality
+        test_queries = [
+            "What books do you have?",  # Should trigger special content search
+            "Explain machine learning",  # Should trigger regular RAG
+            "Give me a study plan for 30 days",  # Should trigger study plan generation
+            "Where is linear regression covered?"  # Should trigger topic location
+        ]
+        
+        for query in test_queries:
+            print(f"\n🔍 Testing query: '{query}'")
+            try:
+                result = await server._handle_search_knowledge_base(query=query)
+                if result and len(result) > 0:
+                    response_data = json.loads(result[0].text)
+                    print(f"✅ Query type: {response_data.get('query_type', 'unknown')}")
+                    print(f"✅ Search type: {response_data.get('search_type', 'unknown')}")
+                    print(f"✅ Success: {response_data.get('success', False)}")
+                else:
+                    print("❌ Empty result")
+            except Exception as e:
+                print(f"❌ Error: {e}")
+        
+        print("\n🎉 HybridRetriever integration test completed!")
+        
+    except Exception as e:
+        print(f"❌ Test failed: {e}")
+
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        asyncio.run(test_hybrid_retriever_integration())
+    else:
+        asyncio.run(main()) 

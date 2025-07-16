@@ -103,6 +103,19 @@ class AdvancedConfig:
         
         # Create necessary directories
         self._create_directories()
+        
+        # Add compatibility attributes for HybridRetriever
+        self.openai_api_key = self.OPENAI_API_KEY
+        self.pinecone_api_key = self.PINECONE_API_KEY
+        self.index_name = self.PINECONE_KB_INDEX_NAME
+        self.embedding_model = self.EMBEDDING_MODEL
+        self.embedding_dimension = self.EMBEDDING_DIMENSIONS
+        self.namespace = "knowledge-base"  # Default namespace for knowledge base
+        self.cross_encoder_reranking = True  # Enable cross-encoder reranking
+        self.hybrid_search = True  # Enable hybrid search
+        self.response_model = self.LLM_MODEL
+        self.max_response_tokens = 1500  # Maximum tokens for response generation
+        self.temperature = self.LLM_TEMPERATURE  # Temperature for response generation
 
     def _get_env_var(self, var_name: str) -> str:
         """Get required environment variable"""
@@ -221,3 +234,6 @@ class AdvancedConfig:
 
 # Backward compatibility
 Config = AdvancedConfig 
+
+# Create a global config instance
+config = AdvancedConfig() 

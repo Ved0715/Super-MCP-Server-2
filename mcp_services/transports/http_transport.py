@@ -339,7 +339,7 @@ class MCPHTTPTransport:
             elif tool_name == "create_presentation_from_namespace":
                 result = await self.mcp_server._handle_create_presentation_from_namespace(**arguments)
             elif tool_name == "semantic_paper_search":
-                result = await self.mcp_server._handle_semantic_search(**arguments)
+                result = await self.mcp_server._handle_semantic_paper_search(**arguments)
             elif tool_name == "research_intelligence_analysis":
                 result = await self.mcp_server._handle_research_analysis(**arguments)
             elif tool_name == "generate_research_insights":

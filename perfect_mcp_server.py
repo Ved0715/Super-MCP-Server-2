@@ -29,7 +29,7 @@ from research_intelligence import ResearchPaperAnalyzer
 from perfect_ppt_generator import PerfectPPTGenerator
 from search_client import SerpAPIClient
 from processors.universal_document_processor import UniversalDocumentProcessor
-
+from retrieval.paper_retriver import PaperRetriever, ResearchQuery
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -96,7 +96,17 @@ class PerfectMCPServer:
                 self.cot_retriever = None
         else:
             self.cot_retriever = None
-        
+
+
+         # Initialize Research Paper Retriever
+        try:
+            self.paper_retriever = PaperRetriever()
+            logger.info("✅ Research Paper Retriever initialized successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Research Paper Retriever: {e}")
+            self.paper_retriever = None
+
+
         # Initialize HybridRetriever for enhanced knowledge base search
         if HYBRID_RETRIEVER_AVAILABLE:
             try:
@@ -236,17 +246,19 @@ class PerfectMCPServer:
                 
                 Tool(
                     name="semantic_paper_search",
-                    description="Perform semantic search within processed papers using vector embeddings",
+                    description="Perform semantic search within research papers using advanced academic analysis",
                     inputSchema={
                         "type": "object",
                         "properties": {
-                            "query": {"type": "string", "description": "Search query"},
-                            "paper_id": {"type": "string", "description": "Specific paper to search (optional)"},
-                            "search_type": {"type": "string", "enum": ["general", "methodology", "results", "discussion", "conclusion"], "default": "general"},
+                            "query": {"type": "string", "description": "Research query"},
+                            "user_id": {"type": "string", "description": "User identifier for document access"},
+                            "document_uuid": {"type": "string", "description": "Document UUID for specific paper"},
+                            "search_type": {"type": "string", "enum": ["general", "methodology", "results", "discussion", "conclusion", "statistical", "citations"], "default": "general"},
                             "max_results": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
-                            "similarity_threshold": {"type": "number", "default": 0.7, "minimum": 0.0, "maximum": 1.0}
+                            "similarity_threshold": {"type": "number", "default": 0.7, "minimum": 0.0, "maximum": 1.0},
+                            "focus_sections": {"type": "array", "items": {"type": "string"}, "description": "Specific paper sections to focus on (optional)"}
                         },
-                        "required": ["query"]
+                        "required": ["query", "user_id", "document_uuid"]
                     }
                 ),
                 
@@ -483,7 +495,7 @@ class PerfectMCPServer:
                     return await self._handle_research_analysis(**arguments)
                 
                 elif name == "semantic_paper_search":
-                    return await self._handle_semantic_search(**arguments)
+                    return await self._handle_semantic_paper_search(**arguments)
                 
                 elif name == "compare_research_papers":
                     return await self._handle_compare_papers(**arguments)
@@ -2004,6 +2016,77 @@ class PerfectMCPServer:
             logger.error(f"Error in semantic search: {e}")
             return [TextContent(type="text", text=f"Semantic search error: {str(e)}")]
 
+    async def _handle_semantic_paper_search(self, query: str, user_id: str, document_uuid: str,
+                                          search_type: str = "general", max_results: int = 10,
+                                          similarity_threshold: float = 0.4,
+                                          focus_sections: Optional[List[str]] = None, **kwargs) -> List[TextContent]:
+        """
+        Handle research paper search using advanced academic analysis
+        """
+        try:
+            if self.paper_retriever is None:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": "Research Paper Retriever not available",
+                        "query": query
+                    }, indent=2)
+                )]
+            
+            logger.info(f"📚 Research paper search: '{query[:100]}...'")
+            logger.info(f"👤 User: {user_id}, Document: {document_uuid}")
+            logger.info(f"🎯 Search Type: {search_type}, Max Results: {max_results}")
+            
+            # Create research query
+            research_query = ResearchQuery(
+                query=query,
+                query_type=search_type,
+                user_id=user_id,
+                document_uuid=document_uuid,
+                max_results=max_results,
+                similarity_threshold=similarity_threshold,
+                focus_sections=focus_sections
+            )
+            
+            # Perform comprehensive research analysis
+            result = await self.paper_retriever.analyze_research_paper(research_query)
+            
+            # Format response
+            response_data = {
+                "success": result["success"],
+                "query": query,
+                "search_type": "research_paper_analysis",
+                "user_id": user_id,
+                "document_uuid": document_uuid,
+                "response": result.get("response", ""),
+                "metadata": result.get("metadata", {}),
+                "search_results": result.get("search_results", []),
+                "namespace": f"user_{user_id}_doc_{document_uuid}",
+                "index_name": "all-pdfs-index"
+            }
+            
+            if not result["success"]:
+                response_data["error"] = result.get("error", "Unknown error")
+            
+            return [TextContent(
+                type="text",
+                text=json.dumps(response_data, indent=2)
+            )]
+            
+        except Exception as e:
+            logger.error(f"❌ Research paper search failed: {e}")
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "success": False,
+                    "error": str(e),
+                    "query": query,
+                    "user_id": user_id,
+                    "document_uuid": document_uuid
+                }, indent=2)
+            )]
+
     async def _handle_system_status(self, include_config: bool = False, 
                                   run_health_check: bool = True) -> List[TextContent]:
         """Handle system status check"""
@@ -3285,6 +3368,12 @@ The operation has been successfully cancelled and will stop as soon as possible.
                     full_title = f"{chapter_num}. {chapter_title}"
                     book_data['chapters'].add(full_title)
     
+    
+
+
+
+
+
     def _extract_comprehensive_topics(self, content_lower: str, book_data: Dict):
         """Extract comprehensive topics, algorithms, techniques, and concepts"""
         

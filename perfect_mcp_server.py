@@ -34,6 +34,17 @@ from processors.universal_document_processor import UniversalDocumentProcessor
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+# Add this import at the top with other imports
+try:
+    from retrieval.kb_cot_retrival import ChainOfThoughtKBRetriever
+    COT_RETRIEVER_AVAILABLE = True
+    logger.info("✅ Chain of Thought KB Retriever imported successfully")
+except ImportError as e:
+    COT_RETRIEVER_AVAILABLE = False
+    logger.warning(f"⚠️ Chain of Thought KB Retriever not available: {e}")
+
+
 # Add HybridRetriever imports
 try:
     from retrieval.kb_retrieval import HybridRetriever
@@ -73,6 +84,18 @@ class PerfectMCPServer:
         
         # Initialize universal document processor
         self.universal_processor = UniversalDocumentProcessor()
+
+        # Add this in the __init__ method after existing HybridRetriever initialization
+# Initialize Chain of Thought retriever
+        if COT_RETRIEVER_AVAILABLE:
+            try:
+                self.cot_retriever = ChainOfThoughtKBRetriever()
+                logger.info("✅ Chain of Thought KB Retriever initialized successfully")
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize Chain of Thought KB Retriever: {e}")
+                self.cot_retriever = None
+        else:
+            self.cot_retriever = None
         
         # Initialize HybridRetriever for enhanced knowledge base search
         if HYBRID_RETRIEVER_AVAILABLE:
@@ -402,7 +425,8 @@ class PerfectMCPServer:
                             "search_type": {"type": "string", "enum": ["enhanced", "basic"], "default": "enhanced"},
                             "max_results": {"type": "integer", "default": 5, "minimum": 1, "maximum": 20},
                             "namespace": {"type": "string", "default": "knowledge-base"},
-                            "index_name": {"type": "string", "default": "optimized-kb-index"}
+                            "index_name": {"type": "string", "default": "optimized-kb-index"},
+                            "use_chain_of_thought": {"type": "boolean", "description": "Enable Chain of Thought reasoning", "default": False}
                         },
                         "required": ["query"]
                     }
@@ -2409,7 +2433,8 @@ The operation has been successfully cancelled and will stop as soon as possible.
 
     async def _handle_search_knowledge_base(self, query: str, search_type: str = "enhanced",
                                           max_results: int = 5, namespace: str = "knowledge-base",
-                                          index_name: str = "optimized-kb-index", **kwargs) -> List[TextContent]:
+                                          index_name: str = "optimized-kb-index",
+                                          use_chain_of_thought: bool = False, **kwargs) -> List[TextContent]:
         """
         Handle knowledge base search using HybridRetriever with intelligent query routing
         
@@ -2418,7 +2443,43 @@ The operation has been successfully cancelled and will stop as soon as possible.
         - Route queries intelligently to specialized handlers
         - Generate contextual responses using specialized prompt templates
         - Provide comprehensive book analysis and chapter information
+        - Handle knowledge base search with optional Chain of Thought reasoning
         """
+
+
+        if use_chain_of_thought and self.cot_retriever is not None:
+            logger.info(f"🧠 Using Chain of Thought retrieval for: '{query[:100]}...'")
+        
+            try:
+                cot_result = await self.cot_retriever.answer_question_with_cot(query, max_results)
+                
+                # Format the CoT response
+                response_data = {
+                    "success": cot_result["success"],
+                    "query": query,
+                    "search_type": "chain_of_thought",
+                    "response": cot_result.get("response", ""),
+                    "chain_of_thought": cot_result.get("chain_of_thought", {}),
+                    "metadata": cot_result.get("metadata", {}),
+                    "namespace": namespace,
+                    "index_name": index_name
+                }
+                
+                return [TextContent(
+                    type="text",
+                    text=json.dumps(response_data, indent=2)
+                )]
+                
+            except Exception as e:
+                logger.error(f"❌ Chain of Thought retrieval failed: {e}")
+                # Fallback to regular retrieval
+                logger.info("🔄 Falling back to regular retrieval")
+        
+        elif use_chain_of_thought and self.cot_retriever is None:
+            logger.warning("⚠️ Chain of Thought requested but not available, using regular retrieval")
+    
+    # Regular retrieval (existing code)
+    # ... rest of your existing method
         # Parameter validation and filtering
         if kwargs:
             unexpected_params = list(kwargs.keys())

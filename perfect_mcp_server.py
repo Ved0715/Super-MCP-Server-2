@@ -589,158 +589,98 @@ class PerfectMCPServer:
         @self.server.get_prompt()
         async def handle_get_prompt(name: str, arguments: dict) -> GetPromptResult:
             """Get a specific research workflow prompt"""
-            if name == "research_analysis_workflow":
-                paper_id = arguments.get("paper_id", "")
-                analysis_focus = arguments.get("analysis_focus", "comprehensive")
+            try:
+                # Import prompt system
+                from prompts import get_workflow_prompt
                 
-                messages = [
-                    PromptMessage(
-                        role="user",
-                        content=TextContent(
-                            type="text",
-                            text=f"""# Research Paper Analysis Workflow
-
-Please analyze the research paper with ID: {paper_id}
-
-## Analysis Steps:
-1. **Process the paper** using `process_research_paper` tool
-2. **Perform intelligence analysis** using `research_intelligence_analysis` tool  
-3. **Generate insights** using `generate_research_insights` tool
-4. **Create presentation** using `create_perfect_presentation` tool
-
-## Focus Area: {analysis_focus}
-
-## Expected Outputs:
-- Comprehensive research analysis
-- Quality assessment scores
-- Methodology evaluation
-- Key findings summary
-- Research insights and recommendations
-- Professional presentation slides
-
-Please execute these steps systematically to provide a complete research analysis."""
-                        )
+                # Get prompt text using the external prompt system
+                if name == "research_analysis_workflow":
+                    paper_id = arguments.get("paper_id", "")
+                    analysis_focus = arguments.get("analysis_focus", "comprehensive")
+                    
+                    prompt_text = get_workflow_prompt(
+                        'research_analysis_workflow',
+                        paper_id=paper_id,
+                        analysis_focus=analysis_focus
                     )
-                ]
-                
-            elif name == "presentation_creation_workflow":
-                paper_id = arguments.get("paper_id", "")
-                audience_type = arguments.get("audience_type", "academic")
-                presentation_style = arguments.get("presentation_style", "professional")
-                
-                messages = [
-                    PromptMessage(
-                        role="user", 
-                        content=TextContent(
-                            type="text",
-                            text=f"""# Research Presentation Creation Workflow
-
-Create a professional presentation from paper: {paper_id}
-
-## Presentation Requirements:
-- **Audience**: {audience_type}
-- **Style**: {presentation_style}
-- **Duration**: 15-20 minutes (12-15 slides)
-
-## Creation Steps:
-1. **Retrieve paper data** using resources or semantic search
-2. **Analyze key findings** and methodology
-3. **Create presentation** using `create_perfect_presentation` tool
-4. **Enhance with search results** if needed
-
-## Content Structure:
-- Introduction & Background
-- Methodology Overview  
-- Key Results & Findings
-- Discussion & Implications
-- Conclusions & Future Work
-
-Please create a compelling presentation that effectively communicates the research."""
+                    
+                    messages = [
+                        PromptMessage(
+                            role="user",
+                            content=TextContent(type="text", text=prompt_text)
                         )
+                    ]
+                
+                elif name == "presentation_creation_workflow":
+                    paper_id = arguments.get("paper_id", "")
+                    audience_type = arguments.get("audience_type", "academic")
+                    presentation_style = arguments.get("presentation_style", "professional")
+                    
+                    prompt_text = get_workflow_prompt(
+                        'presentation_creation_workflow',
+                        paper_id=paper_id,
+                        audience_type=audience_type,
+                        presentation_style=presentation_style
                     )
-                ]
+                    
+                    messages = [
+                        PromptMessage(
+                            role="user", 
+                            content=TextContent(type="text", text=prompt_text)
+                        )
+                    ]
+                    
+                elif name == "literature_review_workflow":
+                    research_topic = arguments.get("research_topic", "")
+                    paper_count = arguments.get("paper_count", "5")
+                    
+                    prompt_text = get_workflow_prompt(
+                        'literature_review_workflow',
+                        research_topic=research_topic,
+                        paper_count=paper_count
+                    )
+                    
+                    messages = [
+                        PromptMessage(
+                            role="user",
+                            content=TextContent(type="text", text=prompt_text)
+                        )
+                    ]
+                    
+                elif name == "research_insights_workflow":
+                    paper_id = arguments.get("paper_id", "")
+                    insight_type = arguments.get("insight_type", "future_research")
+                    
+                    prompt_text = get_workflow_prompt(
+                        'research_insights_workflow',
+                        paper_id=paper_id,
+                        insight_type=insight_type
+                    )
+                    
+                    messages = [
+                        PromptMessage(
+                            role="user",
+                            content=TextContent(type="text", text=prompt_text)
+                        )
+                    ]
+                else:
+                    raise ValueError(f"Unknown prompt: {name}")
                 
-            elif name == "literature_review_workflow":
-                research_topic = arguments.get("research_topic", "")
-                paper_count = arguments.get("paper_count", "5")
+                return GetPromptResult(messages=messages)
                 
+            except Exception as e:
+                logger.error(f"Error getting prompt {name}: {e}")
+                # Fallback to error message
                 messages = [
                     PromptMessage(
                         role="user",
                         content=TextContent(
                             type="text", 
-                            text=f"""# Literature Review Workflow
-
-Conduct a systematic literature review on: {research_topic}
-
-## Review Parameters:
-- **Topic**: {research_topic}
-- **Target Papers**: {paper_count} papers
-- **Analysis Depth**: Comprehensive
-
-## Workflow Steps:
-1. **Search for papers** using `advanced_search_web` tool (scholar mode)
-2. **Process each paper** using `process_research_paper` tool
-3. **Compare papers** using `compare_research_papers` tool
-4. **Synthesize findings** across all papers
-5. **Generate review summary** with themes and gaps
-
-## Expected Deliverables:
-- Individual paper analyses
-- Comparative analysis matrix
-- Key themes identification
-- Research gaps analysis
-- Future research directions
-- Comprehensive literature review document
-
-Execute this workflow to produce a thorough literature review."""
+                            text=f"Error loading prompt '{name}': {str(e)}"
                         )
                     )
                 ]
-                
-            elif name == "research_insights_workflow":
-                paper_id = arguments.get("paper_id", "")
-                insight_type = arguments.get("insight_type", "future_research")
-                
-                messages = [
-                    PromptMessage(
-                        role="user",
-                        content=TextContent(
-                            type="text",
-                            text=f"""# Research Insights Generation Workflow
-
-Generate advanced insights from paper: {paper_id}
-
-## Insight Focus: {insight_type}
-
-## Analysis Steps:
-1. **Review paper analysis** using resources or semantic search
-2. **Generate insights** using `generate_research_insights` tool
-3. **Perform quality assessment** if not already done
-4. **Identify research gaps** and opportunities
-5. **Suggest methodological improvements**
-
-## Insight Categories:
-- Theoretical contributions
-- Methodological innovations  
-- Practical applications
-- Future research directions
-- Cross-disciplinary connections
-
-## Output Format:
-- Executive summary of insights
-- Detailed analysis by category
-- Actionable recommendations
-- Research roadmap suggestions
-
-Please provide comprehensive insights that advance understanding of this research area."""
-                        )
-                    )
-                ]
-            else:
-                raise ValueError(f"Unknown prompt: {name}")
-            
-            return GetPromptResult(messages=messages)
+                return GetPromptResult(messages=messages)
 
     # ============================================================================
     # SAMPLING SUPPORT FOR AI MODEL INTERACTIONS  
@@ -787,65 +727,29 @@ Please provide comprehensive insights that advance understanding of this researc
     async def enhance_analysis_with_ai(self, analysis_data: dict, enhancement_type: str = "insights") -> dict:
         """Use AI sampling to enhance research analysis"""
         try:
-            # Create prompt for AI enhancement
+            # Import external prompt system
+            from prompts import get_ai_enhancement_prompt
+            
+            # Create prompt for AI enhancement using external prompts
             if enhancement_type == "insights":
-                prompt_text = f"""
-# Research Analysis Enhancement
-
-Please analyze the following research paper data and provide advanced insights:
-
-## Paper Metadata
-- Title: {analysis_data.get('metadata', {}).get('title', 'Unknown')}
-- Authors: {analysis_data.get('metadata', {}).get('authors', [])}
-
-## Research Analysis Summary
-{json.dumps(analysis_data.get('research_analysis', {}), indent=2)}
-
-## Request
-Please provide:
-1. **Key Theoretical Contributions** - What new theories or concepts does this work introduce?
-2. **Methodological Innovations** - What novel approaches or techniques are used?
-3. **Practical Applications** - How can these findings be applied in real-world scenarios?
-4. **Future Research Directions** - What questions does this work raise for future investigation?
-5. **Cross-Disciplinary Connections** - How might this work connect to other fields?
-
-Provide detailed, academic-level insights that would be valuable for researchers in this field.
-"""
+                prompt_text = get_ai_enhancement_prompt(
+                    'research_insights_enhancement',
+                    title=analysis_data.get('metadata', {}).get('title', 'Unknown'),
+                    authors=str(analysis_data.get('metadata', {}).get('authors', [])),
+                    research_analysis=json.dumps(analysis_data.get('research_analysis', {}), indent=2)
+                )
             
             elif enhancement_type == "quality_assessment":
-                prompt_text = f"""
-# Research Quality Assessment
-
-Please provide a comprehensive quality assessment of this research paper:
-
-## Paper Data
-{json.dumps(analysis_data, indent=2)}
-
-## Assessment Request
-Please evaluate and score (1-10) the following aspects:
-1. **Methodological Rigor** - How sound are the research methods?
-2. **Novelty** - How original and innovative is this work?
-3. **Evidence Quality** - How strong is the supporting evidence?
-4. **Clarity** - How well is the work presented and explained?
-5. **Impact Potential** - How significant could the impact be?
-6. **Reproducibility** - How reproducible are the results?
-
-For each aspect, provide:
-- Score (1-10)
-- Justification
-- Specific recommendations for improvement
-
-Also provide an overall assessment summary.
-"""
+                prompt_text = get_ai_enhancement_prompt(
+                    'quality_assessment_enhancement',
+                    paper_data=json.dumps(analysis_data, indent=2)
+                )
 
             else:
-                prompt_text = f"""
-Please analyze this research paper data and provide expert insights:
-
-{json.dumps(analysis_data, indent=2)}
-
-Focus on providing actionable insights for researchers and practitioners.
-"""
+                prompt_text = get_ai_enhancement_prompt(
+                    'general_enhancement',
+                    analysis_data=json.dumps(analysis_data, indent=2)
+                )
 
             # Create message for sampling
             messages = [
@@ -1137,55 +1041,14 @@ Focus on providing actionable insights for researchers and practitioners.
             import openai
             client = openai.OpenAI(api_key=self.config.OPENAI_API_KEY)
             
-            # Chain-of-Thought prompt that encourages self-questioning
-            cot_prompt = f"""You are an expert presentation advisor. Use Chain-of-Thought reasoning by asking yourself questions and answering them step by step.
-
-USER QUERY: "{query}"
-USER REQUIREMENTS: "{user_prompt}"
-
-Please think through this systematically by asking yourself questions and providing answers:
-
-Q1: What is the main topic the user wants to present?
-A1: [Answer based on the query]
-
-Q2: What are the key subtopics I should cover for this topic?
-A2: [List the main subtopics]
-
-Q3: What specific aspects should I focus on based on the user's requirements?
-A3: [Analyze user_prompt for specific focus areas]
-
-Q4: What type of content would be most valuable for each subtopic?
-A4: [Determine content types: definitions, examples, processes, comparisons, etc.]
-
-Q5: How should I structure this information for maximum presentation impact?
-A5: [Logical flow and organization]
-
-Q6: What are the most important search terms to find relevant knowledge base content?
-A6: [List specific search terms]
-
-Q7: What kind of examples or evidence would strengthen each point?
-A7: [Types of supporting evidence needed]
-
-Q8: What are potential questions the audience might have?
-A8: [Anticipate audience questions]
-
-Q9: How can I ensure comprehensive coverage of the topic?
-A9: [Strategy for thorough coverage]
-
-Q10: What would be the most logical slide structure?
-A10: [Proposed slide organization]
-
-Based on this analysis, provide your final recommendation in JSON format:
-{{
-    "main_topic": "...",
-    "key_subtopics": ["...", "..."],
-    "focus_areas": ["...", "..."],
-    "search_terms": ["...", "..."],
-    "content_strategy": "...",
-    "slide_structure": ["...", "..."],
-    "audience_considerations": "...",
-    "evidence_needs": ["...", "..."]
-}}"""
+            # Get Chain-of-Thought prompt from external system
+            from prompts import get_presentation_prompt
+            
+            cot_prompt = get_presentation_prompt(
+                'chain_of_thought_presentation_analysis',
+                query=query,
+                user_prompt=user_prompt
+            )
             
             # Get CoT analysis
             response = client.chat.completions.create(

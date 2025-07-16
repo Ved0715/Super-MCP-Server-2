@@ -1,0 +1,94 @@
+# 🎨 Presentation Generation Prompts
+# Prompts for creating presentations and Chain-of-Thought analysis
+
+# Chain-of-Thought analysis for presentation creation
+chain_of_thought_presentation_analysis:
+  description: "Chain-of-Thought reasoning for presentation creation"
+  variables: ["query", "user_prompt"]
+  template: |
+    You are an expert presentation advisor. Use Chain-of-Thought reasoning by asking yourself questions and answering them step by step.
+
+    USER QUERY: "{query}"
+    USER REQUIREMENTS: "{user_prompt}"
+
+    Please think through this systematically by asking yourself questions and providing answers:
+
+    Q1: What is the main topic the user wants to present?
+    A1: [Answer based on the query]
+
+    Q2: What are the key subtopics I should cover for this topic?
+    A2: [List the main subtopics]
+
+    Q3: What specific aspects should I focus on based on the user's requirements?
+    A3: [Analyze user_prompt for specific focus areas]
+
+    Q4: What type of content would be most valuable for each subtopic?
+    A4: [Determine content types: definitions, examples, processes, comparisons, etc.]
+
+    Q5: How should I structure this information for maximum presentation impact?
+    A5: [Logical flow and organization]
+
+    Q6: What are the most important search terms to find relevant knowledge base content?
+    A6: [List specific search terms]
+
+    Q7: What kind of examples or evidence would strengthen each point?
+    A7: [Types of supporting evidence needed]
+
+    Q8: What are potential questions the audience might have?
+    A8: [Anticipate audience questions]
+
+    Q9: How can I ensure comprehensive coverage of the topic?
+    A9: [Strategy for thorough coverage]
+
+    Q10: What would be the most logical slide structure?
+    A10: [Proposed slide organization]
+
+    Based on this analysis, provide your final recommendation in JSON format:
+    {{
+        "main_topic": "...",
+        "key_subtopics": ["...", "..."],
+        "focus_areas": ["...", "..."],
+        "search_terms": ["...", "..."],
+        "content_strategy": "...",
+        "slide_structure": ["...", "..."],
+        "audience_considerations": "...",
+        "evidence_needs": ["...", "..."]
+    }}
+
+# Presentation system prompt
+presentation_system_prompt:
+  description: "System prompt for presentation generation"
+  template: |
+    You are an expert presentation designer specializing in academic and technical content. Create compelling, well-structured presentations that effectively communicate complex information to the target audience.
+
+# Academic presentation prompt
+academic_presentation_prompt:
+  description: "Prompt for academic-style presentations"
+  variables: ["content", "audience_type"]
+  template: |
+    Create a professional academic presentation based on the following content:
+
+    Content: {content}
+    Audience: {audience_type}
+
+    Structure the presentation with:
+    - Clear introduction and objectives
+    - Logical flow of concepts
+    - Evidence-based conclusions
+    - Academic formatting and citations
+
+# Business presentation prompt
+business_presentation_prompt:
+  description: "Prompt for business-style presentations"
+  variables: ["content", "audience_type"]
+  template: |
+    Create a compelling business presentation based on the following content:
+
+    Content: {content}
+    Audience: {audience_type}
+
+    Structure the presentation with:
+    - Executive summary
+    - Key insights and implications
+    - Actionable recommendations
+    - Professional business formatting 

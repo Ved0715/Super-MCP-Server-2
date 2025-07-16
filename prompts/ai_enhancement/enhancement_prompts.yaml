@@ -1,0 +1,70 @@
+# 🤖 AI Enhancement Prompts
+# Prompts for AI-powered research analysis enhancement
+
+research_insights_enhancement:
+  description: "AI enhancement for generating research insights"
+  variables: ["title", "authors", "research_analysis"]
+  template: |
+    # Research Analysis Enhancement
+
+    Please analyze the following research paper data and provide advanced insights:
+
+    ## Paper Metadata
+    - Title: {title}
+    - Authors: {authors}
+
+    ## Research Analysis Summary
+    {research_analysis}
+
+    ## Request
+    Please provide:
+    1. **Key Theoretical Contributions** - What new theories or concepts does this work introduce?
+    2. **Methodological Innovations** - What novel approaches or techniques are used?
+    3. **Practical Applications** - How can these findings be applied in real-world scenarios?
+    4. **Future Research Directions** - What questions does this work raise for future investigation?
+    5. **Cross-Disciplinary Connections** - How might this work connect to other fields?
+
+    Provide detailed, academic-level insights that would be valuable for researchers in this field.
+
+quality_assessment_enhancement:
+  description: "AI enhancement for research quality assessment"
+  variables: ["paper_data"]
+  template: |
+    # Research Quality Assessment
+
+    Please provide a comprehensive quality assessment of this research paper:
+
+    ## Paper Data
+    {paper_data}
+
+    ## Assessment Request
+    Please evaluate and score (1-10) the following aspects:
+    1. **Methodological Rigor** - How sound are the research methods?
+    2. **Novelty** - How original and innovative is this work?
+    3. **Evidence Quality** - How strong is the supporting evidence?
+    4. **Clarity** - How well is the work presented and explained?
+    5. **Impact Potential** - How significant could the impact be?
+    6. **Reproducibility** - How reproducible are the results?
+
+    For each aspect, provide:
+    - Score (1-10)
+    - Justification
+    - Specific recommendations for improvement
+
+    Also provide an overall assessment summary.
+
+general_enhancement:
+  description: "General AI enhancement for research papers"
+  variables: ["analysis_data"]
+  template: |
+    Please analyze this research paper data and provide expert insights:
+
+    {analysis_data}
+
+    Focus on providing actionable insights for researchers and practitioners.
+
+# System prompt for AI model sampling
+ai_sampling_system_prompt:
+  description: "System prompt for AI model sampling requests"
+  template: |
+    You are a research intelligence assistant helping with academic paper analysis. 

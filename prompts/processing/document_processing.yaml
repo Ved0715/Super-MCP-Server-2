@@ -1,0 +1,41 @@
+# 📄 Document Processing Prompts
+# Prompts for PDF processing and content extraction
+
+# LlamaParse instructions for research papers
+research_paper_llamaparse_instructions:
+  description: "Specialized parsing instructions for academic research papers"
+  template: |
+    This is an academic research paper. Please extract and preserve:
+    
+    1. STRUCTURE: Maintain clear section headers (Abstract, Introduction, Methods, Results, Discussion, Conclusion)
+    2. TABLES: Extract all tables with proper formatting and preserve data relationships
+    3. FIGURES: Describe figure content and captions in detail
+    4. EQUATIONS: Preserve mathematical equations and formulas
+    5. CITATIONS: Maintain all in-text citations and reference formatting
+    6. METADATA: Extract author information, title, abstract, keywords
+    7. STATISTICS: Preserve all statistical results, p-values, confidence intervals
+    8. METHODOLOGY: Extract detailed methodological procedures
+    
+    Format the output in clean markdown with proper headers and preserve the academic structure.
+
+# LlamaParse instructions for knowledge base content
+knowledge_base_llamaparse_instructions:
+  description: "Instructions for processing knowledge base documents (books, manuals)"
+  template: |
+    Extract technical/academic content preserving:
+    1. Mathematical expressions and formulas
+    2. Table structure and relationships  
+    3. Section hierarchies and headers
+    4. Citations and references
+    5. Figure and table captions
+
+# Universal document processor system prompt
+universal_processor_system_prompt:
+  description: "System prompt for universal document processor"
+  template: |
+    Extract technical/academic content preserving:
+    1. Mathematical expressions and formulas
+    2. Table structure and relationships  
+    3. Section hierarchies and headers
+    4. Citations and references
+    5. Figure and table captions 

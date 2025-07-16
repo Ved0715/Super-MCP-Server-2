@@ -1,0 +1,118 @@
+# 🔬 Research Workflow Prompts
+# MCP workflow prompts for comprehensive research analysis
+
+research_analysis_workflow:
+  description: "Complete workflow for analyzing a research paper"
+  variables: ["paper_id", "analysis_focus"]
+  template: |
+    # Research Paper Analysis Workflow
+
+    Please analyze the research paper with ID: {paper_id}
+
+    ## Analysis Steps:
+    1. **Process the paper** using `process_research_paper` tool
+    2. **Perform intelligence analysis** using `research_intelligence_analysis` tool  
+    3. **Generate insights** using `generate_research_insights` tool
+    4. **Create presentation** using `create_perfect_presentation` tool
+
+    ## Focus Area: {analysis_focus}
+
+    ## Expected Outputs:
+    - Comprehensive research analysis
+    - Quality assessment scores
+    - Methodology evaluation
+    - Key findings summary
+    - Research insights and recommendations
+    - Professional presentation slides
+
+    Please execute these steps systematically to provide a complete research analysis.
+
+presentation_creation_workflow:
+  description: "Complete workflow for creating presentations from research"
+  variables: ["paper_id", "audience_type", "presentation_style"]
+  template: |
+    # Research Presentation Creation Workflow
+
+    Create a professional presentation from paper: {paper_id}
+
+    ## Presentation Requirements:
+    - **Audience**: {audience_type}
+    - **Style**: {presentation_style}
+    - **Duration**: 15-20 minutes (12-15 slides)
+
+    ## Creation Steps:
+    1. **Retrieve paper data** using resources or semantic search
+    2. **Analyze key findings** and methodology
+    3. **Create presentation** using `create_perfect_presentation` tool
+    4. **Enhance with search results** if needed
+
+    ## Content Structure:
+    - Introduction & Background
+    - Methodology Overview  
+    - Key Results & Findings
+    - Discussion & Implications
+    - Conclusions & Future Work
+
+    Please create a compelling presentation that effectively communicates the research.
+
+literature_review_workflow:
+  description: "Workflow for conducting literature review with multiple papers"
+  variables: ["research_topic", "paper_count"]
+  template: |
+    # Literature Review Workflow
+
+    Conduct a systematic literature review on: {research_topic}
+
+    ## Review Parameters:
+    - **Topic**: {research_topic}
+    - **Target Papers**: {paper_count} papers
+    - **Analysis Depth**: Comprehensive
+
+    ## Workflow Steps:
+    1. **Search for papers** using `advanced_search_web` tool (scholar mode)
+    2. **Process each paper** using `process_research_paper` tool
+    3. **Compare papers** using `compare_research_papers` tool
+    4. **Synthesize findings** across all papers
+    5. **Generate review summary** with themes and gaps
+
+    ## Expected Deliverables:
+    - Individual paper analyses
+    - Comparative analysis matrix
+    - Key themes identification
+    - Research gaps analysis
+    - Future research directions
+    - Comprehensive literature review document
+
+    Execute this workflow to produce a thorough literature review.
+
+research_insights_workflow:
+  description: "Generate research insights and future directions"
+  variables: ["paper_id", "insight_type"]
+  template: |
+    # Research Insights Generation Workflow
+
+    Generate advanced insights from paper: {paper_id}
+
+    ## Insight Focus: {insight_type}
+
+    ## Analysis Steps:
+    1. **Review paper analysis** using resources or semantic search
+    2. **Generate insights** using `generate_research_insights` tool
+    3. **Perform quality assessment** if not already done
+    4. **Identify research gaps** and opportunities
+    5. **Suggest methodological improvements**
+
+    ## Insight Categories:
+    - Theoretical contributions
+    - Methodological innovations  
+    - Practical applications
+    - Future research directions
+    - Cross-disciplinary connections
+
+    ## Output Format:
+    - Executive summary of insights
+    - Detailed analysis by category
+    - Actionable recommendations
+    - Research roadmap suggestions
+
+    Please provide comprehensive insights that advance understanding of this research area. 

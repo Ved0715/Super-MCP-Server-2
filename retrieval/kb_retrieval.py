@@ -338,7 +338,7 @@ class HybridRetriever:
             'has_content': has_content
         }
 
-    def enhanced_search(self, query: str, top_k: int = 5) -> List[SearchResult]:
+    def enhanced_search(self, query: str, top_k: int = 10) -> List[SearchResult]:
         """Enhanced search with query processing"""
         print(f"🔍 Searching for: '{query}'")
         
@@ -377,7 +377,7 @@ class HybridRetriever:
             print(f"❌ Search failed: {e}")
             return []
     
-    def search_with_context(self, query: str, top_k: int = 5) -> str:
+    def search_with_context(self, query: str, top_k: int = 10) -> str:
         """Search and format results with context using AI processing"""
         results = self.enhanced_search(query, top_k)
         
@@ -394,11 +394,11 @@ class HybridRetriever:
         
         return "\n\n".join(context_parts)
     
-    def answer_question(self, question: str, top_k: int = 3) -> str:
+    def answer_question(self, question: str, max_results: int = 5) -> str:
         """Generate an answer using retrieved context"""
         try:
             # Check if this is a question about knowledge base contents, study plans, or topic locations
-            context = self.search_knowledge_base_contents(question)
+            context = self.search_knowledge_base_contents(question, max_results)
             
             # If it's a special query (meta, study plan, topic location, or comprehensive analysis), return directly
             special_indicators = [
@@ -457,7 +457,7 @@ class HybridRetriever:
                     }
                 ],
                 max_tokens=template.get('max_tokens', config.max_response_tokens),
-                temperature=0.1  # Lower temperature for more factual, less creative responses
+                temperature=0.2  # Lower temperature for more factual, less creative responses
             )
             
             return response.choices[0].message.content.strip()
@@ -1199,7 +1199,7 @@ class HybridRetriever:
         
         return False
     
-    def search_knowledge_base_contents(self, query: str) -> str:
+    def search_knowledge_base_contents(self, query: str, max_results: int = 5) -> str:
         """Search for questions about knowledge base contents"""
         
         # Check for study plan queries
@@ -1810,7 +1810,7 @@ class HybridRetriever:
                 
                 try:
                     # Only search once per chapter with fewer results for speed
-                    results = self.enhanced_search(search_query, top_k=5)  # Reduced from 15 to 5
+                    results = self.enhanced_search(search_query, top_k=max_results)  # Reduced from 15 to 5
                     
                     # Analyze the content found for this chapter
                     content_topics = set()

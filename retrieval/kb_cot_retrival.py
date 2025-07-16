@@ -196,7 +196,7 @@ class ChainOfThoughtKBRetriever:
                     {"role": "user", "content": comprehensive_prompt}
                 ],
                 max_tokens=self.max_reasoning_tokens * 2,  # Allow more tokens for comprehensive analysis
-                temperature=0.1
+                temperature=0.2
             )
             
             response_content = response.choices[0].message.content.strip()

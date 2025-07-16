@@ -468,7 +468,21 @@ class PerfectMCPServer:
                         },
                         "required": ["topic"]
                     }
+                ),
+                Tool(
+                    name="generate_paper_quiz",
+                    description="Generate MCQ quiz from research paper",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "user_id": {"type": "string", "description": "User identifier"},
+                            "document_uuid": {"type": "string", "description": "Document UUID"},
+                            "num_questions": {"type": "integer", "minimum": 5, "maximum": 20, "description": "Number of questions"}
+                        },
+                        "required": ["user_id", "document_uuid", "num_questions"]
+                    }
                 )
+                 
             ]
 
         # ============================================================================
@@ -496,6 +510,9 @@ class PerfectMCPServer:
                 
                 elif name == "semantic_paper_search":
                     return await self._handle_semantic_paper_search(**arguments)
+                
+                elif name == "generate_paper_quiz":
+                    return await self._handle_generate_paper_quiz(**arguments)
                 
                 elif name == "compare_research_papers":
                     return await self._handle_compare_papers(**arguments)
@@ -536,6 +553,9 @@ class PerfectMCPServer:
                 
                 elif name == "find_books_covering_topic":
                     return await self._handle_find_books_covering_topic(**arguments)
+
+                elif name == "generate_paper_quiz":
+                    return await self._handle_generate_paper_quiz(**arguments)
                 
                 else:
                     return [TextContent(type="text", text=f"Unknown tool: {name}")]
@@ -2085,6 +2105,35 @@ class PerfectMCPServer:
                     "user_id": user_id,
                     "document_uuid": document_uuid
                 }, indent=2)
+            )]
+
+    async def _handle_generate_paper_quiz(self, user_id: str, document_uuid: str, num_questions: int = 10, **kwargs) -> List[TextContent]:
+        """Handle paper quiz generation"""
+        try:
+            # Import here to avoid circular imports
+            from retrieval.paper.paper_quiz import PaperQuizGenerator, QuizRequest
+            
+            if not hasattr(self, 'quiz_generator'):
+                self.quiz_generator = PaperQuizGenerator()
+            
+            request = QuizRequest(
+                user_id=str(user_id),
+                document_uuid=document_uuid,
+                num_questions=num_questions
+            )
+            
+            result = await self.quiz_generator.generate_quiz(request)
+            
+            return [TextContent(
+                type="text",
+                text=json.dumps(result, indent=2)
+            )]
+            
+        except Exception as e:
+            logger.error(f"Quiz generation error: {e}")
+            return [TextContent(
+                type="text", 
+                text=json.dumps({"success": False, "error": str(e)}, indent=2)
             )]
 
     async def _handle_system_status(self, include_config: bool = False, 

@@ -153,7 +153,7 @@ class KnowledgeBaseQuizGenerator:
         return True
     
     async def _retrieve_relevant_chunks(self, quiz_request: KBQuizRequest) -> List[Dict[str, Any]]:
-        """Retrieve relevant chunks from knowledge base using semantic search"""
+        """Retrieve relevant chunks from knowledge base using semantic search with strict validation"""
         
         if not self.index:
             print("❌ No Pinecone index available")
@@ -174,7 +174,7 @@ class KnowledgeBaseQuizGenerator:
             # Search knowledge base
             search_kwargs = {
                 "vector": query_vector,
-                "top_k": min(quiz_request.max_chunks, 100),  # Pinecone limit
+                "top_k": min(quiz_request.max_chunks * 2, 100),  # Get more to filter better
                 "include_metadata": True,
                 "include_values": False
             }
@@ -190,29 +190,81 @@ class KnowledgeBaseQuizGenerator:
             if result and hasattr(result, 'matches'):
                 matches = getattr(result, 'matches', [])
                 if matches:
+                    # STRICT RELEVANCE FILTERING
+                    relevance_threshold = 0.15  # Minimum relevance score
+                    high_relevance_threshold = 0.25  # Preferred relevance score
+                    
+                    print(f"📊 Raw search results: {len(matches)} matches")
+                    print(f"🎯 Relevance scores: {[round(m.score, 3) for m in matches[:5]]}")
+                    
+                    high_relevance_matches = []
+                    low_relevance_matches = []
+                    
                     for match in matches:
+                        if match.score >= high_relevance_threshold:
+                            high_relevance_matches.append(match)
+                        elif match.score >= relevance_threshold:
+                            low_relevance_matches.append(match)
+                    
+                    print(f"✅ High relevance matches (>{high_relevance_threshold}): {len(high_relevance_matches)}")
+                    print(f"⚠️ Low relevance matches ({relevance_threshold}-{high_relevance_threshold}): {len(low_relevance_matches)}")
+                    
+                    # Prefer high relevance, fall back to low relevance only if needed
+                    selected_matches = high_relevance_matches if high_relevance_matches else low_relevance_matches
+                    
+                    if not selected_matches:
+                        print(f"❌ No matches above relevance threshold {relevance_threshold}")
+                        return []
+                    
+                    for match in selected_matches:
                         # Extract text content from metadata
                         content = self._extract_text_content(match.metadata)
                         if content and len(content.strip()) > 50:  # Filter out very short content
-                            chunks.append({
-                                "id": match.id,
-                                "content": content,
-                                "score": match.score,
-                                "metadata": match.metadata,
-                                "source": match.metadata.get('source', 'Unknown'),
-                                "page": match.metadata.get('page_number', 'Unknown')
-                            })
+                            
+                            # CONTENT RELEVANCE VALIDATION
+                            content_relevance = self._validate_content_relevance(
+                                content, 
+                                quiz_request.search_query, 
+                                quiz_request.topic_description
+                            )
+                            
+                            if content_relevance >= 0.3:  # Content must be at least 30% relevant
+                                chunks.append({
+                                    "id": match.id,
+                                    "content": content,
+                                    "score": match.score,
+                                    "content_relevance": content_relevance,
+                                    "metadata": match.metadata,
+                                    "source": match.metadata.get('source', 'Unknown'),
+                                    "page": match.metadata.get('page_number', 'Unknown')
+                                })
+                            else:
+                                print(f"⚠️ Filtered out content with low relevance: {content_relevance:.2f}")
             
-            # Sort by relevance score (highest first)
-            chunks = sorted(chunks, key=lambda x: x['score'], reverse=True)
+            # Sort by combined score (search relevance + content relevance)
+            chunks = sorted(chunks, key=lambda x: (x['score'] + x['content_relevance']) / 2, reverse=True)
             
-            print(f"📊 Retrieved {len(chunks)} relevant chunks with scores: {[round(c['score'], 3) for c in chunks[:5]]}")
-            return chunks[:quiz_request.max_chunks]
+            # Final validation - ensure we have enough quality content
+            if len(chunks) < 3:
+                print(f"❌ Insufficient relevant content found. Found {len(chunks)} chunks, need at least 3")
+                return []
+            
+            total_content_length = sum(len(chunk['content']) for chunk in chunks)
+            if total_content_length < 500:
+                print(f"❌ Insufficient content volume. Found {total_content_length} chars, need at least 500")
+                return []
+            
+            final_chunks = chunks[:quiz_request.max_chunks]
+            print(f"✅ Selected {len(final_chunks)} high-quality chunks")
+            print(f"📊 Final relevance scores: {[round(c['score'], 3) for c in final_chunks[:5]]}")
+            print(f"📊 Content relevance scores: {[round(c['content_relevance'], 3) for c in final_chunks[:5]]}")
+            
+            return final_chunks
             
         except Exception as e:
             print(f"❌ Failed to retrieve chunks: {e}")
             return []
-    
+
     def _extract_text_content(self, metadata: Dict[str, Any]) -> str:
         """Extract text content from metadata (handles _node_content JSON)"""
         # First try direct text field
@@ -227,6 +279,69 @@ class KnowledgeBaseQuizGenerator:
                 content = str(metadata.get('_node_content', ''))[:1000]
         
         return content.strip() if content else ""
+    
+    def _validate_content_relevance(self, content: str, search_query: str, topic_description: str) -> float:
+        """Validate that content is actually relevant to the search query and topic"""
+        
+        # Extract key terms from search query and topic
+        search_terms = search_query.lower().split()
+        topic_terms = topic_description.lower().split()
+        content_lower = content.lower()
+        
+        # Remove common stop words
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should'}
+        
+        search_keywords = [term for term in search_terms if len(term) > 2 and term not in stop_words]
+        topic_keywords = [term for term in topic_terms if len(term) > 2 and term not in stop_words]
+        
+        # Count matches
+        search_matches = sum(1 for keyword in search_keywords if keyword in content_lower)
+        topic_matches = sum(1 for keyword in topic_keywords if keyword in content_lower)
+        
+        # Calculate relevance score
+        search_relevance = search_matches / max(len(search_keywords), 1)
+        topic_relevance = topic_matches / max(len(topic_keywords), 1)
+        
+        # Combined relevance (weighted towards search query)
+        combined_relevance = (search_relevance * 0.7) + (topic_relevance * 0.3)
+        
+        return combined_relevance
+
+    def _validate_question_content_reference(self, question_text: str, chunks: List[Dict[str, Any]]) -> bool:
+        """Validate that a question actually references content from the provided chunks"""
+        
+        if not question_text or not chunks:
+            return False
+        
+        question_lower = question_text.lower()
+        
+        # Check if question contains phrases that suggest content reference
+        content_indicators = [
+            "according to",
+            "based on the content",
+            "the document states",
+            "the text mentions",
+            "as described in",
+            "the content indicates",
+            "mentioned in the content"
+        ]
+        
+        has_content_indicator = any(indicator in question_lower for indicator in content_indicators)
+        
+        # Extract key terms from all chunks
+        all_content = " ".join([chunk["content"] for chunk in chunks])
+        content_words = set(all_content.lower().split())
+        
+        # Remove common words
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'what', 'when', 'where', 'who', 'why', 'how'}
+        meaningful_content_words = {word for word in content_words if len(word) > 3 and word not in stop_words}
+        
+        # Count how many content-specific words appear in the question
+        question_words = set(question_lower.split())
+        content_word_matches = len(question_words.intersection(meaningful_content_words))
+        
+        # Question is valid if it has content indicators OR references specific content words
+        return has_content_indicator or content_word_matches >= 2
     
     def _default_difficulty_mix(self, num_questions: int) -> Dict[str, int]:
         """Generate default difficulty distribution"""
@@ -273,9 +388,11 @@ class KnowledgeBaseQuizGenerator:
             difficulty_breakdown.append(f"- {count} {difficulty} questions")
         difficulty_str = "\n".join(difficulty_breakdown)
         
-        # Comprehensive quiz generation prompt
+        # Enhanced quiz generation prompt with strict content validation
         quiz_prompt = f"""
-You are an expert knowledge base quiz generator. Generate {num_questions} multiple choice questions based on the knowledge base content below.
+You are an expert knowledge base quiz generator. Generate {num_questions} multiple choice questions STRICTLY based on the knowledge base content provided below.
+
+CRITICAL INSTRUCTION: You must ONLY use information from the provided content blocks. Do NOT use your general knowledge or training data. If the provided content is insufficient or irrelevant, respond with an error message instead of generating questions.
 
 TOPIC CONTEXT:
 - Main Topic: {topic_description}
@@ -284,82 +401,74 @@ TOPIC CONTEXT:
 KNOWLEDGE BASE CONTENT:
 {full_content}
 
-QUIZ REQUIREMENTS:
+CONTENT VALIDATION CHECK:
+Before generating questions, verify that the provided content blocks contain relevant information about "{topic_description}" and "{search_query}". If the content is mostly irrelevant or off-topic, respond with:
+{{"error": "Insufficient relevant content found in knowledge base for the requested topic"}}
+
+QUIZ REQUIREMENTS (only if content is relevant):
 1. Total Questions: {num_questions}
 2. Difficulty Distribution:
 {difficulty_str}
 
 3. Question Categories to Cover:
-   - Factual Knowledge: Direct facts, definitions, specific information
-   - Conceptual Understanding: Core concepts, principles, relationships
-   - Application Knowledge: How concepts are applied, used, or implemented
-   - Analytical Thinking: Analysis, comparison, evaluation of information
-   - Synthesis: Combining multiple pieces of information
+   - Factual Knowledge: Direct facts, definitions, specific information FROM THE PROVIDED CONTENT
+   - Conceptual Understanding: Core concepts, principles, relationships FROM THE PROVIDED CONTENT
+   - Application Knowledge: How concepts are applied, used, or implemented FROM THE PROVIDED CONTENT
+   - Analytical Thinking: Analysis, comparison, evaluation of information FROM THE PROVIDED CONTENT
+   - Synthesis: Combining multiple pieces of information FROM THE PROVIDED CONTENT
+
+STRICT CONTENT REQUIREMENTS:
+- Questions must be answerable ONLY from the provided content blocks
+- Each question must reference specific information found in the content
+- Do NOT create questions about general knowledge of the topic
+- Do NOT use information not present in the provided content
+- If a content block is irrelevant, ignore it completely
+- Questions should quote or paraphrase specific details from the content
 
 DIFFICULTY GUIDELINES:
-- Easy: Basic facts, definitions, direct recall from content
-- Medium: Understanding concepts, relationships, straightforward application
-- Hard: Analysis, synthesis, complex reasoning, cross-content connections
+- Easy: Basic facts, definitions, direct recall from provided content
+- Medium: Understanding concepts, relationships from provided content
+- Hard: Analysis, synthesis of multiple content blocks
 
 QUESTION REQUIREMENTS:
 - Each question must have exactly 4 options (a, b, c, d)
 - Only ONE option should be correct
-- Incorrect options should be plausible but clearly distinguishable
-- Questions must be based on the PROVIDED content blocks
+- Incorrect options should be plausible but based on content variations
+- Reference specific content blocks in questions when possible
 - Include variety in question types (what/who/when/where/why/how)
-- Reference specific information from the content when possible
-- Avoid questions that could be answered without the provided content
-
-CONTENT UTILIZATION:
-- Use information from multiple content blocks when possible
-- Ensure questions test understanding of the topic area
-- Create questions that demonstrate comprehension of the material
-- Balance questions across different content blocks
 
 OUTPUT FORMAT:
 Return a valid JSON object with the exact structure below. Do not include any text outside the JSON.
 
 {{
     "Q1": {{
-        "question": "Question text here?",
+        "question": "According to the provided content, [specific question based on content]?",
         "options": {{
-            "a": "Option A text",
-            "b": "Option B text",
-            "c": "Option C text", 
-            "d": "Option D text"
+            "a": "Option A from content",
+            "b": "Option B from content",
+            "c": "Option C from content", 
+            "d": "Option D from content"
         }},
         "answer": {{
-            "a": "Option A text"
+            "a": "Option A from content"
         }},
         "difficulty": "easy",
         "topic": "factual_knowledge",
-        "source_info": "Based on content from [source reference]"
-    }},
-    "Q2": {{
-        "question": "Question text here?",
-        "options": {{
-            "a": "Option A text",
-            "b": "Option B text",
-            "c": "Option C text",
-            "d": "Option D text"
-        }},
-        "answer": {{
-            "b": "Option B text"
-        }},
-        "difficulty": "medium",
-        "topic": "conceptual_understanding",
-        "source_info": "Based on content from [source reference]"
+        "source_info": "Based on content from [specific source/block reference]",
+        "content_reference": "Quote or reference from the actual content"
     }},
     ... continue for all {num_questions} questions
 }}
 
-CRITICAL REQUIREMENTS:
-- Ensure the answer field contains the correct option letter as key and the full text as value
-- Distribute questions across all topic categories
-- Follow the exact difficulty distribution specified above
-- Include source_info field indicating which content was used
-- Return only valid JSON, no additional text
-- Questions must be answerable from the provided content
+CRITICAL VALIDATION REQUIREMENTS:
+1. Verify content relevance before generating ANY questions
+2. Only generate questions if content is directly relevant to the topic
+3. Include "content_reference" field with actual quotes/references
+4. Ensure answer options are based on content variations, not general knowledge
+5. If content is insufficient or irrelevant, return error JSON instead
+6. Questions must pass the test: "Can this be answered only from the provided content?"
+
+FINAL CHECK: Before returning, verify each question can ONLY be answered using the provided content blocks. If any question relies on general knowledge, regenerate it or return an error.
 """
 
         try:
@@ -403,11 +512,31 @@ CRITICAL REQUIREMENTS:
                 if json_start >= 0 and json_end > json_start:
                     quiz_json = json.loads(response_text[json_start:json_end])
                     
+                    # Check if LLM detected insufficient content
+                    if "error" in quiz_json:
+                        error_msg = quiz_json["error"]
+                        print(f"🚫 LLM detected insufficient relevant content: {error_msg}")
+                        return []  # Return empty list to trigger error in main function
+                    
+                    # Validate that we have actual questions, not just error response
+                    question_keys = [key for key in quiz_json.keys() if key.startswith('Q')]
+                    if not question_keys:
+                        print("🚫 No questions found in LLM response")
+                        return []
+                    
                     # Convert to KBQuizQuestion objects
                     questions = []
                     topics_cycle = ["factual_knowledge", "conceptual_understanding", "application_knowledge", "analytical_thinking", "synthesis"]
                     
                     for i, (q_key, q_data) in enumerate(quiz_json.items()):
+                        if not q_key.startswith('Q'):
+                            continue  # Skip non-question keys
+                            
+                        # Validate question has required fields
+                        if not all(key in q_data for key in ['question', 'options', 'answer']):
+                            print(f"⚠️ Question {q_key} missing required fields, skipping")
+                            continue
+                        
                         # Extract the correct answer key and ensure it's valid
                         answer_dict = q_data.get("answer", {})
                         if answer_dict:
@@ -420,13 +549,19 @@ CRITICAL REQUIREMENTS:
                         if answer_key not in ['a', 'b', 'c', 'd']:
                             answer_key = "a"
                         
+                        # Validate that the question references the content
+                        question_text = q_data.get("question", "")
+                        if not self._validate_question_content_reference(question_text, chunks):
+                            print(f"⚠️ Question {q_key} doesn't reference provided content, skipping")
+                            continue
+                        
                         # Get topic from response or cycle through defaults
                         topic = q_data.get("topic", topics_cycle[i % len(topics_cycle)])
                         difficulty = q_data.get("difficulty", "medium")
                         source_info = q_data.get("source_info", "Knowledge base content")
                         
                         question = KBQuizQuestion(
-                            question=q_data.get("question", f"Question {i+1}"),
+                            question=question_text,
                             options=q_data.get("options", {
                                 "a": "Option A", "b": "Option B", 
                                 "c": "Option C", "d": "Option D"
@@ -438,7 +573,11 @@ CRITICAL REQUIREMENTS:
                         )
                         questions.append(question)
                     
-                    print(f"✅ Successfully parsed {len(questions)} questions from single API response")
+                    if not questions:
+                        print("❌ No valid questions generated after content validation")
+                        return []
+                    
+                    print(f"✅ Successfully parsed {len(questions)} validated questions from single API response")
                     return questions[:num_questions]  # Ensure we don't exceed requested count
                 
                 else:

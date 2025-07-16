@@ -124,7 +124,7 @@ class PerfectMCPServer:
                 
                 Tool(
                     name="create_perfect_presentation",
-                    description="Create a perfect research presentation from knowledge base using Chain-of-Thought reasoning",
+                    description="Create a perfect research presentation from knowledge base with optional Chain-of-Thought reasoning",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -136,7 +136,8 @@ class PerfectMCPServer:
                             "slide_count": {"type": "integer", "description": "Number of slides"},
                             "audience_type": {"type": "string", "description": "Target audience type"},
                             "include_web_references": {"type": "boolean", "description": "Include web search for reference links"},
-                            "reference_query": {"type": "string", "description": "Query for additional reference links"}
+                            "reference_query": {"type": "string", "description": "Query for additional reference links"},
+                            "use_chain_of_thought": {"type": "boolean", "description": "Enable Chain-of-Thought reasoning for enhanced analysis (default: false)"}
                         },
                         "required": ["query", "user_prompt"]
                     }
@@ -1029,6 +1030,52 @@ class PerfectMCPServer:
             logger.error(f"Error processing paper: {e}")
             return [TextContent(type="text", text=f"Paper processing error: {str(e)}")]
 
+    async def _create_fallback_analysis(self, query: str, user_prompt: str) -> Dict[str, Any]:
+        """
+        Create fallback analysis when Chain-of-Thought is disabled
+        Provides basic structured analysis without complex reasoning
+        """
+        logger.info(f"🔧 Creating fallback analysis for: {query}")
+        
+        try:
+            # Simple analysis based on query and user prompt
+            search_terms = [query]
+            
+            # Extract additional terms from user prompt
+            user_words = user_prompt.lower().split()
+            important_words = [word for word in user_words if len(word) > 4 and word not in ['presentation', 'create', 'generate', 'about', 'topic', 'explain']]
+            search_terms.extend(important_words[:3])  # Add top 3 relevant words
+            
+            # Basic structured analysis
+            structured_analysis = {
+                "main_topic": query,
+                "key_subtopics": [query],
+                "focus_areas": [query],
+                "search_terms": search_terms,
+                "content_strategy": "basic_coverage"
+            }
+            
+            return {
+                "success": True,
+                "cot_reasoning": f"Basic analysis completed. Main topic: {query}. Using direct search strategy.",
+                "structured_analysis": structured_analysis,
+                "query": query,
+                "user_prompt": user_prompt,
+                "analysis_type": "fallback"
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Fallback analysis failed: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "fallback_analysis": {
+                    "main_topic": query,
+                    "search_terms": [query],
+                    "content_strategy": "minimal_coverage"
+                }
+            }
+
     async def _chain_of_thought_presentation_analysis(self, query: str, user_prompt: str) -> Dict[str, Any]:
         """
         Chain-of-Thought analysis for presentation creation using self-questioning approach
@@ -1455,7 +1502,8 @@ class PerfectMCPServer:
                                         theme: str = "academic_professional", slide_count: int = 12,
                                         audience_type: str = "academic", 
                                         include_web_references: bool = False,
-                                        reference_query: str = None) -> List[TextContent]:
+                                        reference_query: str = None,
+                                        use_chain_of_thought: bool = False) -> List[TextContent]:
         """Handle knowledge base-driven presentation creation with Chain-of-Thought reasoning"""
         try:
             logger.info(f"🎯 Starting knowledge base-driven presentation creation")
@@ -1469,22 +1517,40 @@ class PerfectMCPServer:
             response_parts.append(f"**Slides:** {slide_count}")
             response_parts.append(f"**Audience:** {audience_type}")
             
-            # Step 1: Chain-of-Thought Analysis
-            response_parts.append(f"\n## 🧠 Chain-of-Thought Analysis")
-            logger.info(f"🧠 Step 1/4: Performing Chain-of-Thought analysis")
-            
-            cot_analysis = await self._chain_of_thought_presentation_analysis(query, user_prompt)
-            
-            if cot_analysis.get("success"):
-                structured_analysis = cot_analysis.get("structured_analysis", {})
-                response_parts.append(f"**Main Topic:** {structured_analysis.get('main_topic', query)}")
-                response_parts.append(f"**Key Subtopics:** {', '.join(structured_analysis.get('key_subtopics', []))}")
-                response_parts.append(f"**Focus Areas:** {', '.join(structured_analysis.get('focus_areas', []))}")
-                response_parts.append(f"**Search Strategy:** {structured_analysis.get('content_strategy', 'comprehensive')}")
-                logger.info(f"✅ Chain-of-Thought analysis completed successfully")
+            # Step 1: Analysis (Chain-of-Thought or Basic)
+            if use_chain_of_thought:
+                response_parts.append(f"\n## 🧠 Chain-of-Thought Analysis")
+                logger.info(f"🧠 Step 1/4: Performing Chain-of-Thought analysis")
+                
+                cot_analysis = await self._chain_of_thought_presentation_analysis(query, user_prompt)
+                
+                if cot_analysis.get("success"):
+                    structured_analysis = cot_analysis.get("structured_analysis", {})
+                    response_parts.append(f"**Main Topic:** {structured_analysis.get('main_topic', query)}")
+                    response_parts.append(f"**Key Subtopics:** {', '.join(structured_analysis.get('key_subtopics', []))}")
+                    response_parts.append(f"**Focus Areas:** {', '.join(structured_analysis.get('focus_areas', []))}")
+                    response_parts.append(f"**Search Strategy:** {structured_analysis.get('content_strategy', 'comprehensive')}")
+                    logger.info(f"✅ Chain-of-Thought analysis completed successfully")
+                else:
+                    response_parts.append(f"⚠️ CoT analysis failed, using fallback: {cot_analysis.get('error', 'Unknown error')}")
+                    logger.warning(f"⚠️ Chain-of-Thought analysis failed, using fallback")
+                    # Fallback to basic analysis
+                    cot_analysis = await self._create_fallback_analysis(query, user_prompt)
             else:
-                response_parts.append(f"⚠️ Using fallback analysis due to error: {cot_analysis.get('error', 'Unknown error')}")
-                logger.warning(f"⚠️ Chain-of-Thought analysis failed, using fallback")
+                response_parts.append(f"\n## 🔧 Basic Analysis")
+                logger.info(f"🔧 Step 1/4: Performing basic analysis (Chain-of-Thought disabled)")
+                
+                cot_analysis = await self._create_fallback_analysis(query, user_prompt)
+                
+                if cot_analysis.get("success"):
+                    structured_analysis = cot_analysis.get("structured_analysis", {})
+                    response_parts.append(f"**Main Topic:** {structured_analysis.get('main_topic', query)}")
+                    response_parts.append(f"**Search Strategy:** {structured_analysis.get('content_strategy', 'basic')}")
+                    response_parts.append(f"**Analysis Type:** Basic (Chain-of-Thought disabled)")
+                    logger.info(f"✅ Basic analysis completed successfully")
+                else:
+                    response_parts.append(f"⚠️ Basic analysis failed: {cot_analysis.get('error', 'Unknown error')}")
+                    logger.error(f"❌ Basic analysis failed")
             
             # Step 2: Comprehensive Knowledge Base Search
             response_parts.append(f"\n## 🔍 Comprehensive Knowledge Base Search")

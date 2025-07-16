@@ -333,10 +333,11 @@ class MCPClient:
         slide_count: int = 12,
         audience_type: str = "academic",
         include_web_references: bool = False,
-        reference_query: Optional[str] = None
+        reference_query: Optional[str] = None,
+        use_chain_of_thought: bool = False
     ) -> Dict[str, Any]:
         """
-        Create a research presentation from knowledge base using Chain-of-Thought reasoning
+        Create a research presentation from knowledge base with optional Chain-of-Thought reasoning
         
         Args:
             query: Topic/query for presentation content
@@ -348,6 +349,7 @@ class MCPClient:
             audience_type: Target audience
             include_web_references: Whether to include web search for reference links
             reference_query: Query for additional reference links
+            use_chain_of_thought: Enable Chain-of-Thought reasoning for enhanced analysis
         
         Returns:
             Presentation creation result
@@ -361,7 +363,8 @@ class MCPClient:
             "slide_count": slide_count,
             "audience_type": audience_type,
             "include_web_references": include_web_references,
-            "reference_query": reference_query
+            "reference_query": reference_query,
+            "use_chain_of_thought": use_chain_of_thought
         }
         
         return await self.call_tool("create_perfect_presentation", arguments)

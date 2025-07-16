@@ -56,6 +56,7 @@ class PresentationRequest(BaseModel):
     audience_type: str = "academic"
     include_web_references: bool = False
     reference_query: Optional[str] = None
+    use_chain_of_thought: bool = False
 
 class AnalysisRequest(BaseModel):
     """Request model for research analysis"""
@@ -399,9 +400,10 @@ async def generate_presentation(
     mcp_client: MCPClient = Depends(get_mcp_client)
 ):
     """
-    Generate a research presentation from knowledge base using Chain-of-Thought reasoning
+    Generate a research presentation from knowledge base with optional Chain-of-Thought reasoning
     
     Your frontend can call this to create PowerPoint presentations from knowledge base content.
+    Set use_chain_of_thought=true for enhanced analysis or false for faster basic processing.
     """
     try:
         result = await mcp_client.create_presentation(
@@ -413,7 +415,8 @@ async def generate_presentation(
             slide_count=request.slide_count,
             audience_type=request.audience_type,
             include_web_references=request.include_web_references,
-            reference_query=request.reference_query
+            reference_query=request.reference_query,
+            use_chain_of_thought=request.use_chain_of_thought
         )
         return result
     except Exception as e:

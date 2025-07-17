@@ -103,7 +103,7 @@ class AdvancedConfig:
         
         # Create necessary directories
         self._create_directories()
-        
+
         # Add compatibility attributes for HybridRetriever
         self.openai_api_key = self.OPENAI_API_KEY
         self.pinecone_api_key = self.PINECONE_API_KEY

@@ -592,6 +592,200 @@ async def get_system_status(mcp_client: MCPClient = Depends(get_mcp_client)):
         }
 
 # ============================================================================
+# MCP TRANSPORT ENDPOINTS (Direct Protocol Access)
+# ============================================================================
+
+class MCPToolCallRequest(BaseModel):
+    """Request model for direct MCP tool calls"""
+    tool: str
+    arguments: Dict[str, Any]
+    request_id: Optional[str] = None
+
+class MCPToolCallResponse(BaseModel):
+    """Response model for MCP tool calls"""
+    success: bool
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[Dict[str, Any]] = None
+    request_id: Optional[str] = None
+    execution_time: Optional[float] = None
+
+class MCPListToolsResponse(BaseModel):
+    """Response model for listing MCP tools"""
+    tools: List[Dict[str, Any]]
+    count: int
+
+class MCPHealthResponse(BaseModel):
+    """Response model for MCP health check"""
+    status: str
+    uptime_seconds: Optional[float] = None
+    memory_mb: Optional[float] = None
+    active_connections: Optional[int] = None
+    tools_count: Optional[int] = None
+    server_version: Optional[str] = None
+
+@router.post("/call", response_model=MCPToolCallResponse)
+async def mcp_call_tool(
+    request: MCPToolCallRequest,
+    mcp_client: MCPClient = Depends(get_mcp_client)
+):
+    """
+    Direct MCP tool call endpoint
+    
+    This endpoint provides direct access to MCP protocol tool calls.
+    Use this for custom tool calls not covered by other endpoints.
+    """
+    import time
+    start_time = time.time()
+    
+    try:
+        logger.info(f"Direct MCP call: {request.tool} with request_id: {request.request_id}")
+        
+        # Call the tool via MCP client
+        result = await mcp_client.call_tool(request.tool, request.arguments)
+        
+        execution_time = time.time() - start_time
+        
+        return MCPToolCallResponse(
+            success=result.get("success", True),
+            result=result,
+            request_id=request.request_id,
+            execution_time=execution_time
+        )
+        
+    except Exception as e:
+        execution_time = time.time() - start_time
+        error_details = {
+            "code": "TOOL_EXECUTION_ERROR",
+            "message": str(e)
+        }
+        
+        logger.error(f"MCP tool call failed: {error_details}")
+        
+        return MCPToolCallResponse(
+            success=False,
+            error=error_details,
+            request_id=request.request_id,
+            execution_time=execution_time
+        )
+
+@router.post("/list-tools", response_model=MCPListToolsResponse)
+async def mcp_list_tools(mcp_client: MCPClient = Depends(get_mcp_client)):
+    """
+    List all available MCP tools
+    
+    Returns detailed information about all tools available in the MCP server.
+    """
+    try:
+        # Get tools from MCP server
+        tools_response = await mcp_client.list_tools()
+        
+        if isinstance(tools_response, dict) and "tools" in tools_response:
+            tools = tools_response["tools"]
+        else:
+            # Fallback for different response formats
+            tools = tools_response if isinstance(tools_response, list) else []
+        
+        return MCPListToolsResponse(
+            tools=tools,
+            count=len(tools)
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to list MCP tools: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list tools: {str(e)}")
+
+@router.get("/health", response_model=MCPHealthResponse)
+async def mcp_health_check(mcp_client: MCPClient = Depends(get_mcp_client)):
+    """
+    MCP server health check
+    
+    Provides detailed health information about the MCP server.
+    """
+    try:
+        # Get health info from MCP server
+        health = await mcp_client.health_check()
+        
+        # Get tools count
+        tools_response = await mcp_client.list_tools()
+        tools_count = tools_response.get("count", 0) if isinstance(tools_response, dict) else len(tools_response)
+        
+        return MCPHealthResponse(
+            status=health.get("status", "unknown"),
+            uptime_seconds=health.get("uptime_seconds"),
+            memory_mb=health.get("memory_mb"),
+            active_connections=health.get("active_connections", 0),
+            tools_count=tools_count,
+            server_version=health.get("server_version", "2.0.0")
+        )
+        
+    except Exception as e:
+        logger.error(f"MCP health check failed: {e}")
+        return MCPHealthResponse(
+            status="unhealthy",
+            tools_count=0
+        )
+
+@router.post("/batch-call")
+async def mcp_batch_call(
+    requests: List[MCPToolCallRequest],
+    mcp_client: MCPClient = Depends(get_mcp_client)
+):
+    """
+    Batch MCP tool calls
+    
+    Execute multiple MCP tool calls in a single request.
+    Useful for complex workflows that require multiple tool calls.
+    """
+    import asyncio
+    import time
+    
+    start_time = time.time()
+    
+    try:
+        logger.info(f"Batch MCP call with {len(requests)} requests")
+        
+        # Execute all tool calls concurrently
+        async def execute_single_call(req: MCPToolCallRequest):
+            try:
+                result = await mcp_client.call_tool(req.tool, req.arguments)
+                return {
+                    "success": True,
+                    "result": result,
+                    "request_id": req.request_id,
+                    "tool": req.tool
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": {"code": "TOOL_ERROR", "message": str(e)},
+                    "request_id": req.request_id,
+                    "tool": req.tool
+                }
+        
+        # Execute all calls concurrently
+        results = await asyncio.gather(*[execute_single_call(req) for req in requests])
+        
+        execution_time = time.time() - start_time
+        
+        return {
+            "success": True,
+            "results": results,
+            "total_requests": len(requests),
+            "execution_time": execution_time
+        }
+        
+    except Exception as e:
+        execution_time = time.time() - start_time
+        logger.error(f"Batch MCP call failed: {e}")
+        
+        return {
+            "success": False,
+            "error": {"code": "BATCH_ERROR", "message": str(e)},
+            "total_requests": len(requests),
+            "execution_time": execution_time
+        }
+
+# ============================================================================
 # CLEANUP
 # ============================================================================
 
@@ -629,5 +823,11 @@ Then your frontend can call:
 - POST /api/v1/mcp/search/web - Web search  
 - POST /api/v1/mcp/presentations/generate - Generate PPTs
 - GET /api/v1/mcp/health - Check MCP server health
+
+# NEW: Direct MCP Protocol Endpoints
+- POST /api/v1/mcp/call - Direct MCP tool calls
+- POST /api/v1/mcp/list-tools - List all MCP tools
+- GET /api/v1/mcp/health - MCP server health check
+- POST /api/v1/mcp/batch-call - Batch MCP tool calls
 - And all other endpoints defined above
 """ 

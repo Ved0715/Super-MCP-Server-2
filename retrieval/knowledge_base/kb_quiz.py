@@ -30,7 +30,7 @@ class KBQuizRequest:
     max_chunks: int = 50  # Maximum chunks to analyze from KB
     num_questions: int = 10  # Number of questions to generate
     difficulty_mix: Optional[Dict[str, int]] = None  # {easy: 4, medium: 4, hard: 2}
-    namespace: Optional[str] = None  # Specific namespace to search (optional)
+    namespace: str = "knowledge-base"  # Specific namespace to search (optional)
 
 class KnowledgeBaseQuizGenerator:
     """
@@ -49,7 +49,7 @@ class KnowledgeBaseQuizGenerator:
         self.pc = Pinecone(api_key=config.pinecone_api_key)
         
         # Configuration
-        self.index_name = "all-pdfs-index"
+        self.index_name ="optimized-kb-index"
         self.embedding_model = config.embedding_model
         self.response_model = config.response_model
         
@@ -170,96 +170,35 @@ class KnowledgeBaseQuizGenerator:
             )
             
             query_vector = embedding_response.data[0].embedding
-            
+            # print(f"🔍 Query vector: {query_vector}")
             # Search knowledge base
-            search_kwargs = {
-                "vector": query_vector,
-                "top_k": min(quiz_request.max_chunks * 2, 100),  # Get more to filter better
-                "include_metadata": True,
-                "include_values": False
-            }
-            
-            # Add namespace if specified
-            if quiz_request.namespace:
-                search_kwargs["namespace"] = quiz_request.namespace
-                print(f"🎯 Searching in namespace: {quiz_request.namespace}")
-            
-            result = self.index.query(**search_kwargs)
-            
+
+            # print(f" index: {self.index}")
+            result = self.index.query(
+                vector=query_vector,
+                top_k=quiz_request.max_chunks,
+                namespace="knowledge-base",
+                include_metadata=True,
+                include_values=False
+            )
+            # print(f"🔍 Result: {result}")
             chunks = []
             if result and hasattr(result, 'matches'):
                 matches = getattr(result, 'matches', [])
-                if matches:
-                    # STRICT RELEVANCE FILTERING
-                    relevance_threshold = 0.15  # Minimum relevance score
-                    high_relevance_threshold = 0.25  # Preferred relevance score
-                    
-                    print(f"📊 Raw search results: {len(matches)} matches")
-                    print(f"🎯 Relevance scores: {[round(m.score, 3) for m in matches[:5]]}")
-                    
-                    high_relevance_matches = []
-                    low_relevance_matches = []
-                    
-                    for match in matches:
-                        if match.score >= high_relevance_threshold:
-                            high_relevance_matches.append(match)
-                        elif match.score >= relevance_threshold:
-                            low_relevance_matches.append(match)
-                    
-                    print(f"✅ High relevance matches (>{high_relevance_threshold}): {len(high_relevance_matches)}")
-                    print(f"⚠️ Low relevance matches ({relevance_threshold}-{high_relevance_threshold}): {len(low_relevance_matches)}")
-                    
-                    # Prefer high relevance, fall back to low relevance only if needed
-                    selected_matches = high_relevance_matches if high_relevance_matches else low_relevance_matches
-                    
-                    if not selected_matches:
-                        print(f"❌ No matches above relevance threshold {relevance_threshold}")
-                        return []
-                    
-                    for match in selected_matches:
-                        # Extract text content from metadata
-                        content = self._extract_text_content(match.metadata)
-                        if content and len(content.strip()) > 50:  # Filter out very short content
-                            
-                            # CONTENT RELEVANCE VALIDATION
-                            content_relevance = self._validate_content_relevance(
-                                content, 
-                                quiz_request.search_query, 
-                                quiz_request.topic_description
-                            )
-                            
-                            if content_relevance >= 0.3:  # Content must be at least 30% relevant
-                                chunks.append({
-                                    "id": match.id,
-                                    "content": content,
-                                    "score": match.score,
-                                    "content_relevance": content_relevance,
-                                    "metadata": match.metadata,
-                                    "source": match.metadata.get('source', 'Unknown'),
-                                    "page": match.metadata.get('page_number', 'Unknown')
-                                })
-                            else:
-                                print(f"⚠️ Filtered out content with low relevance: {content_relevance:.2f}")
-            
-            # Sort by combined score (search relevance + content relevance)
-            chunks = sorted(chunks, key=lambda x: (x['score'] + x['content_relevance']) / 2, reverse=True)
-            
-            # Final validation - ensure we have enough quality content
-            if len(chunks) < 3:
-                print(f"❌ Insufficient relevant content found. Found {len(chunks)} chunks, need at least 3")
-                return []
-            
-            total_content_length = sum(len(chunk['content']) for chunk in chunks)
-            if total_content_length < 500:
-                print(f"❌ Insufficient content volume. Found {total_content_length} chars, need at least 500")
-                return []
-            
-            final_chunks = chunks[:quiz_request.max_chunks]
-            print(f"✅ Selected {len(final_chunks)} high-quality chunks")
-            print(f"📊 Final relevance scores: {[round(c['score'], 3) for c in final_chunks[:5]]}")
-            print(f"📊 Content relevance scores: {[round(c['content_relevance'], 3) for c in final_chunks[:5]]}")
-            
-            return final_chunks
+                for match in matches:
+                    content = self._extract_text_content(match.metadata)
+                    # print(f"🔍 Content: {content}")
+                    if content:
+                        chunks.append({
+                            "id": match.id,
+                            "content": content,
+                            "source": match.metadata.get('source', 'Unknown'),
+                            "page": match.metadata.get('page_number', 'Unknown'),
+                            "metadata": match.metadata
+                        })
+            print(f"✅ Returning {len(chunks)} raw chunks without any filtering")
+            return chunks[:quiz_request.max_chunks]
+
             
         except Exception as e:
             print(f"❌ Failed to retrieve chunks: {e}")

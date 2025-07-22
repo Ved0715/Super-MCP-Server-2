@@ -24,18 +24,30 @@ import mcp.server.session
 
 from config import AdvancedConfig
 from enhanced_pdf_processor import EnhancedPDFProcessor
+import retrieval
 from vector_storage import AdvancedVectorStorage
 from research_intelligence import ResearchPaperAnalyzer
 from perfect_ppt_generator import PerfectPPTGenerator
 from search_client import SerpAPIClient
 from processors.universal_document_processor import UniversalDocumentProcessor
 from retrieval.paper_retriver import PaperRetriever, ResearchQuery
+from retrieval.paper.paper_compare import PDFComparator
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 # Add this import at the top with other imports
+
+try:
+    from retrieval.paper.paper_compare import PDFComparator
+    PDF_COMPARATOR_AVAILABLE = True
+    logger.info("✅ PDF Comparator imported successfully")
+except ImportError as e:
+    PDF_COMPARATOR_AVAILABLE = False
+    logger.warning(f"⚠️ PDF Comparator not available: {e}")
+
 try:
     from retrieval.kb_cot_retrival import ChainOfThoughtKBRetriever
     COT_RETRIEVER_AVAILABLE = True
@@ -72,6 +84,7 @@ class PerfectMCPServer:
         self.config = AdvancedConfig()
         
         # Initialize all components
+        self.comparator = PDFComparator()
         self.pdf_processor = EnhancedPDFProcessor(self.config)
         self.vector_storage = AdvancedVectorStorage(self.config)
         self.research_analyzer = ResearchPaperAnalyzer(self.config)
@@ -264,22 +277,18 @@ class PerfectMCPServer:
                 
                 Tool(
                     name="compare_research_papers",
-                    description="Compare multiple research papers across various dimensions",
+                    description="Compare two research papers by semantic similarity and generate a report.",
                     inputSchema={
                         "type": "object",
                         "properties": {
-                            "paper_ids": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 5},
-                            "comparison_aspects": {
-                                "type": "array",
-                                "items": {"type": "string", "enum": ["methodology", "findings", "limitations", "contributions", "citations", "quality"]},
-                                "default": ["methodology", "findings", "contributions"]
-                            },
-                            "generate_summary": {"type": "boolean", "default": True}
+                            "user_id": {"type": "string", "description": "User namespace ID"},
+                            "doc1_uuid": {"type": "string", "description": "First document UUID"},
+                            "doc2_uuid": {"type": "string", "description": "Second document UUID"},
                         },
-                        "required": ["paper_ids"]
+                        "required": ["user_id", "doc1_uuid", "doc2_uuid"]
                     }
-                ),
-                
+                )
+                ,
                 Tool(
                     name="generate_research_insights",
                     description="Generate AI-powered insights and recommendations from research analysis",
@@ -2991,7 +3000,7 @@ The operation has been successfully cancelled and will stop as soon as possible.
             # Check if we have enhanced metadata
             sample_result = self.index.query(
                 vector=[0.0] * config.embedding_dimension,
-                top_k=1,
+                top_k=1000,
                 namespace=config.namespace,
                 include_metadata=True
             )
@@ -3550,7 +3559,33 @@ The operation has been successfully cancelled and will stop as soon as possible.
             if topic in content_lower:
                 book_data['topics'].add(topic.title())
 
+    async def _handle_compare_papers(self, user_id: str, doc1_uuid: str, doc2_uuid: str, 
+                                    similarity_threshold: float = 0.2, max_pairs: int = 20, **arguments):
+        """Handle compare papers request"""
+        print(f"🔍 Comparing papers: {arguments}")
+
+        try:
+            report = self.comparator.compare(
+                user_id = user_id,
+                doc1_uuid = doc1_uuid,
+                doc2_uuid = doc2_uuid,
+            )
+
+            return [TextContent(
+                type="text",
+                text=json.dumps(report, indent=2)
+            )]
+        except Exception as e:
+            logger.error(f"Error comparing papers: {e}")
+            return [TextContent(
+                type="text",
+                text=f"Error comparing papers: {e}"
+            )]
+
+
     
+        
+        
 
     async def run(self):
         """Run the perfect MCP server with enhanced capabilities"""

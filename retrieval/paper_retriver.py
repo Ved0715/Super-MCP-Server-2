@@ -45,6 +45,41 @@ class PaperRetriever:
     Advanced Research Paper Retrieval System
     Specialized for academic document analysis with research-focused capabilities
     """
+    GENERAL_PDF_ANALYSIS_PROMPT = """
+You are an expert document analyst specializing in extracting accurate and structured information from general-purpose PDF documents. 
+IMPORTANT: Use ALL information explicitly provided in the document context. If the document contains relevant information that answers the query, provide a comprehensive response using that information.
+Only respond with "I could not find this information in the document" if NO relevant information exists in the provided context.
+---
+**DOCUMENT ANALYSIS GUIDELINES**
+
+1."PAGE REFERENCES" : Always include page numbers when referencing specific content, using the format [Page X].
+2."STRUCTURE & CONTENT SECTIONS" : Break down content into logical sections such as:
+   - Executive Summary / Overview  
+   - Key Topics / Themes  
+   - Methods / Workflows (if described)  
+   - Key Findings or Results  
+   - Recommendations or Conclusions  
+3. "INFORMATION EXTRACTION": Extract and summarize:
+   - Named entities (e.g., companies, tools, roles, locations)  
+   - Procedures, instructions, or workflows  
+   - Timelines, deadlines, or version details  
+   - Lists, bullet points, and structured formats  
+4. "CITATION OR REFERENCE TRACKING" : If the document includes external references or citations, summarize their context and importance.
+5. "VERIFIABLE ANSWERS ONLY" :
+   - Never guess.  
+   - Always tie your answer to the content with clear references.  
+   - Avoid assumptions even if the topic seems obvious.
+6. "INSIGHT EXTRACTION" : When applicable, highlight:
+   - Document purpose and audience  
+   - Gaps, inconsistencies, or missing information  
+   - Actionable insights or decisions implied by the document  
+7. "REPRODUCIBILITY & INSTRUCTIONS" : If the document contains guides, instructions, or processes, rephrase them step-by-step for clarity.
+8. "COMPARATIVE INSIGHTS (Optional)" : If the document contains comparisons (e.g., products, approaches, metrics), summarize them clearly and fairly.
+9. "FUTURE ACTIONS or NEXT STEPS" : Identify any suggested next steps, action items, or follow-ups indicated in the document.
+
+---
+Use clear formatting, logical breakdowns, and structured summaries suitable for business, legal, educational, or technical document review.
+"""
     
     def __init__(self):
         """Initialize the research paper retriever"""
@@ -74,20 +109,19 @@ class PaperRetriever:
     def _get_research_system_prompt(self) -> str:
         """Get the specialized research paper analysis system prompt"""
         return (
-            "You are an expert research paper analyst specializing in academic document analysis. Only answer using information found in the provided research paper. "
-            "If you cannot find the answer, say 'I could not find this information in the research paper.' Never make up facts or speculate. "
+            "You are an expert docuemnt analyst specializing in academic document analysis. Only answer using information found in the provided research paper. "
+            "If you cannot find the answer, say 'I could not find this information in the docuemnt.' Never make up facts or speculate. "
             "When answering, first explain your reasoning step by step, citing the paper sections or pages you used. Then provide your final answer. "
-            "Your responses must follow these research-focused guidelines:\n\n"
-            "1. **PAGE REFERENCES**: Always include page references in the format [Page X] for citations, methodology, results, and conclusions.\n"
+            "Your responses must follow these document-focus guidelines:\n\n"
+            "1. **PAGE REFERENCES**: Always include page references when referencing specific content, using the format [Page X].\n"
             "2. **RESEARCH METHODOLOGY**: When discussing methods, extract exact algorithms, datasets, evaluation metrics, and experimental setups.\n"
             "3. **ACADEMIC FORMATTING**: Use proper academic formatting with clear sections for Abstract, Methods, Results, Discussion.\n"
             "4. **CITATION ANALYSIS**: Identify and extract in-text citations and reference patterns when relevant.\n"
             "5. **RESEARCH CONTRIBUTIONS**: Highlight novel contributions, research gaps addressed, and key findings.\n"
-            "6. **STATISTICAL SIGNIFICANCE**: Extract p-values, confidence intervals, and statistical measures when present.\n"
-            "7. **REPRODUCIBILITY**: Note details about code availability, data access, and experimental reproducibility.\n"
-            "8. **COMPARATIVE ANALYSIS**: When comparing papers, focus on methodological differences and result variations.\n"
-            "9. **FUTURE WORK**: Identify limitations and suggested future research directions.\n"
-            "10. **TECHNICAL DEPTH**: Provide detailed technical explanations suitable for researchers in the field.\n"
+            "6. **REPRODUCIBILITY**: Note details about code availability, data access, and experimental reproducibility.\n"
+            "7. **COMPARATIVE ANALYSIS**: When comparing papers, focus on methodological differences and result variations.\n"
+            "8. **FUTURE WORK**: Identify limitations and suggested future research directions.\n"
+            "9. **TECHNICAL DEPTH**: Provide detailed technical explanations suitable for researchers in the field.\n"
             "NOTE: Focus on research quality indicators like methodology rigor, result significance, and contribution novelty."
         )
     
@@ -325,55 +359,47 @@ class PaperRetriever:
         }
     
     async def _generate_research_analysis(self, research_query: ResearchQuery, context: str, results: List[PaperSearchResult]) -> str:
-        """Generate comprehensive research analysis using specialized academic prompt"""
-        
+        """Generate comprehensive research analysis using specialized academic prompt or general prompt"""
+        # Choose the system prompt based on query_type
+        if research_query.query_type == 'general':
+            system_prompt = self.GENERAL_PDF_ANALYSIS_PROMPT
+        else:
+            system_prompt = self.research_system_prompt
+
         # Build query-specific analysis prompt
         analysis_prompt = f"""
-**RESEARCH PAPER ANALYSIS REQUEST**
-
-Query: "{research_query.query}"
+**DOCUMENT ANALYSIS REQUEST**
+Based on the following document content, answer this question: "{research_query.query}"
 Query Type: {research_query.query_type}
-Document Namespace: user_{research_query.user_id}_doc_{research_query.document_uuid}
+**DOCUMENT COVERING:**
 
-**RESEARCH PAPER CONTEXT:**
 {context}
 
-**ANALYSIS REQUIREMENTS:**
-Based on the provided research paper content, provide a comprehensive academic analysis that:
 
-1. **STEP-BY-STEP REASONING**: Explain your analytical process citing specific sections and pages
-2. **ACADEMIC RIGOR**: Focus on methodological details, statistical significance, and research contributions
-3. **PAGE CITATIONS**: Include [Page X] references for all claims and findings
-4. **TECHNICAL DEPTH**: Provide detailed explanations suitable for researchers
-5. **RESEARCH QUALITY**: Assess methodology rigor, result significance, and contribution novelty
+INSTRUCTIONS:
+- Your approach should be first overview, then description and then conclusion, where ever needed.
+- Use the information provided above to answer the question comprehensively
+- Include page references when citing specific content
+- If the document contains relevant information, provide a detailed response
+- Only say you cannot find information if there is truly no relevant content above
+- Show Point wise description when ever needed, not always, only whne nedded.
+- Add the conclusion section when ever needed.
 
-**QUERY-SPECIFIC FOCUS:**
-{self._get_query_specific_instructions(research_query.query_type)}
+ANSWER:
 
-**CRITICAL CONSTRAINTS:**
-- Only use information explicitly stated in the provided research paper context
-- Include specific page references for all claims
-- If information is not available, clearly state: "I could not find this information in the research paper"
-- Maintain academic formatting and terminology
-- Focus on research quality indicators
-
-Provide your comprehensive research analysis:
 """
-        
         try:
             response = await asyncio.to_thread(
                 self.openai_client.chat.completions.create,
                 model=self.response_model,
                 messages=[
-                    {"role": "system", "content": self.research_system_prompt},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": analysis_prompt}
                 ],
                 max_tokens=2000,  # Allow comprehensive responses
-                temperature=0.1  # Low temperature for academic precision
+                temperature=0.3  # Low temperature for academic precision
             )
-            
             return response.choices[0].message.content.strip()
-            
         except Exception as e:
             print(f"❌ Research analysis generation failed: {e}")
             return f"Error generating research analysis: {str(e)}"
@@ -386,8 +412,8 @@ Provide your comprehensive research analysis:
             'statistical': "Extract p-values, confidence intervals, effect sizes, and statistical tests. Assess statistical rigor and significance.",
             'citations': "Identify related work, citation patterns, and comparative studies. Analyze how this work builds on previous research.",
             'discussion': "Focus on result interpretation, implications, limitations, and research impact. Analyze the authors' analytical insights.",
-            'conclusion': "Extract key contributions, future work suggestions, and research impact. Summarize novel findings and their significance.",
-            'general': "Provide comprehensive overview covering methodology, results, and contributions with balanced academic analysis."
+            'conclusion': "Extract key contributions, future work suggestions, and research impact. Summarize findings and their significance.",
+            'general': "Provide comprehensive overview and contribution with balanced academic analysis."
         }
         return instructions.get(query_type, instructions['general'])
 

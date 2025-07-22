@@ -387,14 +387,15 @@ class HybridRetriever:
         # Format context without confidence scores but with page references
         context_parts = []
         for i, result in enumerate(results):
-            book_name = result.metadata.get('book_name', 'Unknown Source')
+            book_name = result.metadata.get('section_title', 'Unknown Source')
+            page = result.metadata.get('page_references', 'Unknown Page')
             confidence = result.confidence
             
-            context_parts.append(f"[Source {i+1} - {book_name} (Confidence: {confidence:.2f})]:\n{result.content}")
+            context_parts.append(f"[Source {i+1} - {book_name}, Page {page}]:\n{result.content} ]")
         
         return "\n\n".join(context_parts)
     
-    def answer_question(self, question: str, max_results: int = 5) -> str:
+    def answer_question(self, question: str, max_results: int = 10) -> str:
         """Generate an answer using retrieved context"""
         try:
             # Check if this is a question about knowledge base contents, study plans, or topic locations
@@ -428,16 +429,18 @@ class HybridRetriever:
             
             # Generate answer using specialized prompt with strict constraints
             strict_system_prompt = f"""
+            Quary: {question}
             CRITICAL INSTRUCTIONS - FOLLOW EXACTLY:
             
-            1. ONLY use information provided in the context below
-            2. DO NOT add any information not explicitly stated in the context
-            3. DO NOT reference books, authors, or page numbers not mentioned in the context
-            4. DO NOT generate general knowledge about the topic beyond what's in the context
-            5. If the context doesn't contain enough information, say: "Based on the available knowledge base content, I have limited information about this topic."
-            6. Always start your response with: "Based on the available knowledge base content:"
-            7. Only cite books and page numbers that are explicitly mentioned in the provided context
-            
+            1. ONLY use information provided in the context below.
+            2. DO NOT reference books, authors, or page numbers if not mentioned in the context
+            3. DO NOT generate general knowledge about the topic beyond what's in the context. But use what ever in the context to the answer quary.
+            4. Give more detailed description based on the Quary given and the context provided below.
+            5. Always start your response with: "Based on the available knowledge base content:"
+            6. Only cite books and page numbers if available in the context.
+            7. If the context doesn't contain enough information, say: "Based on the available knowledge base content, I have limited information about this topic."
+            8. Be create about the structure of the content, the way it Apperance and Readability. You can change the little wording if necessary.
+            9. It should look like you are answering the quary.
             CONTEXT:
             {context}
             
@@ -457,7 +460,7 @@ class HybridRetriever:
                     }
                 ],
                 max_tokens=template.get('max_tokens', config.max_response_tokens),
-                temperature=0.2  # Lower temperature for more factual, less creative responses
+                temperature=0.3  # Lower temperature for more factual, less creative responses
             )
             
             return response.choices[0].message.content.strip()

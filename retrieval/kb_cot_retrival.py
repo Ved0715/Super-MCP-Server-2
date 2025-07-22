@@ -494,11 +494,12 @@ class ChainOfThoughtKBRetriever:
         
         for i, result in enumerate(search_results[:8]):  # Use more results for comprehensive response
             book_name = result.metadata.get('book_name', 'Unknown Book')
-            chapter = result.metadata.get('chapter', 'Unknown Chapter')
+            chapter = result.metadata.get('section_title', 'Unknown Chapter')
+            page_number = result.metadata.get('page_references')
             source_books.add(book_name)
             
             context_chunks.append(f"""
-[Source {i+1} - {book_name}, {chapter}]:
+[ {book_name}, {chapter}]:
 {result.content}
 (Relevance Score: {result.relevance_score:.3f})
 """)
@@ -534,6 +535,12 @@ class ChainOfThoughtKBRetriever:
         - If context is insufficient for a question, state this clearly
         - Build upon previous answers where relevant
         - Focus on practical understanding and real-world applications
+        - Take care of the structure of the responce.
+        - If needed the responce should be mix of paras, poinsts, concluson, description ...
+        - Do not add generic summaries or meta-commentary.
+        - Do not use phrases like 'This comprehensive overview...' or similar.
+        - Be create about the structure of the content, the way it Apperance and Readability. You can change the little wording if necessary.
+        - It should look like you are answering the quary.
         
         **PHASE 2: SYNTHESIS PHASE**
         Combine all answers into a coherent, comprehensive response for the user.
@@ -586,6 +593,7 @@ class ChainOfThoughtKBRetriever:
         
         **FINAL COMPREHENSIVE RESPONSE:**
         Based on the available knowledge base content: [Your detailed, comprehensive final response that synthesizes all the above - minimum 4-6 substantial paragraphs with specific citations, examples, and technical details from the knowledge base]
+        
         """
         
         try:
@@ -597,7 +605,7 @@ class ChainOfThoughtKBRetriever:
                     {"role": "user", "content": comprehensive_synthesis_prompt}
                 ],
                 max_tokens=2000,  # Increase token limit for comprehensive responses
-                temperature=0.1
+                temperature=0.3
             )
             
             full_response = response.choices[0].message.content.strip()
@@ -669,8 +677,9 @@ class ChainOfThoughtKBRetriever:
         additional_context = []
         
         for result in search_results[:5]:
-            book_name = result.metadata.get('book_name', 'Unknown Book')
-            additional_context.append(f"From {book_name}: {result.content[:200]}...")
+            book_name = result.metadata.get('section_title', 'Unknown Book')
+            page = result.metadata.get('page_references', 'Unknown Page')
+            additional_context.append(f"[From {book_name}, Page{page}]\n: {result.content}...")
         
         enhanced_response = short_response + "\n\nAdditional relevant information from the knowledge base:\n\n"
         enhanced_response += "\n\n".join(additional_context)

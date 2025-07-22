@@ -78,7 +78,11 @@ Only respond with "I could not find this information in the document" if NO rele
 9. "FUTURE ACTIONS or NEXT STEPS" : Identify any suggested next steps, action items, or follow-ups indicated in the document.
 
 ---
-Use clear formatting, logical breakdowns, and structured summaries suitable for business, legal, educational, or technical document review.
+
+- Use headings/subheadings for each major section.
+- Include bullet points for clarity where appropriate.
+- Ensure professional tone, factual grounding, and clean formatting.
+- Structure the output to suit business, technical, legal, or educational use.
 """
     
     def __init__(self):
@@ -384,6 +388,8 @@ INSTRUCTIONS:
 - Only say you cannot find information if there is truly no relevant content above
 - Show Point wise description when ever needed, not always, only whne nedded.
 - Add the conclusion section when ever needed.
+- It should be like the quary is passed to you and you are answering it.
+
 
 ANSWER:
 

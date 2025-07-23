@@ -20,6 +20,8 @@ class QuizQuestion:
     answer: str  # correct option key (a, b, c, or d)
     topic: str   # topic/section this question covers
     difficulty: str  # easy, medium, hard
+    page: str = "unknown"  # page number
+    reasoning: str = ""    # reasoning for the answer
 
 @dataclass
 class QuizRequest:
@@ -259,6 +261,7 @@ QUESTION REQUIREMENTS:
 - Questions must be specific to THIS paper's content
 - Avoid generic questions that could apply to any paper
 - Use varied question stems and formats
+- For each question, provide a brief reasoning for the correct answer and  why the answer is correc and referance page number for the answer where the answer can be found.
 
 OUTPUT FORMAT:
 Return a valid JSON object with the exact structure below. Do not include any text outside the JSON.
@@ -276,7 +279,9 @@ Return a valid JSON object with the exact structure below. Do not include any te
             "a": "Option A text"
         }},
         "difficulty": "easy",
-        "topic": "main_concepts"
+        "topic": "main_concepts",
+        "page": "4",
+        "reasoning": "This is what the answer is correct, you can find the context of the answer in th page number "4" ..."
     }},
     "Q2": {{
         "question": "Question text here?",
@@ -290,7 +295,9 @@ Return a valid JSON object with the exact structure below. Do not include any te
             "b": "Option B text"
         }},
         "difficulty": "medium",
-        "topic": "methodologies"
+        "topic": "methodologies",
+        "page": "5",
+        "reasoning": "Reason why the answer is correct out of all and you can refer from the page number "5" ..."
     }},
     ... continue for all {num_questions} questions
 }}
@@ -352,17 +359,13 @@ CRITICAL: Return only valid JSON, no additional text.
                         if answer_dict:
                             answer_key = list(answer_dict.keys())[0]
                         else:
-                            # Fallback - find correct answer by looking for it in the response
                             answer_key = "a"  # Default fallback
-                        
-                        # Ensure answer key is valid
                         if answer_key not in ['a', 'b', 'c', 'd']:
                             answer_key = "a"
-                        
-                        # Get topic from response or cycle through defaults
                         topic = q_data.get("topic", topics_cycle[i % len(topics_cycle)])
                         difficulty = q_data.get("difficulty", "medium")
-                        
+                        page = q_data.get("page", "unknown")
+                        reasoning = q_data.get("reasoning", "")
                         question = QuizQuestion(
                             question=q_data.get("question", f"Question {i+1}"),
                             options=q_data.get("options", {
@@ -371,21 +374,25 @@ CRITICAL: Return only valid JSON, no additional text.
                             }),
                             answer=answer_key,
                             topic=topic,
-                            difficulty=difficulty
+                            difficulty=difficulty,
+                            page=page,
+                            reasoning=reasoning
                         )
+                        # If LLM did not provide page/reasoning, assign from the most relevant chunk
+                        if question.page == "unknown" or not question.reasoning:
+                            # Fallback: assign from the first chunk (or you can improve this with keyword matching)
+                            if chunks:
+                                question.page = str(chunks[0]["page"])
+                                question.reasoning = f"This answer is based on content from Page {question.page}."
                         questions.append(question)
-                    
                     print(f"✅ Successfully parsed {len(questions)} questions from single API response")
                     return questions[:num_questions]  # Ensure we don't exceed requested count
-                
                 else:
                     raise json.JSONDecodeError("No valid JSON found", response_text, 0)
-                    
             except json.JSONDecodeError as e:
                 print(f"❌ Failed to parse quiz JSON: {e}")
                 print(f"Response preview: {response_text[:500]}...")
                 return self._generate_fallback_questions(chunks, num_questions, difficulty_mix)
-                
         except Exception as e:
             print(f"❌ Quiz generation API call failed: {e}")
             return self._generate_fallback_questions(chunks, num_questions, difficulty_mix)
@@ -419,20 +426,18 @@ CRITICAL: Return only valid JSON, no additional text.
     
     def _format_quiz_output(self, questions: List[QuizQuestion]) -> Dict[str, Any]:
         """Format quiz questions in the requested output format"""
-        
         formatted_quiz = {}
-        
         for i, question in enumerate(questions, 1):
             question_key = f"Q{i}"
-            
             formatted_quiz[question_key] = {
                 "question": question.question,
                 "options": question.options,
                 "answer": {
                     question.answer: question.options[question.answer]
-                }
+                },
+                "page": question.page,
+                "reasoning": question.reasoning
             }
-        
         return formatted_quiz
     
     def _error_response(self, error_message: str) -> Dict[str, Any]:

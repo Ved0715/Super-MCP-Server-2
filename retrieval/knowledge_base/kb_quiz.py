@@ -21,6 +21,9 @@ class KBQuizQuestion:
     topic: str   # topic/section this question covers
     difficulty: str  # easy, medium, hard
     source_info: str  # brief info about source content
+    book_name: str = "Unknown"
+    page_reference: str = "Unknown"
+    reasoning: str = ""
 
 @dataclass
 class KBQuizRequest:
@@ -193,7 +196,8 @@ class KnowledgeBaseQuizGenerator:
                             "id": match.id,
                             "content": content,
                             "source": match.metadata.get('source', 'Unknown'),
-                            "page": match.metadata.get('page_number', 'Unknown'),
+                            "page": match.metadata.get('page_references', 'Unknown'),
+                            "book_name": match.metadata.get('section_title', 'Unknown'),
                             "metadata": match.metadata
                         })
             print(f"✅ Returning {len(chunks)} raw chunks without any filtering")
@@ -370,11 +374,24 @@ DIFFICULTY GUIDELINES:
 - Hard: Analysis, synthesis of multiple content blocks
 
 QUESTION REQUIREMENTS:
+- DO NOT use phrases like "as per the content", "according to the provided content", "as mentioned above", "based on the content", or similar. 
 - Each question must have exactly 4 options (a, b, c, d)
 - Only ONE option should be correct
 - Incorrect options should be plausible but based on content variations
-- Reference specific content blocks in questions when possible
 - Include variety in question types (what/who/when/where/why/how)
+- Write questions in a natural, academic style, as if for a university exam or textbook. DO NOT use phrases like "according to the content", "based on the provided content", or similar meta-references.
+- Instead, provide a direct explanation for why the answer is correct, using facts or logic from the content, but do not reference the content itself.
+- Each question should stand alone and make sense without referencing the content source.
+- For each question, provide a direct, fact-based explanation for why the answer is correct. Do NOT reference the content or say 'as per the content'. Example:
+        Q: What is the main function of supervised learning?
+        A: It learns a function that maps input attributes to a target attribute using labeled data....
+
+Reasoning: Supervised learning uses labeled data to train models, allowing them to predict outcomes based on input features.- For each question, include the book name, section title, page reference, and a brief reasoning for the answer, all based on the provided content.
+
+RESONING:
+BAD: "The correct answer is supported by the content."
+BAD: "As per the provided content, the answer is..."
+GOOD: "Machine learning is defined as a subset of AI that allows computers to learn from data and make decisions without explicit programming...."
 
 OUTPUT FORMAT:
 Return a valid JSON object with the exact structure below. Do not include any text outside the JSON.
@@ -395,6 +412,28 @@ Return a valid JSON object with the exact structure below. Do not include any te
         "topic": "factual_knowledge",
         "source_info": "Based on content from [specific source/block reference]",
         "content_reference": "Quote or reference from the actual content"
+        "book_name": "title from content",
+        "page_reference": "Page number(s) from content",
+        "reasoning": "Reason why the answer is correct out of all."
+    }},
+    "Q2": {{
+        "question": "According to the provided content, [specific question based on content]?",
+        "options": {{
+            "a": "Option A from content",
+            "b": "Option B from content",
+            "c": "Option C from content", 
+            "d": "Option D from content"
+        }},
+        "answer": {{
+            "a": "Option A from content"
+        }},
+        "difficulty": "easy",
+        "topic": "factual_knowledge",
+        "source_info": "Based on content from [specific source/block reference]",
+        "content_reference": "Quote or reference from the actual content"
+        "book_name": "title from content",
+        "page_reference": "Page number(s) from content",
+        "reasoning": "This is why the answer is correct"
     }},
     ... continue for all {num_questions} questions
 }}
@@ -499,6 +538,8 @@ FINAL CHECK: Before returning, verify each question can ONLY be answered using t
                         difficulty = q_data.get("difficulty", "medium")
                         source_info = q_data.get("source_info", "Knowledge base content")
                         
+                        # Find the most relevant chunk for fallback
+                        chunk_fallback = chunks[0] if chunks else {}
                         question = KBQuizQuestion(
                             question=question_text,
                             options=q_data.get("options", {
@@ -508,7 +549,10 @@ FINAL CHECK: Before returning, verify each question can ONLY be answered using t
                             answer=answer_key,
                             topic=topic,
                             difficulty=difficulty,
-                            source_info=source_info
+                            source_info=source_info,
+                            book_name=q_data.get("section_title", chunk_fallback.get("section_title", "Unknown")),
+                            page_reference=q_data.get("page_reference", chunk_fallback.get("page", "Unknown")),
+                            reasoning=q_data.get("reasoning", "")
                         )
                         questions.append(question)
                     
@@ -579,7 +623,10 @@ FINAL CHECK: Before returning, verify each question can ONLY be answered using t
                 "options": question.options,
                 "answer": {
                     question.answer: question.options[question.answer]
-                }
+                },
+                "book_name": question.book_name,
+                "page_reference": question.page_reference,
+                "reasoning": question.reasoning
             }
         
         return formatted_quiz

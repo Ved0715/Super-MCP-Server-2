@@ -281,7 +281,7 @@ Return a valid JSON object with the exact structure below. Do not include any te
         "difficulty": "easy",
         "topic": "main_concepts",
         "page": "4",
-        "reasoning": "This is what the answer is correct, you can find the context of the answer in th page number "4" ..."
+        "reasoning": "This is why the answer is correct, you can find the context of the answer in th page number "4" ..."
     }},
     "Q2": {{
         "question": "Question text here?",

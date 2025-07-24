@@ -12,7 +12,7 @@ import tempfile
 import os
 import time
 import uuid
-
+from openai import OpenAI
 from mcp.server import Server
 from mcp.server.models import InitializationOptions
 from mcp.types import (
@@ -23,6 +23,9 @@ import mcp.server.stdio
 import mcp.server.session
 
 from config import AdvancedConfig
+
+from templates.main import generate_presentation_api
+
 from enhanced_pdf_processor import EnhancedPDFProcessor
 import retrieval
 from vector_storage import AdvancedVectorStorage
@@ -32,6 +35,8 @@ from search_client import SerpAPIClient
 from processors.universal_document_processor import UniversalDocumentProcessor
 from retrieval.paper_retriver import PaperRetriever, ResearchQuery
 from retrieval.paper.paper_compare import PDFComparator
+import pinecone
+from pinecone import Pinecone, ServerlessSpec
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -82,7 +87,10 @@ class PerfectMCPServer:
     def __init__(self):
         """Initialize the perfect research system"""
         self.config = AdvancedConfig()
-        
+        self.openai_client = OpenAI(api_key=self.config.openai_api_key)
+        self.index = Pinecone(api_key=self.config.pinecone_api_key)
+        self.pc = Pinecone(api_key=self.config.pinecone_api_key)
+        self.index = self.pc.Index("all-pdfs-index")
         # Initialize all components
         self.comparator = PDFComparator()
         self.pdf_processor = EnhancedPDFProcessor(self.config)
@@ -228,11 +236,6 @@ class PerfectMCPServer:
                             "namespace": {"type": "string", "description": "Vector database namespace"},
                             "user_prompt": {"type": "string", "description": "User's presentation requirements"},
                             "title": {"type": "string", "description": "Presentation title"},
-                            "author": {"type": "string", "description": "Presentation author"},
-                            "theme": {"type": "string", "description": "Presentation theme"},
-                            "slide_count": {"type": "integer", "description": "Number of slides"},
-                            "audience_type": {"type": "string", "description": "Target audience"},
-                            "search_query": {"type": "string", "description": "Additional search context"}
                         },
                         "required": ["namespace", "user_prompt"]
                     }
@@ -1758,11 +1761,6 @@ class PerfectMCPServer:
         namespace: str,
         user_prompt: str,
         title: str = None,
-        author: str = "AI Research Assistant",
-        theme: str = "academic_professional",
-        slide_count: int = 12,
-        audience_type: str = "academic",
-        search_query: str = None
     ) -> List[TextContent]:
         """
         Handle namespace-based presentation creation
@@ -1777,7 +1775,6 @@ class PerfectMCPServer:
             logger.info(f"🚀 Starting namespace-based presentation creation")
             logger.info(f"📁 Namespace: {namespace}")
             logger.info(f"💭 User prompt: {user_prompt}")
-            logger.info(f"🎨 Theme: {theme}, Slides: {slide_count}, Audience: {audience_type}")
             
             # Step 1: Search vector database in namespace
             logger.info(f"🔍 Step 1/3: Starting vector database search in namespace...")
@@ -1790,9 +1787,14 @@ class PerfectMCPServer:
             search_results = await self.vector_storage.search_in_namespace(
                 namespace=namespace,
                 query=user_prompt,
-                max_results=20,
-                similarity_threshold=0.2
+                max_results=50,
+                similarity_threshold=0.1
             )
+
+
+            
+
+
             
             search_duration = time.time() - search_start_time
             logger.info(f"✅ Vector search completed in {search_duration:.2f}s")
@@ -1818,47 +1820,92 @@ class PerfectMCPServer:
             logger.info(f"📝 Aggregated content: {len(aggregated_content.get('full_text', ''))} chars")
             logger.info(f"📑 Sections found: {list(aggregated_content.get('sections', {}).keys())}")
             
-            # Step 3: Generate PPT using existing generator
-            logger.info(f"🎨 Step 3/3: Starting PowerPoint generation...")
-            ppt_start_time = time.time()
+
+            all_texts = []
+            for result in search_results:
+                node_content_str = result['metadata'].get('_node_content', '')
+                if node_content_str:
+                    try:
+                        node_content = json.loads(node_content_str)
+                        text = node_content.get('text', '')
+                        if text:
+                            all_texts.append(text)
+                    except Exception as e:
+                        # Handle malformed JSON or missing fields
+                        continue
             
-            if not self.ppt_generator:
-                logger.error("❌ PPT generator not initialized")
-                return [TextContent(type="text", text="PPT generator not initialized")]
-            
-            logger.info(f"🤖 Calling PPT generator with {slide_count} slides...")
-            presentation_path = await self.ppt_generator.create_perfect_presentation(
-                paper_content=aggregated_content,
-                user_prompt=user_prompt,
-                paper_id=namespace,  # Use namespace as paper_id
-                title=title,
-                theme=theme,
-                slide_count=slide_count,
-                audience_type=audience_type
+            # Now all_texts is a list of all the text content from the chunks
+            full_text = "\n\n".join(all_texts)
+            # print(full_text)
+
+            # Step 2.5: Enrich content with OpenAI
+            enrichment_prompt = f"""
+USER_PROMOT={user_prompt}
+You are an expert academic writer. Please elaborate, clarify, and enrich the following content for a research presentation. Make it more detailed, engaging, and suitable for a professional audience. Do not add information not present in the content, but you may rephrase, expand, and clarify as needed. Eleborate the content as much as you can.
+If you encounter any tables or tabular data, do NOT simply reproduce the table. Instead, provide a detailed, plain-language explanation of what the table shows, what each row and column means, and what insights or implications can be drawn from the data. Focus on interpretation and explanation, not just copying the table. eleborate the conntet also add the meaning of the tables in the content. Eleborate as much as possible.
+the content should be enriched based on the USER_PROMOT.
+CONTENT TO ENRICH:
+{full_text}
+"""
+
+            response = await asyncio.to_thread(
+                self.openai_client.chat.completions.create,
+                model=self.config.LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are an expert academic writer."},
+                    {"role": "user", "content": enrichment_prompt}
+                ],
+                temperature=0.7,
+                max_tokens=4000
             )
+            enriched_text = response.choices[0].message.content.strip()
+            print(enriched_text)
             
-            ppt_duration = time.time() - ppt_start_time
-            total_duration = time.time() - start_time
+            logger.info(f"Generating Presentation...")
+            output = generate_presentation_api(enriched_text, title)
+            # Step 3: Generate PPT using existing generator
+            # logger.info(f"🎨 Step 3/3: Starting PowerPoint generation...")
+            # ppt_start_time = time.time()
             
-            logger.info(f"✅ PowerPoint generation completed in {ppt_duration:.2f}s")
-            logger.info(f"📁 Presentation saved: {os.path.basename(presentation_path)}")
-            logger.info(f"🎉 Total process completed in {total_duration:.2f}s")
+            # if not self.ppt_generator:
+            #     logger.error("❌ PPT generator not initialized")
+            #     return [TextContent(type="text", text="PPT generator not initialized")]
             
-            # Performance breakdown log
-            logger.info(f"⏱️  Performance breakdown:")
-            logger.info(f"   - Vector search: {search_duration:.2f}s ({search_duration/total_duration*100:.1f}%)")
-            logger.info(f"   - Content aggregation: {aggregation_duration:.2f}s ({aggregation_duration/total_duration*100:.1f}%)")
-            logger.info(f"   - PPT generation: {ppt_duration:.2f}s ({ppt_duration/total_duration*100:.1f}%)")
+            # logger.info(f"🤖 Calling PPT generator with {slide_count} slides...")
+            # presentation_path = await self.ppt_generator.create_perfect_presentation(
+            #     paper_content=aggregated_content,
+            #     user_prompt=user_prompt,
+            #     paper_id=namespace,  # Use namespace as paper_id
+            #     title=title,
+            #     theme=theme,
+            #     slide_count=slide_count,
+            #     audience_type=audience_type
+            # )
             
-            response_parts = [f"# 🎯 Namespace-Based Presentation Created"]
-            response_parts.append(f"**Namespace:** {namespace}")
-            response_parts.append(f"**Content Sources:** {len(search_results)} chunks found")
-            response_parts.append(f"**Presentation:** {os.path.basename(presentation_path)}")
-            response_parts.append(f"**Theme:** {theme}")
-            response_parts.append(f"**Slides:** {slide_count}")
-            response_parts.append(f"**Total Time:** {total_duration:.2f}s")
+            # ppt_duration = time.time() - ppt_start_time
+            # total_duration = time.time() - start_time
             
-            return [TextContent(type="text", text="\n".join(response_parts))]
+            # logger.info(f"✅ PowerPoint generation completed in {ppt_duration:.2f}s")
+            # logger.info(f"📁 Presentation saved: {os.path.basename(presentation_path)}")
+            # logger.info(f"🎉 Total process completed in {total_duration:.2f}s")
+            
+            # # Performance breakdown log
+            # logger.info(f"⏱️  Performance breakdown:")
+            # logger.info(f"   - Vector search: {search_duration:.2f}s ({search_duration/total_duration*100:.1f}%)")
+            # logger.info(f"   - Content aggregation: {aggregation_duration:.2f}s ({aggregation_duration/total_duration*100:.1f}%)")
+            # logger.info(f"   - PPT generation: {ppt_duration:.2f}s ({ppt_duration/total_duration*100:.1f}%)")
+            
+            # response_parts = [f"# 🎯 Namespace-Based Presentation Created"]
+            # response_parts.append(f"**Namespace:** {namespace}")
+            # response_parts.append(f"**Content Sources:** {len(search_results)} chunks found")
+            # response_parts.append(f"**Presentation:** {os.path.basename(presentation_path)}")
+            # response_parts.append(f"**Theme:** {theme}")
+            # response_parts.append(f"**Slides:** {slide_count}")
+            # response_parts.append(f"**Total Time:** {total_duration:.2f}s")
+            
+            # return [TextContent(type="text", text="\n".join(search_results))]
+            # return [TextContent(type="text", text="\n".join("hi"))]
+            return [TextContent(type="text", text=output)]
             
         except Exception as e:
             total_duration = time.time() - start_time

@@ -312,9 +312,12 @@ Use [Page X] format and bullet points where necessary.
                 "namespace": self._build_namespace(research_query.user_id, research_query.document_uuid)
             }
         
-        # Prepare context for analysis
+        # Prepare context for analysis with logical ordering
+        # Sort results by page number first, then by relevance for logical flow
+        sorted_results = sorted(search_results[:10], key=lambda x: (x.page_number or 999, -x.relevance_score))
+        
         context_parts = []
-        for i, result in enumerate(search_results[:10]):  # Limit to top 10 for context
+        for i, result in enumerate(sorted_results):
             page_ref = f"[Page {result.page_number}]" if result.page_number else "[Page Unknown]"
             section_ref = f"({result.section_type})" if result.section_type else ""
             
@@ -364,25 +367,34 @@ Use [Page X] format and bullet points where necessary.
         system_prompt = self._get_query_specific_instructions(research_query.query_type)
 
 
-        # Build query-specific analysis prompt
+        # Build query-specific analysis prompt with structured flow
         analysis_prompt = f"""
 **DOCUMENT ANALYSIS REQUEST**
-Based on the following document content, answer this question: "{research_query.query}"
+Question: "{research_query.query}"
 Query Type: {', '.join(research_query.query_type)}
-**DOCUMENT COVERING:**
 
+**DOCUMENT CONTENT:**
 {context}
 
+**RESPONSE STRUCTURE REQUIREMENTS:**
+1. Start with a clear, direct definition/answer
+2. Follow this logical flow:
+   - Definition & Core Concept
+   - Purpose & Background  
+   - How it Works/Methodology
+   - Key Features & Characteristics
+3. Use smooth transitions between sections
+4. Include page references naturally within sentences
+5. End with a brief synthesis
 
-INSTRUCTIONS:
-- Your approach should be description.
-- Use the information provided above to answer the question comprehensively
-- Include page references when citing specific content
-- If the document contains relevant information, provide a detailed response
-- Only say you cannot find information if there is truly no relevant content above
-- Show Point wise description when ever needed, not always, only whne nedded.
-- It should be like the quary is passed to you and you are answering it.
-
+**INSTRUCTIONS:**
+- Begin with "**[Topic Name]**" as the main heading
+- Use subheadings for each major section
+- Add transitional phrases between sections ("Building on this concept...", "This approach enables...", "Furthermore...")
+- Integrate page references smoothly: "The system operates by... [Page X]" not "According to Page X..."
+- Organize content logically rather than jumping between topics
+- Use point-wise description only when structurally needed
+- Maintain academic flow while being accessible
 
 ANSWER:
 
@@ -405,6 +417,17 @@ ANSWER:
     
     def _get_query_specific_instructions(self, query_type: List[str]) -> str:
         """Get dynamic instructions based on query type"""
+        
+        # Structure guidance that applies to all response types
+        structure_guidance = """
+**RESPONSE ORGANIZATION:**
+- Lead with direct answer to the question
+- Follow logical progression: Definition → Context → Process → Key Points
+- Use clear section breaks and smooth transitions
+- Maintain academic flow while being accessible
+- Integrate page references naturally within content flow
+"""
+        
         instructions = {
             'general': self.GENERAL_PDF_ANALYSIS_PROMPT,
             'overview': self.OVERVIEW_PDF_ANALYSIS_PROMPT,
@@ -414,9 +437,9 @@ ANSWER:
             'conclusion': self.CONCLUSION_PDF_ANALYSIS_PROMPT
         }
         
-        # If only 'general' is requested, return just the general prompt
+        # If only 'general' is requested, return general prompt with structure guidance
         if query_type == ['general']:
-            return instructions['general']
+            return instructions['general'] + structure_guidance
         
         # For multiple types, combine them
         combined_prompts = []
@@ -429,11 +452,14 @@ ANSWER:
             if qtype != 'general' and qtype in instructions:
                 combined_prompts.append(f"\n{instructions[qtype]}")
         
-        # Add structure guidance for multiple sections
+        # Add enhanced structure guidance for multiple sections
         if len(query_type) > 1:
             combined_prompts.append(
-                "\n**RESPONSE STRUCTURE:** Organize your response with clear sections for each focus area requested."
+                "\n**MULTI-SECTION STRUCTURE:** Organize your response with clear sections for each focus area requested. Use transitional phrases between sections to maintain flow."
             )
+        
+        # Add general structure guidance
+        combined_prompts.append(structure_guidance)
         
         return "\n".join(combined_prompts)
 

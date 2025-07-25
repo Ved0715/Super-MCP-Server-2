@@ -269,7 +269,7 @@ class PerfectMCPServer:
                             "query": {"type": "string", "description": "Research query"},
                             "user_id": {"type": "string", "description": "User identifier for document access"},
                             "document_uuid": {"type": "string", "description": "Document UUID for specific paper"},
-                            "search_type": {"type": "string", "enum": ["general", "methodology", "results", "discussion", "conclusion", "statistical", "citations"], "default": "general"},
+                            "search_type": {"type": "array", "items": {"type": "string"}, "enum": ["general", "methodology", "results", "discussion", "conclusion", "statistical", "citations"], "default": ["general"]},
                             "max_results": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
                             "similarity_threshold": {"type": "number", "default": 0.7, "minimum": 0.0, "maximum": 1.0},
                             "focus_sections": {"type": "array", "items": {"type": "string"}, "description": "Specific paper sections to focus on (optional)"}
@@ -2113,7 +2113,7 @@ CONTENT TO ENRICH:
             return [TextContent(type="text", text=f"Semantic search error: {str(e)}")]
 
     async def _handle_semantic_paper_search(self, query: str, user_id: str, document_uuid: str,
-                                          search_type: str = "general", max_results: int = 10,
+                                          search_type: List[str] = ['general'], max_results: int = 10,
                                           similarity_threshold: float = 0.4,
                                           focus_sections: Optional[List[str]] = None, **kwargs) -> List[TextContent]:
         """

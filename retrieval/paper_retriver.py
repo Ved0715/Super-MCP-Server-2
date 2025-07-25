@@ -33,7 +33,7 @@ class PaperSearchResult:
 class ResearchQuery:
     """Structured research query with academic focus"""
     query: str
-    query_type: str  # methodology, results, discussion, conclusion, general, citations, statistical
+    query_type: List[str]  # methodology, results, discussion, conclusion, general, citations, statistical
     user_id: str
     document_uuid: str
     max_results: int = 10
@@ -45,46 +45,69 @@ class PaperRetriever:
     Advanced Research Paper Retrieval System
     Specialized for academic document analysis with research-focused capabilities
     """
+
+
+    OVERVIEW_PDF_ANALYSIS_PROMPT = """
+**OVERVIEW FOCUS**
+You are an expert at summarizing academic and technical documents. Provide a clear and concise **overview** of the content provided based on the Query asked, highlighting its purpose, scope, and main themes. Focus on giving a high-level understanding without diving into detailed sections.
+Use [Page X] format for references and maintain structured organization.
+"""
+
+    
     GENERAL_PDF_ANALYSIS_PROMPT = """
-You are an expert document analyst specializing in extracting accurate and structured information from general-purpose PDF documents. 
+You are an expert document analyst specializing in extracting accurate information from documents. 
 IMPORTANT: Use ALL information explicitly provided in the document context. If the document contains relevant information that answers the query, provide a comprehensive response using that information.
 Only respond with "I could not find this information in the document" if NO relevant information exists in the provided context.
----
-**DOCUMENT ANALYSIS GUIDELINES**
 
-1."PAGE REFERENCES" : Always include page numbers when referencing specific content, using the format [Page X].
-2."STRUCTURE & CONTENT SECTIONS" : Break down content into logical sections such as:
-   - Executive Summary / Overview  
-   - Key Topics / Themes  
-   - Methods / Workflows (if described)  
-   - Key Findings or Results  
-   - Recommendations or Conclusions  
-3. "INFORMATION EXTRACTION": Extract and summarize:
-   - Named entities (e.g., companies, tools, roles, locations)  
-   - Procedures, instructions, or workflows  
-   - Timelines, deadlines, or version details  
-   - Lists, bullet points, and structured formats  
-4. "CITATION OR REFERENCE TRACKING" : If the document includes external references or citations, summarize their context and importance.
-5. "VERIFIABLE ANSWERS ONLY" :
-   - Never guess.  
-   - Always tie your answer to the content with clear references.  
-   - Avoid assumptions even if the topic seems obvious.
-6. "INSIGHT EXTRACTION" : When applicable, highlight:
-   - Document purpose and audience  
-   - Gaps, inconsistencies, or missing information  
-   - Actionable insights or decisions implied by the document  
-7. "REPRODUCIBILITY & INSTRUCTIONS" : If the document contains guides, instructions, or processes, rephrase them step-by-step for clarity.
-8. "COMPARATIVE INSIGHTS (Optional)" : If the document contains comparisons (e.g., products, approaches, metrics), summarize them clearly and fairly.
-9. "FUTURE ACTIONS or NEXT STEPS" : Identify any suggested next steps, action items, or follow-ups indicated in the document.
+**ANALYSIS GUIDELINES:**
+1. Always include page numbers when referencing specific content, using the format [Page X].
+2. Extract and summarize relevant information directly related to the query.
+3. Provide factual, well-referenced responses tied to the document content.
+4. Use clear, professional formatting with bullet points when appropriate.
+5. Never guess or make assumptions - only use information explicitly provided.
 
----
-
-- Use headings/subheadings for each major section.
-- Include bullet points for clarity where appropriate.
-- Ensure professional tone, factual grounding, and clean formatting.
-- Structure the output to suit business, technical, legal, or educational use.
+Respond directly to the query using the available information from the document.
 """
     
+# Section-specific prompts (extendable)
+    METHODOLOGY_PDF_ANALYSIS_PROMPT = """
+**METHODOLOGY FOCUS**
+Carefully analyze the methodology design section. Extract and rephrase:
+- Study design and experimental setup
+- Data sources, datasets, and tools used
+- Step-by-step process or workflow
+- Validation methods or evaluation protocols
+- Control variables or assumptions
+Use [Page X] format for references and bullet points where appropriate.
+"""
+
+    DISCUSSION_PDF_ANALYSIS_PROMPT = """
+**DISCUSSION FOCUS**
+Focus on the Discussion section and extract:
+- Interpretations of results
+- Limitations or implications highlighted
+- Theoretical impact or future directions proposed
+Use [Page X] format and group logically.
+"""
+
+    RESULTS_PDF_ANALYSIS_PROMPT = """
+**RESULTS FOCUS**
+Summarize the Results section:
+- Key metrics and data trends
+- Visual aids (charts, graphs, tables)
+- Any performance benchmarks
+Back all facts with [Page X] references.
+"""
+
+    CONCLUSION_PDF_ANALYSIS_PROMPT = """
+**CONCLUSION FOCUS**
+Summarize the final section:
+- Main takeaways and research contributions
+- Recommendations or closing thoughts
+- Future work (if any)
+Use [Page X] format and bullet points where necessary.
+"""
+
     def __init__(self):
         """Initialize the research paper retriever"""
         print("📚 Initializing Research Paper Retrieval System...")
@@ -102,32 +125,13 @@ Only respond with "I could not find this information in the document" if NO rele
         self.cross_encoder = None
         self.encoding = tiktoken.encoding_for_model("gpt-4")
         
-        # Research paper specific prompts
-        self.research_system_prompt = self._get_research_system_prompt()
+        # Research paper specific prompts - now handled dynamically
         
         self.setup_models()
         self.setup_pinecone()
         
         print("✅ Research Paper Retrieval System initialized successfully")
     
-    def _get_research_system_prompt(self) -> str:
-        """Get the specialized research paper analysis system prompt"""
-        return (
-            "You are an expert docuemnt analyst specializing in academic document analysis. Only answer using information found in the provided research paper. "
-            "If you cannot find the answer, say 'I could not find this information in the docuemnt.' Never make up facts or speculate. "
-            "When answering, first explain your reasoning step by step, citing the paper sections or pages you used. Then provide your final answer. "
-            "Your responses must follow these document-focus guidelines:\n\n"
-            "1. **PAGE REFERENCES**: Always include page references when referencing specific content, using the format [Page X].\n"
-            "2. **RESEARCH METHODOLOGY**: When discussing methods, extract exact algorithms, datasets, evaluation metrics, and experimental setups.\n"
-            "3. **ACADEMIC FORMATTING**: Use proper academic formatting with clear sections for Abstract, Methods, Results, Discussion.\n"
-            "4. **CITATION ANALYSIS**: Identify and extract in-text citations and reference patterns when relevant.\n"
-            "5. **RESEARCH CONTRIBUTIONS**: Highlight novel contributions, research gaps addressed, and key findings.\n"
-            "6. **REPRODUCIBILITY**: Note details about code availability, data access, and experimental reproducibility.\n"
-            "7. **COMPARATIVE ANALYSIS**: When comparing papers, focus on methodological differences and result variations.\n"
-            "8. **FUTURE WORK**: Identify limitations and suggested future research directions.\n"
-            "9. **TECHNICAL DEPTH**: Provide detailed technical explanations suitable for researchers in the field.\n"
-            "NOTE: Focus on research quality indicators like methodology rigor, result significance, and contribution novelty."
-        )
     
     def setup_models(self):
         """Initialize cross-encoder for research paper reranking"""
@@ -158,15 +162,7 @@ Only respond with "I could not find this information in the document" if NO rele
         # Results queries
         elif any(term in query_lower for term in ['results', 'findings', 'performance', 'accuracy', 'evaluation', 'metrics']):
             return 'results'
-        
-        # Statistical queries
-        elif any(term in query_lower for term in ['p-value', 'statistical', 'significance', 'confidence interval', 'correlation']):
-            return 'statistical'
-        
-        # Citation queries
-        elif any(term in query_lower for term in ['cited', 'references', 'bibliography', 'related work', 'previous studies']):
-            return 'citations'
-        
+
         # Discussion/Analysis queries
         elif any(term in query_lower for term in ['discussion', 'analysis', 'interpretation', 'implications', 'limitations']):
             return 'discussion'
@@ -365,29 +361,26 @@ Only respond with "I could not find this information in the document" if NO rele
     async def _generate_research_analysis(self, research_query: ResearchQuery, context: str, results: List[PaperSearchResult]) -> str:
         """Generate comprehensive research analysis using specialized academic prompt or general prompt"""
         # Choose the system prompt based on query_type
-        if research_query.query_type == 'general':
-            system_prompt = self.GENERAL_PDF_ANALYSIS_PROMPT
-        else:
-            system_prompt = self.research_system_prompt
+        system_prompt = self._get_query_specific_instructions(research_query.query_type)
+
 
         # Build query-specific analysis prompt
         analysis_prompt = f"""
 **DOCUMENT ANALYSIS REQUEST**
 Based on the following document content, answer this question: "{research_query.query}"
-Query Type: {research_query.query_type}
+Query Type: {', '.join(research_query.query_type)}
 **DOCUMENT COVERING:**
 
 {context}
 
 
 INSTRUCTIONS:
-- Your approach should be first overview, then description and then conclusion, where ever needed.
+- Your approach should be description.
 - Use the information provided above to answer the question comprehensively
 - Include page references when citing specific content
 - If the document contains relevant information, provide a detailed response
 - Only say you cannot find information if there is truly no relevant content above
 - Show Point wise description when ever needed, not always, only whne nedded.
-- Add the conclusion section when ever needed.
 - It should be like the quary is passed to you and you are answering it.
 
 
@@ -410,30 +403,51 @@ ANSWER:
             print(f"❌ Research analysis generation failed: {e}")
             return f"Error generating research analysis: {str(e)}"
     
-    def _get_query_specific_instructions(self, query_type: str) -> str:
-        """Get specific instructions based on query type"""
+    def _get_query_specific_instructions(self, query_type: List[str]) -> str:
+        """Get dynamic instructions based on query type"""
         instructions = {
-            'methodology': "Focus on experimental design, algorithms, datasets, evaluation metrics, and methodological rigor. Extract exact technical details.",
-            'results': "Analyze findings, performance metrics, statistical significance, and result interpretation. Include all numerical data and comparisons.",
-            'statistical': "Extract p-values, confidence intervals, effect sizes, and statistical tests. Assess statistical rigor and significance.",
-            'citations': "Identify related work, citation patterns, and comparative studies. Analyze how this work builds on previous research.",
-            'discussion': "Focus on result interpretation, implications, limitations, and research impact. Analyze the authors' analytical insights.",
-            'conclusion': "Extract key contributions, future work suggestions, and research impact. Summarize findings and their significance.",
-            'general': "Provide comprehensive overview and contribution with balanced academic analysis."
+            'general': self.GENERAL_PDF_ANALYSIS_PROMPT,
+            'overview': self.OVERVIEW_PDF_ANALYSIS_PROMPT,
+            'methodology': self.METHODOLOGY_PDF_ANALYSIS_PROMPT,
+            'results': self.RESULTS_PDF_ANALYSIS_PROMPT,
+            'discussion': self.DISCUSSION_PDF_ANALYSIS_PROMPT,
+            'conclusion': self.CONCLUSION_PDF_ANALYSIS_PROMPT
         }
-        return instructions.get(query_type, instructions['general'])
+        
+        # If only 'general' is requested, return just the general prompt
+        if query_type == ['general']:
+            return instructions['general']
+        
+        # For multiple types, combine them
+        combined_prompts = []
+        
+        # Always start with general as base
+        combined_prompts.append(instructions['general'])
+        
+        # Add specific focus areas
+        for qtype in query_type:
+            if qtype != 'general' and qtype in instructions:
+                combined_prompts.append(f"\n{instructions[qtype]}")
+        
+        # Add structure guidance for multiple sections
+        if len(query_type) > 1:
+            combined_prompts.append(
+                "\n**RESPONSE STRUCTURE:** Organize your response with clear sections for each focus area requested."
+            )
+        
+        return "\n".join(combined_prompts)
 
 # Example usage and integration guide
 def create_research_query_example():
-    """Example of how to create a research query"""
-    return ResearchQuery(
-        query="What machine learning algorithm was used and what was its accuracy?",
-        query_type="methodology",
-        user_id="user123",
-        document_uuid="doc-uuid-456",
-        max_results=10,
-        similarity_threshold=0.7,
-        focus_sections=["methodology", "results"]
+      """Example of how to create a research query"""
+      return ResearchQuery(
+          query="What machine learning algorithm was used and what was its accuracy?",
+          query_type=["general", "methodology", "results"],
+          user_id="user123",
+          document_uuid="doc-uuid-456",
+          max_results=10,
+          similarity_threshold=0.7,
+          focus_sections=["methodology", "results"]
     )
 
 async def example_usage():
@@ -443,7 +457,7 @@ async def example_usage():
     # Create research query
     query = ResearchQuery(
         query="What are the main research contributions of this paper?",
-        query_type="conclusion",
+        query_type=["general", "conclusion", "overview"],
         user_id="user123",
         document_uuid="paper-uuid-789",
         max_results=15,

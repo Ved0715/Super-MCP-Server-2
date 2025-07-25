@@ -49,13 +49,10 @@ coverage.xml
 .python-version
 
 # Temporary files
-~$*.pptx
 ~$*.docx
 ~$*.xlsx
 
 # Large output files
-output.pptx
-*.pptx
 *.docx
 *.xlsx
 

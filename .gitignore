@@ -176,8 +176,6 @@ tmp/
 
 # Generated presentations
 presentations/
-*.pptx
-*.ppt
 
 # Export files
 exports/

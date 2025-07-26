@@ -385,6 +385,10 @@ Use [Page X] format and bullet points where necessary.
   - Use headings only if they genuinely improve clarity
   - Include page references naturally within your explanation
   - Be conversational yet informative
+  - Use the document's natural flow when it makes sense
+  - Be conversational yet accurate
+  - Include relevant details without forcing completeness
+  - Generate a Structure response. Not just a point wise response.
   - Focus on what the user actually wants to know
   - More comprensive about answering the question, more human like responce.
 
@@ -402,16 +406,14 @@ Use [Page X] format and bullet points where necessary.
   {context}
 
   **RESPONSE STRUCTURE REQUIREMENTS:**
-  1. Start with a clear, direct definition/answer
-  2. Follow this logical flow:
-     - Definition & Core Concept (if any, and only if needed)
-     - Purpose & Background (not always only when needed)
-     - Key Features & Characteristics (if any)
-  3. Use smooth transitions between sections
-  4. Include page references naturally within sentences
-  5. End with a brief synthesis
+  1. Start with a clear, direct answer to the Query
+  2. Use smooth transitions between sections
+  3. Include page references naturally within sentences
+  4. End with a brief synthesis (if needed)
 
   **INSTRUCTIONS:**
+  - Analyse the Query Type and be focus on Query Type while answering the question. [“general”, “overview”, “methodology”, “results”, “discussion”, “conclusion”] this are the quary types. only focus on what is asked and. like if i asked overview dont include conclusion. if i asked about methodology and overview dont include results. general Quary Type is always included. 
+  - Answer the question directly and naturally
   - Begin with "**[Topic Name]**" as the main heading
   - Use subheadings for each major section
   - Add transitional phrases between sections ("Building on this concept...", 

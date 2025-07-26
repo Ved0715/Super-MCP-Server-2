@@ -55,18 +55,20 @@ Use [Page X] format for references and maintain structured organization.
 
     
     GENERAL_PDF_ANALYSIS_PROMPT = """
-You are an expert document analyst specializing in extracting accurate information from documents. 
-IMPORTANT: Use ALL information explicitly provided in the document context. If the document contains relevant information that answers the query, provide a comprehensive response using that information.
-Only respond with "I could not find this information in the document" if NO relevant information exists in the provided context.
+You are a knowledgeable assistant helping someone understand document 
+  content. Answer the question naturally and conversationally, as if explaining
+   to an intelligent colleague.
 
-**ANALYSIS GUIDELINES:**
-1. Always include page numbers when referencing specific content, using the format [Page X].
-2. Extract and summarize relevant information directly related to the query.
-3. Provide factual, well-referenced responses tied to the document content.
-4. Use clear, professional formatting with bullet points when appropriate.
-5. Never guess or make assumptions - only use information explicitly provided.
+  **GUIDELINES:**
+  1. Answer the question directly first, then add supporting context
+  2. Include page references naturally: "as mentioned on [Page X]" or "according to [Page 4.0]"
+  3. Use clear, accessible language while maintaining accuracy
+  4. Organize information in the most logical way for this specific question
+  5. Be informative but not overwhelming - focus on what was actually asked
+  6. Only use information explicitly provided in the document
 
-Respond directly to the query using the available information from the document.
+  Provide a helpful, natural response that directly addresses what the user 
+  wants to know.
 """
     
 # Section-specific prompts (extendable)
@@ -368,37 +370,61 @@ Use [Page X] format and bullet points where necessary.
 
 
         # Build query-specific analysis prompt with structured flow
-        analysis_prompt = f"""
-**DOCUMENT ANALYSIS REQUEST**
-Question: "{research_query.query}"
-Query Type: {', '.join(research_query.query_type)}
+        if 'general' in research_query.query_type and len(research_query.query_type) == 1:
+            analysis_prompt = f"""
+  **QUESTION:** "{research_query.query}"
 
-**DOCUMENT CONTENT:**
-{context}
+  **DOCUMENT CONTENT:**
+  {context}
 
-**RESPONSE STRUCTURE REQUIREMENTS:**
-1. Start with a clear, direct definition/answer
-2. Follow this logical flow:
-   - Definition & Core Concept
-   - Purpose & Background  
-   - How it Works/Methodology
-   - Key Features & Characteristics
-3. Use smooth transitions between sections
-4. Include page references naturally within sentences
-5. End with a brief synthesis
+  **INSTRUCTIONS:**
+  Answer this question naturally and directly using the document content above.
+   
+  - Start with the most direct answer to what was asked
+  - Add relevant context and details that help explain the answer
+  - Use headings only if they genuinely improve clarity
+  - Include page references naturally within your explanation
+  - Be conversational yet informative
+  - Focus on what the user actually wants to know
+  - More comprensive about answering the question, more human like responce.
 
-**INSTRUCTIONS:**
-- Begin with "**[Topic Name]**" as the main heading
-- Use subheadings for each major section
-- Add transitional phrases between sections ("Building on this concept...", "This approach enables...", "Furthermore...")
-- Integrate page references smoothly: "The system operates by... [Page X]" not "According to Page X..."
-- Organize content logically rather than jumping between topics
-- Use point-wise description only when structurally needed
-- Maintain academic flow while being accessible
+  ANSWER:
 
-ANSWER:
+  """
+        else:
+      # Keep existing structured approach for multi-type queries
+            analysis_prompt = f"""
+  **DOCUMENT ANALYSIS REQUEST**
+  Question: "{research_query.query}"
+  Query Type: {', '.join(research_query.query_type)}
 
-"""
+  **DOCUMENT CONTENT:**
+  {context}
+
+  **RESPONSE STRUCTURE REQUIREMENTS:**
+  1. Start with a clear, direct definition/answer
+  2. Follow this logical flow:
+     - Definition & Core Concept (if any, and only if needed)
+     - Purpose & Background (not always only when needed)
+     - Key Features & Characteristics (if any)
+  3. Use smooth transitions between sections
+  4. Include page references naturally within sentences
+  5. End with a brief synthesis
+
+  **INSTRUCTIONS:**
+  - Begin with "**[Topic Name]**" as the main heading
+  - Use subheadings for each major section
+  - Add transitional phrases between sections ("Building on this concept...", 
+  "This approach enables...", "Furthermore...")
+  - Integrate page references smoothly: "The system operates by... [Page X]" 
+  not "According to Page X..."
+  - Organize content logically rather than jumping between topics
+  - Use point-wise description only when structurally needed
+  - Maintain academic flow while being accessible
+
+  ANSWER:
+
+  """
         try:
             response = await asyncio.to_thread(
                 self.openai_client.chat.completions.create,
@@ -420,13 +446,13 @@ ANSWER:
         
         # Structure guidance that applies to all response types
         structure_guidance = """
-**RESPONSE ORGANIZATION:**
-- Lead with direct answer to the question
-- Follow logical progression: Definition → Context → Process → Key Points
-- Use clear section breaks and smooth transitions
-- Maintain academic flow while being accessible
-- Integrate page references naturally within content flow
-"""
+  **RESPONSE ORGANIZATION:**
+  - Answer the question directly and naturally
+  - Organize information in the most logical way for this specific query
+  - Use the document's natural flow when it makes sense
+  - Be conversational yet accurate
+  - Include relevant details without forcing completeness
+  """
         
         instructions = {
             'general': self.GENERAL_PDF_ANALYSIS_PROMPT,

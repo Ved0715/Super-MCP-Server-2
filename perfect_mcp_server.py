@@ -3692,18 +3692,10 @@ The operation has been successfully cancelled and will stop as soon as possible.
                 elif element_type == 'image':
                     image_data = element.get('data', {})
                     response_parts.append(f"![Image]({image_data.get('s3_url', 'N/A')})")
-                    response_parts.append(f"**Image Details:**")
-                    response_parts.append(f"- Page: {image_data.get('page_number', 'N/A')}")
-                    response_parts.append(f"- OCR Text: {image_data.get('ocr_text', 'N/A')}")
-                    response_parts.append(f"- Keywords: {', '.join(image_data.get('keywords', []))}")
                     response_parts.append("")
                     
                 elif element_type == 'table':
                     table_data = element.get('data', {})
-                    response_parts.append(f"**Table Details:**")
-                    response_parts.append(f"- Page: {table_data.get('page_number', 'N/A')}")
-                    response_parts.append(f"- Summary: {table_data.get('summary', 'N/A')}")
-                    response_parts.append("")
                     response_parts.append("```")
                     response_parts.append(table_data.get('markdown_content', 'No content available'))
                     response_parts.append("```")

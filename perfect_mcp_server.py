@@ -3659,8 +3659,8 @@ The operation has been successfully cancelled and will stop as soon as possible.
         """Handle multimodel paper search"""
         print(f"🔍 Multimodel paper search: {query}")
 
-        # namespace = f"user_{user_id}_doc_{document_uuid}"
-        namespace = "llms_survey_and_challenges"
+        namespace = f"user_{user_id}_doc_{document_uuid}"
+        # namespace = "llms_survey_and_challenges"
 
         result = await self.paper_retriever.search_multimodal_content( 
             query= query,

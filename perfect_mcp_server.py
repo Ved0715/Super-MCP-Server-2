@@ -3655,7 +3655,7 @@ The operation has been successfully cancelled and will stop as soon as possible.
     async def _handle_multimodel_paper_search(self, query: str, user_id: str, 
                                     document_uuid: str, search_type: List[str], similarity_threshold: float, 
                                     max_images: int, max_tables: int, 
-                                    max_text_chunks: int):
+                                    max_text_chunks: int, focus_sections: List[str] = []):
         """Handle multimodel paper search"""
         print(f"🔍 Multimodel paper search: {query}")
 
@@ -3673,26 +3673,49 @@ The operation has been successfully cancelled and will stop as soon as possible.
         # Format the result for display
         if result['success']:
             multimodal_results = result['multimodal_results']
-            search_metadata = result['search_metadata']
             
-            response_text = f"""🔍 Multimodal Search Results for: "{query}"
-
-📊 Search Metadata:
-- Paper ID: {search_metadata['paper_id']}
-- Max Images: {search_metadata['max_images']}
-- Max Tables: {search_metadata['max_tables']}
-- Max Text Chunks: {search_metadata['max_text_chunks']}
-
-📋 Results Found:
-- Total Elements: {len(multimodal_results.get('inline_elements', []))}
-
-📄 Content Summary:
-{json.dumps(multimodal_results.get('content_summary', {}), indent=2)}
-
-🔗 Full Results:
-{json.dumps(multimodal_results, indent=2)}"""
+            # Extract the main response content from inline elements
+            inline_elements = multimodal_results.get('inline_elements', [])
+            
+            # Build the main response content from all elements
+            response_parts = []
+            
+            for element in inline_elements:
+                element_type = element.get('type', 'unknown')
+                
+                if element_type == 'text':
+                    content = element.get('content', '').strip()
+                    if content:
+                        response_parts.append(content)
+                        response_parts.append("")  # Add spacing
+                        
+                elif element_type == 'image':
+                    image_data = element.get('data', {})
+                    response_parts.append(f"![Image]({image_data.get('s3_url', 'N/A')})")
+                    response_parts.append(f"**Image Details:**")
+                    response_parts.append(f"- Page: {image_data.get('page_number', 'N/A')}")
+                    response_parts.append(f"- OCR Text: {image_data.get('ocr_text', 'N/A')}")
+                    response_parts.append(f"- Keywords: {', '.join(image_data.get('keywords', []))}")
+                    response_parts.append("")
+                    
+                elif element_type == 'table':
+                    table_data = element.get('data', {})
+                    response_parts.append(f"**Table Details:**")
+                    response_parts.append(f"- Page: {table_data.get('page_number', 'N/A')}")
+                    response_parts.append(f"- Summary: {table_data.get('summary', 'N/A')}")
+                    response_parts.append("")
+                    response_parts.append("```")
+                    response_parts.append(table_data.get('markdown_content', 'No content available'))
+                    response_parts.append("```")
+                    response_parts.append("")
+            
+            if response_parts:
+                response_text = "\n".join(response_parts).strip()
+            else:
+                response_text = f"# Search Results for: \"{query}\"\n\nNo relevant content found in the document."
+            
         else:
-            response_text = f"❌ Multimodal search failed: {result.get('error', 'Unknown error')}"
+            response_text = f"# Search Error\n\n❌ **Multimodal search failed:** {result.get('error', 'Unknown error')}"
             
         return [TextContent(
             type="text",

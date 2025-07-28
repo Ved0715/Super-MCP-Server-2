@@ -666,14 +666,25 @@ You have access to text content, images with OCR data, and structured tables. Wh
 3. Highlight key insights from images and tables
 4. Provide structured, well-organized responses
 5. Be concise but comprehensive
-6. Use the multimodal content to provide rich, detailed answers"""
+6. Use the content to provide rich, detailed answers"""
             
             user_prompt = f"""Document content:
 {context}
 
 Question: {query}
 
-Please provide a comprehensive answer using the multimodal content above. Reference specific pages and content types (text, images, tables) when relevant."""
+Please provide a comprehensive answer using the multimodal content above. Reference specific pages and content types (text, images, tables) when relevant.
+Instructions
+  - Answer the question directly and naturally, answer only relaved to the Question.
+  - Organize information in the most logical way for this specific query
+  - Use the document's natural flow when it makes sense
+  - Be conversational yet accurate
+  - Include relevant details without forcing completeness
+  - Only use information explicitly provided in the document
+  - Use the images when every it is necessary in adjest the size according to the flow so it looks good and not too big or too small.
+  - If the table is not well formated then generate the table and then show the same table with well strudture way, instead of unformated/unstructured table.
+  - Use [Page X] format for references and bullet points where appropriate.
+"""
             
             response = self.openai_client.chat.completions.create(
                 model=self.chat_model,

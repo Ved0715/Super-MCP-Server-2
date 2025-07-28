@@ -375,6 +375,13 @@ class MCPHTTPTransport:
             elif tool_name == "find_books_covering_topic":
                 result = await self.mcp_server._handle_find_books_covering_topic(**arguments)
             elif tool_name == "multimodel_paper_search":
+                # Set default values for optional parameters that may be missing
+                arguments.setdefault("search_type", ["general"])
+                arguments.setdefault("similarity_threshold", 0.7)
+                arguments.setdefault("focus_sections", [])
+                arguments.setdefault("max_images", 3)
+                arguments.setdefault("max_tables", 3)
+                arguments.setdefault("max_text_chunks", 10)
                 result = await self.mcp_server._handle_multimodel_paper_search(**arguments)
             else:
                 raise ValueError(f"Unknown tool: {tool_name}")

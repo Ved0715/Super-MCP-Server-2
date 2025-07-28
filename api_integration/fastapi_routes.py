@@ -3,7 +3,7 @@ FastAPI Routes for MCP Integration
 Add these routes to your existing FastAPI server to integrate with the MCP server
 """
 
-from fastapi import APIRouter, HTTPException, File, UploadFile, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, File, UploadFile, Depends, BackgroundTasks, Request
 from fastapi.responses import StreamingResponse, FileResponse
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
@@ -15,6 +15,13 @@ from pathlib import Path
 import time
 
 from .mcp_client import MCPClient, MCPClientManager
+from .auth_helpers import (
+    get_authenticated_context, 
+    require_authenticated_user, 
+    get_user_namespace,
+    enhance_arguments_with_context,
+    log_authenticated_request
+)
 
 logger = logging.getLogger(__name__)
 
@@ -449,6 +456,7 @@ async def download_presentation(
 async def generate_presentation_from_namespace(
     request: NamespacePresentationRequest,
     background_tasks: BackgroundTasks,
+    http_request: Request,  # Will be injected by FastAPI automatically
     mcp_client: MCPClient = Depends(get_mcp_client)
 ):
     """
@@ -460,14 +468,21 @@ async def generate_presentation_from_namespace(
     start_time = time.time()
     
     try:
-        logger.info(f"🌟 NEW REQUEST: Namespace-based presentation generation")
-        logger.info(f"👤 User ID: {request.user_id}")
-        logger.info(f"📄 Document ID: {request.doc_id}")
-        logger.info(f"💭 User prompt: {request.prompt}")
-        logger.info(f"🎨 Settings: theme={request.theme}, slides={request.slide_count}, audience={request.audience_type}")
+        # Use helper functions for cleaner code
+        authenticated_user = require_authenticated_user(http_request)
+        authenticated_user, session_context, chat_session_id = get_authenticated_context(http_request)
         
-        # Construct namespace: user_{user_id}_doc_{doc_id}
-        namespace = f"user_{request.user_id}_doc_{request.doc_id}"
+        # Log request with helper
+        log_authenticated_request(http_request, "Namespace-based Presentation Generation", {
+            "Document ID": request.doc_id,
+            "User Prompt": request.prompt[:100] + "..." if len(request.prompt) > 100 else request.prompt,
+            "Theme": request.theme,
+            "Slide Count": request.slide_count,
+            "Audience": request.audience_type
+        })
+        
+        # Construct secure namespace using authenticated user
+        namespace = get_user_namespace(http_request, request.doc_id)
         logger.info(f"📁 Constructed namespace: {namespace}")
         
         # Call MCP server for namespace-based PPT generation
@@ -626,6 +641,7 @@ class MCPHealthResponse(BaseModel):
 @router.post("/call", response_model=MCPToolCallResponse)
 async def mcp_call_tool(
     request: MCPToolCallRequest,
+    http_request: Request,  # Will contain authenticated user context
     mcp_client: MCPClient = Depends(get_mcp_client)
 ):
     """
@@ -638,10 +654,21 @@ async def mcp_call_tool(
     start_time = time.time()
     
     try:
-        logger.info(f"Direct MCP call: {request.tool} with request_id: {request.request_id}")
+        # Use helper functions for cleaner code
+        authenticated_user = require_authenticated_user(http_request)
+        
+        # Log request with helper
+        log_authenticated_request(http_request, f"Direct MCP Tool Call: {request.tool}", {
+            "Tool": request.tool,
+            "Request ID": request.request_id or "None",
+            "Arguments Count": len(request.arguments)
+        })
+        
+        # Enhance arguments with authenticated context
+        enhanced_arguments = enhance_arguments_with_context(http_request, request.arguments)
         
         # Call the tool via MCP client
-        result = await mcp_client.call_tool(request.tool, request.arguments)
+        result = await mcp_client.call_tool(request.tool, enhanced_arguments)
         
         execution_time = time.time() - start_time
         

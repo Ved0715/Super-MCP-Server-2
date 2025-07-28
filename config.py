@@ -1,6 +1,8 @@
 import os
 from dotenv import load_dotenv
 from typing import Dict, List, Any
+from pathlib import Path
+from datetime import datetime
 
 load_dotenv()
 
@@ -100,6 +102,13 @@ class AdvancedConfig:
         self.LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
         self.LOG_DIR = os.getenv("LOG_DIR", "logs")
         self.ENABLE_DETAILED_LOGGING = os.getenv("ENABLE_DETAILED_LOGGING", "false").lower() == "true"
+
+
+        self.AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID')
+        self.AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
+        self.AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
+        self.S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME')
+        self.DEFAULT_TIMEOUT = int(os.getenv('DEFAULT_TIMEOUT'))
         
         # Create necessary directories
         self._create_directories()
@@ -116,6 +125,70 @@ class AdvancedConfig:
         self.response_model = self.LLM_MODEL
         self.max_response_tokens = 1500  # Maximum tokens for response generation
         self.temperature = self.LLM_TEMPERATURE  # Temperature for response generation
+
+
+    
+    
+    # Local storage functions deprecated - keeping for compatibility
+    def get_pdf_image_dir(self, pdf_name: str) -> Path:
+        """Deprecated - kept for backward compatibility. Use S3 storage instead."""
+        import tempfile
+        return Path(tempfile.mkdtemp())  # Return temp directory for legacy code
+    
+    def get_pdf_s3_prefix(self, pdf_name: str) -> str:
+        """Get S3 prefix for PDF images (replaces local directory for S3 storage)."""
+        # Clean PDF name for S3 prefix (remove .pdf extension and clean special chars)
+        clean_name = Path(pdf_name).stem  # Remove extension
+        clean_name = "".join(c for c in clean_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        clean_name = clean_name.replace(' ', '_').replace('-', '_')
+        
+        return f"images/{clean_name}/"
+    
+    # Table directories removed - tables stored only in Pinecone
+    
+    def generate_pdf_id_from_name(pdf_name: str) -> str:
+        """Generate PDF ID based on filename for reuse detection."""
+        clean_name = Path(pdf_name).stem  # Remove extension
+        clean_name = "".join(c for c in clean_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        clean_name = clean_name.replace(' ', '_').replace('-', '_').lower()
+        return clean_name  # Just return the clean name, no "pdf_" prefix
+    
+    def get_s3_url(self, s3_key: str) -> str:
+        """Generate full public S3 URL from S3 key."""
+        if not self.S3_BUCKET_NAME or not self.AWS_REGION:
+            raise ValueError("S3_BUCKET_NAME and AWS_REGION must be configured")
+        return f"https://{self.S3_BUCKET_NAME}.s3.{self.AWS_REGION}.amazonaws.com/{s3_key}"
+    
+    def get_s3_key_from_url(self, s3_url: str) -> str:
+        """Extract S3 key from full S3 URL."""
+        # Extract key from URL like: https://bucket.s3.region.amazonaws.com/key
+        parts = s3_url.split(f"{self.S3_BUCKET_NAME}.s3.{self.AWS_REGION}.amazonaws.com/")
+        return parts[1] if len(parts) > 1 else ""
+    
+    def check_pdf_already_processed(self, pdf_name: str) -> bool:
+        """Check if PDF has been processed (DEPRECATED - use check_pdf_already_processed_s3)."""
+        # Deprecated function - always return False to force S3 check
+        return False
+    
+    def check_pdf_already_processed_s3(self, pdf_name: str) -> bool:
+        """Check if PDF with this name has already been processed in S3."""
+        try:
+            from s3_handler import S3Handler
+            import logging
+            
+            logger = logging.getLogger(__name__)
+            s3_handler = S3Handler()
+            
+            # Check if any images exist for this PDF in S3
+            s3_prefix = self.get_pdf_s3_prefix(pdf_name)
+            images = s3_handler.list_objects(s3_prefix)
+            
+            return len(images) > 0
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Error checking S3 for processed PDF: {e}")
+            return False   
 
     def _get_env_var(self, var_name: str) -> str:
         """Get required environment variable"""

@@ -374,6 +374,8 @@ class MCPHTTPTransport:
                 result = await self.mcp_server._handle_get_knowledge_base_inventory(**arguments)
             elif tool_name == "find_books_covering_topic":
                 result = await self.mcp_server._handle_find_books_covering_topic(**arguments)
+            elif tool_name == "multimodel_paper_search":
+                result = await self.mcp_server._handle_multimodel_paper_search(**arguments)
             else:
                 raise ValueError(f"Unknown tool: {tool_name}")
             
@@ -506,6 +508,11 @@ class MCPHTTPTransport:
                         "name": "find_books_covering_topic",
                         "description": "Find which books in the knowledge base cover a specific topic",
                         "input_schema": {"type": "object", "properties": {"topic": {"type": "string"}}}
+                    },
+                    {
+                        "name": "multimodel_paper_search",
+                        "description": "Perform semantic search within papers using advanced analysis and multimodal configuration to answer queries including images and tables",
+                        "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}}
                     }
                 ]
                 

@@ -277,6 +277,25 @@ class PerfectMCPServer:
                         "required": ["query", "user_id", "document_uuid"]
                     }
                 ),
+
+                Tool(
+                    name="multimodel_paper_search",
+                    description="Perform semantic search within of using advanced analysis and multimodel configuration to answer the query including images and tables",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "Research query"},
+                            "user_id": {"type": "string", "description": "User identifier for document access"},
+                            "document_uuid": {"type": "string", "description": "Document UUID for specific paper"},
+                            "search_type": {"type": "array", "items": {"type": "string"}, "enum": ["general", "methodology", "results", "discussion", "conclusion", "statistical", "citations"], "default": ["general"]},
+                            "similarity_threshold": {"type": "number", "default": 0.7, "minimum": 0.0, "maximum": 1.0},
+                            "max_images": {"type": "integer", "default": 3, "minimum": 1, "maximum": 10, "description": "Maximum number of images to return"},
+                            "max_tables": {"type": "integer", "default": 3, "minimum": 1, "maximum": 10, "description": "Maximum number of tables to return"},
+                            "max_text_chunks": {"type": "integer", "default": 10, "minimum": 0, "maximum": 50, "description": "Maximum number of text chunks to return"}
+                        },
+                        "required": ["query", "user_id", "document_uuid"]
+                    }
+                ),
                 
                 Tool(
                     name="compare_research_papers",
@@ -539,6 +558,10 @@ class PerfectMCPServer:
                 
                 elif name == "semantic_paper_search":
                     return await self._handle_semantic_paper_search(**arguments)
+
+# multimodel paper serach
+                elif name == "multimodel_paper_search":
+                    return await self._handle_multimodel_paper_search(**arguments)
                 
                 elif name == "generate_paper_quiz":
                     return await self._handle_generate_paper_quiz(**arguments)
@@ -3629,6 +3652,52 @@ The operation has been successfully cancelled and will stop as soon as possible.
                 text=f"Error comparing papers: {e}"
             )]
 
+    async def _handle_multimodel_paper_search(self, query: str, user_id: str, 
+                                    document_uuid: str, search_type: List[str], similarity_threshold: float, 
+                                    max_images: int, max_tables: int, 
+                                    max_text_chunks: int):
+        """Handle multimodel paper search"""
+        print(f"🔍 Multimodel paper search: {query}")
+
+        # namespace = f"user_{user_id}_doc_{document_uuid}"
+        namespace = "llms_survey_and_challenges"
+
+        result = await self.paper_retriever.search_multimodal_content( 
+            query= query,
+            paper_id = namespace,
+            max_images=max_images,
+            max_tables=max_tables,
+            max_text_chunks=max_text_chunks,
+
+        )
+        # Format the result for display
+        if result['success']:
+            multimodal_results = result['multimodal_results']
+            search_metadata = result['search_metadata']
+            
+            response_text = f"""🔍 Multimodal Search Results for: "{query}"
+
+📊 Search Metadata:
+- Paper ID: {search_metadata['paper_id']}
+- Max Images: {search_metadata['max_images']}
+- Max Tables: {search_metadata['max_tables']}
+- Max Text Chunks: {search_metadata['max_text_chunks']}
+
+📋 Results Found:
+- Total Elements: {len(multimodal_results.get('inline_elements', []))}
+
+📄 Content Summary:
+{json.dumps(multimodal_results.get('content_summary', {}), indent=2)}
+
+🔗 Full Results:
+{json.dumps(multimodal_results, indent=2)}"""
+        else:
+            response_text = f"❌ Multimodal search failed: {result.get('error', 'Unknown error')}"
+            
+        return [TextContent(
+            type="text",
+            text=response_text
+        )]
 
     
         

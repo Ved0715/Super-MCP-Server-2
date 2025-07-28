@@ -15,6 +15,7 @@ from sentence_transformers import CrossEncoder
 import tiktoken
 
 from config import config
+from processors.multimodal_integrator import MultimodalIntegrator
 
 @dataclass
 class PaperSearchResult:
@@ -128,6 +129,9 @@ Use [Page X] format and bullet points where necessary.
         self.encoding = tiktoken.encoding_for_model("gpt-4")
         
         # Research paper specific prompts - now handled dynamically
+        
+        # Initialize multimodal integrator
+        self.multimodal_integrator = MultimodalIntegrator()
         
         self.setup_models()
         self.setup_pinecone()
@@ -490,6 +494,68 @@ Use [Page X] format and bullet points where necessary.
         combined_prompts.append(structure_guidance)
         
         return "\n".join(combined_prompts)
+
+    async def search_multimodal_content(self, 
+                                      query: str, 
+                                      paper_id: str,
+                                      max_images: int = 3,
+                                      max_tables: int = 3, 
+                                      max_text_chunks: int = 8) -> Dict[str, Any]:
+        """
+        Search for multimodal content (images, tables, text) in a processed paper.
+        
+        Args:
+            query: Search query for finding relevant multimodal content
+            paper_id: ID of the processed paper to search within
+            max_images: Maximum number of images to return (default: 3)
+            max_tables: Maximum number of tables to return (default: 3)
+            max_text_chunks: Maximum number of text chunks to return (default: 8)
+            
+        Returns:
+            Dict containing multimodal search results with inline elements
+        """
+        try:
+            print(f"🔍 Searching multimodal content for query: '{query}' in paper: {paper_id}")
+            
+            # Call the multimodal integrator to get results
+            results = self.multimodal_integrator.query_multimodal_content(
+                query=query,
+                pdf_id=paper_id,
+                max_images=max_images,
+                max_tables=max_tables,
+                max_text_chunks=max_text_chunks
+            )
+            
+            # Add metadata about the search
+            enhanced_results = {
+                "search_metadata": {
+                    "query": query,
+                    "paper_id": paper_id,
+                    "max_images": max_images,
+                    "max_tables": max_tables,
+                    "max_text_chunks": max_text_chunks,
+                    "timestamp": time.time()
+                },
+                "multimodal_results": results,
+                "success": True
+            }
+            
+            print(f"✅ Found multimodal content with {len(results.get('inline_elements', []))} elements")
+            return enhanced_results
+            
+        except Exception as e:
+            print(f"❌ Error in multimodal search: {str(e)}")
+            return {
+                "search_metadata": {
+                    "query": query,
+                    "paper_id": paper_id,
+                    "error": str(e)
+                },
+                "multimodal_results": None,
+                "success": False,
+                "error": str(e)
+            }
+
 
 # Example usage and integration guide
 def create_research_query_example():

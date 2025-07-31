@@ -33,22 +33,22 @@ class QuizRequest:
 
 class PaperQuizGenerator:
     """
-    Advanced Research Paper Quiz Generation System
+    Advanced Paper Quiz Generation System
     
     Analyzes all chunks in a user's document namespace and generates
     comprehensive MCQ quizzes covering key concepts, methodologies,
-    and findings from the research paper.
+    and findings from the paper.
     """
     
     def __init__(self):
         """Initialize the quiz generator"""
-        print("📝 Initializing Research Paper Quiz Generator...")
+        print("📝 Initializing Paper Quiz Generator...")
         
         self.openai_client = OpenAI(api_key=config.openai_api_key)
         self.pc = Pinecone(api_key=config.pinecone_api_key)
         
         # Configuration
-        self.index_name = "all-pdfs-index"
+        self.index_name = "test"
         self.embedding_model = config.embedding_model
         self.response_model = config.response_model
         
@@ -60,7 +60,7 @@ class PaperQuizGenerator:
         # Connect to index
         self.setup_pinecone()
         
-        print("✅ Research Paper Quiz Generator initialized successfully")
+        print("✅ Paper Quiz Generator initialized successfully")
     
     def setup_pinecone(self):
         """Setup Pinecone index connection"""
@@ -77,7 +77,7 @@ class PaperQuizGenerator:
     
     async def generate_quiz(self, quiz_request: QuizRequest) -> Dict[str, Any]:
         """
-        Generate a comprehensive quiz from research paper
+        Generate a comprehensive quiz from paper
         
         Args:
             quiz_request: Quiz generation parameters
@@ -97,9 +97,9 @@ class PaperQuizGenerator:
             # Step 1: Retrieve all document chunks
             chunks = await self._retrieve_all_chunks(quiz_request.user_id, quiz_request.document_uuid)
             if not chunks:
-                return self._error_response("No content found in the research paper")
+                return self._error_response("No content found in the paper")
             
-            print(f"📄 Analyzed {len(chunks)} content chunks from research paper")
+            print(f"📄 Analyzed {len(chunks)} content chunks from paper")
             
             # Step 2: Generate ALL quiz questions in one API call
             questions = await self._generate_all_questions_single_call(
@@ -154,6 +154,7 @@ class PaperQuizGenerator:
             dummy_vector = [0.0] * 3072  # Assuming 3072 dimensions
             
             # Get maximum possible chunks (Pinecone limit is usually 10k)
+            print(f"🔍 Index: {self.index.describe_index_stats()}")
             result = self.index.query(
                 vector=dummy_vector,
                 top_k=10000,  # Get all chunks
@@ -232,9 +233,9 @@ class PaperQuizGenerator:
         
         # Comprehensive quiz generation prompt
         quiz_prompt = f"""
-You are an expert research paper quiz generator. Generate {num_questions} multiple choice questions based on the research paper content below.
+You are an expert paper quiz generator. Generate {num_questions} multiple choice questions based on the paper content below.
 
-RESEARCH PAPER CONTENT:
+PAPER CONTENT:
 {full_content}
 
 QUIZ REQUIREMENTS:
@@ -316,7 +317,7 @@ CRITICAL: Return only valid JSON, no additional text.
                 messages=[
                     {
                         "role": "system", 
-                        "content": "You are an expert research paper quiz generator. Generate comprehensive MCQ quizzes that test deep understanding of academic papers. Always respond with valid JSON only."
+                        "content": "You are an expert paper quiz generator. Generate comprehensive MCQ quizzes that test deep understanding of academic papers. Always respond with valid JSON only."
                     },
                     {
                         "role": "user", 
@@ -409,7 +410,7 @@ CRITICAL: Return only valid JSON, no additional text.
             topic = ["main_concepts", "methodologies", "findings", "technical_details", "applications"][i % 5]
             
             question = QuizQuestion(
-                question=f"Based on the research paper content, which of the following is most relevant to {topic.replace('_', ' ')}?",
+                question=f"Based on the paper content, which of the following is most relevant to {topic.replace('_', ' ')}?",
                 options={
                     "a": f"Content related to {topic.replace('_', ' ')} aspect A",
                     "b": f"Content related to {topic.replace('_', ' ')} aspect B", 
@@ -451,7 +452,7 @@ CRITICAL: Return only valid JSON, no additional text.
 # Example usage function
 async def generate_paper_quiz(user_id: str, document_uuid: str, num_questions: int = 10) -> Dict[str, Any]:
     """
-    Convenience function to generate a quiz from a research paper
+    Convenience function to generate a quiz from a  paper
     
     Args:
         user_id: User identifier

@@ -3635,21 +3635,31 @@ The operation has been successfully cancelled and will stop as soon as possible.
         print(f"🔍 Comparing papers: {arguments}")
 
         try:
-            report = self.comparator.compare(
+            # Use the new comprehensive comparison method
+            result = self.comparator.compare_documents(
                 user_id = user_id,
                 doc1_uuid = doc1_uuid,
                 doc2_uuid = doc2_uuid,
             )
+            
+            # Generate a human-readable report
+            if result.get("success", False):
+                report = self.comparator.get_comparison_report(result)
+                return [TextContent(
+                    type="text",
+                    text=report
+                )]
+            else:
+                return [TextContent(
+                    type="text",
+                    text=f"❌ Comparison failed: {result.get('error', 'Unknown error')}"
+                )]
 
-            return [TextContent(
-                type="text",
-                text=json.dumps(report, indent=2)
-            )]
         except Exception as e:
             logger.error(f"Error comparing papers: {e}")
             return [TextContent(
                 type="text",
-                text=f"Error comparing papers: {e}"
+                text=f"❌ Error comparing papers: {e}"
             )]
 
     async def _handle_multimodel_paper_search(self, query: str, user_id: str, 

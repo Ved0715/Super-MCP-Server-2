@@ -19,8 +19,36 @@ from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, Field
 import uvicorn
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging with file handlers
+import logging.handlers
+from pathlib import Path
+
+# Create logs directory if it doesn't exist
+log_dir = Path("logs")
+log_dir.mkdir(exist_ok=True)
+
+# Create handlers
+console_handler = logging.StreamHandler()
+file_handler = logging.handlers.RotatingFileHandler(
+    filename=log_dir / "mcp_http_transport.log",
+    maxBytes=10*1024*1024,  # 10MB
+    backupCount=5,
+    encoding='utf-8'
+)
+error_handler = logging.handlers.RotatingFileHandler(
+    filename=log_dir / "mcp_http_transport_error.log",
+    maxBytes=10*1024*1024,  # 10MB
+    backupCount=5,
+    encoding='utf-8'
+)
+error_handler.setLevel(logging.ERROR)
+
+# Configure logging with both console and file handlers
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[console_handler, file_handler, error_handler]
+)
 logger = logging.getLogger(__name__)
 
 # ============================================================================
@@ -339,6 +367,16 @@ class MCPHTTPTransport:
             elif tool_name == "create_presentation_from_namespace":
                 result = await self.mcp_server._handle_create_presentation_from_namespace(**arguments)
             elif tool_name == "semantic_paper_search":
+                # Enhanced semantic search with conversation context support
+                # Extract conversation context parameters
+                chat_session_id = arguments.get("chat_session_id")
+                conversation_context = arguments.get("conversation_context")
+                context_purpose = arguments.get("context_purpose", "document_search")
+                
+                # Log basic context info
+                if chat_session_id:
+                    logger.info(f"Semantic search with chat session: {chat_session_id}")
+                
                 result = await self.mcp_server._handle_semantic_paper_search(**arguments)
             elif tool_name == "generate_paper_quiz":
                 result = await self.mcp_server._handle_generate_paper_quiz(**arguments)
@@ -374,6 +412,17 @@ class MCPHTTPTransport:
                 result = await self.mcp_server._handle_get_knowledge_base_inventory(**arguments)
             elif tool_name == "find_books_covering_topic":
                 result = await self.mcp_server._handle_find_books_covering_topic(**arguments)
+            elif tool_name == "get_paper_info":
+                result = await self.mcp_server._handle_get_paper_info(**arguments)
+            elif tool_name == "multimodel_paper_search":
+                # Set default values for optional parameters that may be missing
+                arguments.setdefault("search_type", ["general"])
+                arguments.setdefault("similarity_threshold", 0.7)
+                arguments.setdefault("focus_sections", [])
+                arguments.setdefault("max_images", 3)
+                arguments.setdefault("max_tables", 3)
+                arguments.setdefault("max_text_chunks", 10)
+                result = await self.mcp_server._handle_multimodel_paper_search(**arguments)
             else:
                 raise ValueError(f"Unknown tool: {tool_name}")
             

@@ -60,7 +60,7 @@ class AdvancedVectorStorage:
             existing_indexes = [index.name for index in self.pc.list_indexes()]
             
             if self.index_name not in existing_indexes:
-                logger.info(f"🏗️  Creating new Pinecone index: {self.index_name}")
+                logger.info(f"Creating new Pinecone index: {self.index_name}")
                 self.pc.create_index(
                     name=self.index_name,
                     dimension=self.dimensions,
@@ -73,14 +73,12 @@ class AdvancedVectorStorage:
                 # Wait for index to be ready
                 import time
                 time.sleep(10)
-                logger.info(f"✅ Successfully created Pinecone index: {self.index_name}")
+                logger.info(f"Successfully created Pinecone index: {self.index_name}")
             else:
-                # Determine index purpose for better logging
-                index_purpose = "📄 Research Papers" if "pdf" in self.index_name.lower() else "📚 Knowledge Base"
-                logger.info(f"🔗 Connected to existing Pinecone index: {self.index_name} ({index_purpose})")
+                logger.info(f"Connected to existing Pinecone index: {self.index_name}")
                 
         except Exception as e:
-            logger.error(f"❌ Error initializing Pinecone index {self.index_name}: {e}")
+            logger.error(f"Error initializing Pinecone index {self.index_name}: {e}")
             raise
 
     async def process_and_store_document(self, 
@@ -599,31 +597,23 @@ class AdvancedVectorStorage:
         start_time = time.time()
         
         try:
-            logger.info(f"🔍 Starting vector search in namespace: {namespace}")
-            logger.info(f"📝 Query: '{query[:100]}{'...' if len(query) > 100 else ''}'")
-            logger.info(f"⚙️  Parameters: max_results={max_results}, threshold={similarity_threshold}")
+            logger.info(f"Vector search in namespace: {namespace}")
             
             if not self.index:
-                logger.error("❌ Pinecone index not initialized")
+                logger.error("Pinecone index not initialized")
                 return []
             
             # Generate query embedding
-            logger.info(f"🤖 Generating embedding for query...")
             embedding_start_time = time.time()
-            
             query_embedding = await self._generate_single_embedding(query)
-            
             embedding_duration = time.time() - embedding_start_time
-            logger.info(f"✅ Query embedding generated in {embedding_duration:.2f}s")
             
             if not query_embedding:
-                logger.error("❌ Failed to generate query embedding")
+                logger.error("Failed to generate query embedding")
                 return []
             
             # Search in Pinecone with namespace filter
-            logger.info(f"🔎 Querying Pinecone index with namespace filter...")
             pinecone_start_time = time.time()
-            
             search_results = self.index.query(
                 vector=query_embedding,
                 top_k=max_results,
@@ -631,13 +621,9 @@ class AdvancedVectorStorage:
                 include_metadata=True,
                 include_values=False
             )
-            
             pinecone_duration = time.time() - pinecone_start_time
-            logger.info(f"✅ Pinecone query completed in {pinecone_duration:.2f}s")
-            logger.info(f"📊 Raw results from Pinecone: {len(search_results.matches)} matches")
             
             # Filter by similarity threshold
-            logger.info(f"🔧 Filtering results by similarity threshold {similarity_threshold}...")
             filtered_results = []
             scores = []
             
@@ -653,44 +639,16 @@ class AdvancedVectorStorage:
             
             total_duration = time.time() - start_time
             
-            # Log detailed results
-            if scores:
-                avg_score = sum(scores) / len(scores)
-                max_score = max(scores)
-                min_score = min(scores)
-                logger.info(f"📈 Score statistics: avg={avg_score:.3f}, max={max_score:.3f}, min={min_score:.3f}")
-            
-            logger.info(f"✅ Vector search completed in {total_duration:.2f}s")
-            logger.info(f"📊 Results: {len(filtered_results)}/{len(search_results.matches)} chunks passed threshold")
-            
+            # Log basic results
             if filtered_results:
-                total_content_chars = sum(len(r['content']) for r in filtered_results)
-                logger.info(f"📝 Total content retrieved: {total_content_chars} characters")
-                
-                # Log top 3 results summary
-                logger.info(f"🏆 Top results preview:")
-                for i, result in enumerate(filtered_results[:3]):
-                    content_preview = result['content'][:100] + "..." if len(result['content']) > 100 else result['content']
-                    logger.info(f"   {i+1}. Score: {result['score']:.3f} | Content: {content_preview}")
+                logger.info(f"Vector search completed: {len(filtered_results)}/{len(search_results.matches)} results")
             else:
-                logger.warning(f"⚠️  No results found above threshold {similarity_threshold}")
-                if scores:
-                    logger.info(f"💡 Suggestion: Consider lowering threshold (best score was {max(scores):.3f})")
-            
-            # Performance breakdown
-            logger.info(f"⏱️  Search performance breakdown:")
-            logger.info(f"   - Embedding generation: {embedding_duration:.2f}s ({embedding_duration/total_duration*100:.1f}%)")
-            logger.info(f"   - Pinecone query: {pinecone_duration:.2f}s ({pinecone_duration/total_duration*100:.1f}%)")
-            logger.info(f"   - Result processing: {(total_duration-embedding_duration-pinecone_duration):.2f}s")
+                logger.warning(f"No results found above threshold {similarity_threshold}")
             
             return filtered_results
             
         except Exception as e:
-            total_duration = time.time() - start_time
-            logger.error(f"❌ Error searching namespace {namespace} after {total_duration:.2f}s: {e}")
-            logger.error(f"🔍 Error details: {str(e)}")
-            import traceback
-            logger.error(f"📋 Full traceback: {traceback.format_exc()}")
+            logger.error(f"Error searching namespace {namespace}: {e}")
             return []
 
     # Enhanced Knowledge Base Retrieval Methods

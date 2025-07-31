@@ -48,38 +48,37 @@ logger = logging.getLogger(__name__)
 try:
     from retrieval.paper.paper_compare import PDFComparator
     PDF_COMPARATOR_AVAILABLE = True
-    logger.info("✅ PDF Comparator imported successfully")
+    logger.info("PDF Comparator imported successfully")
 except ImportError as e:
     PDF_COMPARATOR_AVAILABLE = False
-    logger.warning(f"⚠️ PDF Comparator not available: {e}")
+    logger.warning(f"PDF Comparator not available: {e}")
 
 try:
     from retrieval.kb_cot_retrival import ChainOfThoughtKBRetriever
     COT_RETRIEVER_AVAILABLE = True
-    logger.info("✅ Chain of Thought KB Retriever imported successfully")
+    logger.info("Chain of Thought KB Retriever imported successfully")
 except ImportError as e:
     COT_RETRIEVER_AVAILABLE = False
-    logger.warning(f"⚠️ Chain of Thought KB Retriever not available: {e}")
+    logger.warning(f"Chain of Thought KB Retriever not available: {e}")
 
 
 # Add HybridRetriever imports
 try:
     from retrieval.kb_retrieval import HybridRetriever
     HYBRID_RETRIEVER_AVAILABLE = True
-    logger.info("✅ HybridRetriever imported successfully")
+    logger.info("HybridRetriever imported successfully")
 except ImportError as e:
     HYBRID_RETRIEVER_AVAILABLE = False
-    
-    logger.warning(f"⚠️ HybridRetriever not available: {e}")
+    logger.warning(f"HybridRetriever not available: {e}")
 
 # Import prompt template functions
 try:
     from retrieval.prompt_templates import detect_query_type, format_system_prompt, get_prompt_template
     PROMPT_TEMPLATES_AVAILABLE = True
-    logger.info("✅ Prompt templates imported successfully")
+    logger.info("Prompt templates imported successfully")
 except ImportError as e:
     PROMPT_TEMPLATES_AVAILABLE = False
-    logger.warning(f"⚠️ Prompt templates not available: {e}")
+    logger.warning(f"Prompt templates not available: {e}")
 
 class PerfectMCPServer:
     """Perfect MCP Server with complete research capabilities"""
@@ -107,13 +106,13 @@ class PerfectMCPServer:
         self.universal_processor = UniversalDocumentProcessor()
 
         # Add this in the __init__ method after existing HybridRetriever initialization
-# Initialize Chain of Thought retriever
+        # Initialize Chain of Thought retriever
         if COT_RETRIEVER_AVAILABLE:
             try:
                 self.cot_retriever = ChainOfThoughtKBRetriever()
-                logger.info("✅ Chain of Thought KB Retriever initialized successfully")
+                logger.info("Chain of Thought KB Retriever initialized successfully")
             except Exception as e:
-                logger.error(f"❌ Failed to initialize Chain of Thought KB Retriever: {e}")
+                logger.error(f"Failed to initialize Chain of Thought KB Retriever: {e}")
                 self.cot_retriever = None
         else:
             self.cot_retriever = None
@@ -122,9 +121,9 @@ class PerfectMCPServer:
          # Initialize Research Paper Retriever
         try:
             self.paper_retriever = PaperRetriever()
-            logger.info("✅ Research Paper Retriever initialized successfully")
+            logger.info("Research Paper Retriever initialized successfully")
         except Exception as e:
-            logger.error(f"❌ Failed to initialize Research Paper Retriever: {e}")
+            logger.error(f"Failed to initialize Research Paper Retriever: {e}")
             self.paper_retriever = None
 
 
@@ -132,9 +131,9 @@ class PerfectMCPServer:
         if HYBRID_RETRIEVER_AVAILABLE:
             try:
                 self.hybrid_retriever = HybridRetriever()
-                logger.info("✅ HybridRetriever initialized successfully")
+                logger.info("HybridRetriever initialized successfully")
             except Exception as e:
-                logger.error(f"❌ Failed to initialize HybridRetriever: {e}")
+                logger.error(f"Failed to initialize HybridRetriever: {e}")
                 self.hybrid_retriever = None
         else:
             self.hybrid_retriever = None
@@ -152,7 +151,7 @@ class PerfectMCPServer:
         self._setup_resources()
         self._setup_prompts()
         
-        logger.info("Perfect MCP Server initialized with all advanced features")
+        logger.info("Perfect MCP Server initialized")
 
     def _setup_tools(self):
         """Setup all advanced MCP tools"""
@@ -262,7 +261,7 @@ class PerfectMCPServer:
                 
                 Tool(
                     name="semantic_paper_search",
-                    description="Perform semantic search within research papers using advanced academic analysis",
+                    description="Perform semantic search within research papers using advanced academic analysis with conversation context support",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -272,7 +271,29 @@ class PerfectMCPServer:
                             "search_type": {"type": "string", "enum": ["general", "methodology", "results", "discussion", "conclusion", "statistical", "citations"], "default": "general"},
                             "max_results": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
                             "similarity_threshold": {"type": "number", "default": 0.7, "minimum": 0.0, "maximum": 1.0},
-                            "focus_sections": {"type": "array", "items": {"type": "string"}, "description": "Specific paper sections to focus on (optional)"}
+                            "focus_sections": {"type": "array", "items": {"type": "string"}, "description": "Specific paper sections to focus on (optional)"},
+                            "chat_session_id": {"type": "string", "description": "Chat session ID for conversation tracking (optional)"},
+                            "conversation_context": {"type": "string", "description": "Previous conversation context to enhance query understanding (optional)"},
+                            "context_purpose": {"type": "string", "enum": ["document_search", "meta_question"], "default": "document_search", "description": "Purpose of the context - document search or meta-question about conversation"}
+                        },
+                        "required": ["query", "user_id", "document_uuid"]
+                    }
+                ),
+
+                Tool(
+                    name="multimodel_paper_search",
+                    description="Perform semantic search within of using advanced analysis and multimodel configuration to answer the query including images and tables",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "Research query"},
+                            "user_id": {"type": "string", "description": "User identifier for document access"},
+                            "document_uuid": {"type": "string", "description": "Document UUID for specific paper"},
+                            "search_type": {"type": "array", "items": {"type": "string"}, "enum": ["general", "methodology", "results", "discussion", "conclusion", "statistical", "citations"], "default": ["general"]},
+                            "similarity_threshold": {"type": "number", "default": 0.7, "minimum": 0.0, "maximum": 1.0},
+                            "max_images": {"type": "integer", "default": 3, "minimum": 1, "maximum": 10, "description": "Maximum number of images to return"},
+                            "max_tables": {"type": "integer", "default": 3, "minimum": 1, "maximum": 10, "description": "Maximum number of tables to return"},
+                            "max_text_chunks": {"type": "integer", "default": 10, "minimum": 0, "maximum": 50, "description": "Maximum number of text chunks to return"}
                         },
                         "required": ["query", "user_id", "document_uuid"]
                     }
@@ -510,6 +531,19 @@ class PerfectMCPServer:
                         },
                         "required": ["topic_description", "search_query"]
                     }
+                ),
+                
+                Tool(
+                    name="get_paper_info",
+                    description="Get detailed information about a specific paper/document",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "user_id": {"type": "string", "description": "User identifier for document access"},
+                            "document_uuid": {"type": "string", "description": "Document UUID for specific paper"}
+                        },
+                        "required": ["user_id", "document_uuid"]
+                    }
                 )
                  
             ]
@@ -585,6 +619,8 @@ class PerfectMCPServer:
                 
                 elif name == "find_books_covering_topic":
                     return await self._handle_find_books_covering_topic(**arguments)
+                elif name == "get_paper_info":
+                    return await self._handle_get_paper_info(**arguments)
 
                 elif name == "generate_paper_quiz":
                     return await self._handle_generate_paper_quiz(**arguments)
@@ -2117,7 +2153,7 @@ CONTENT TO ENRICH:
                                           similarity_threshold: float = 0.4,
                                           focus_sections: Optional[List[str]] = None, **kwargs) -> List[TextContent]:
         """
-        Handle research paper search using advanced academic analysis
+        Handle research paper search using advanced academic analysis with conversation context support
         """
         try:
             if self.paper_retriever is None:
@@ -2130,13 +2166,39 @@ CONTENT TO ENRICH:
                     }, indent=2)
                 )]
             
-            logger.info(f"📚 Research paper search: '{query[:100]}...'")
-            logger.info(f"👤 User: {user_id}, Document: {document_uuid}")
-            logger.info(f"🎯 Search Type: {search_type}, Max Results: {max_results}")
+            # Extract conversation context and purpose from kwargs
+            chat_session_id = kwargs.get("chat_session_id")
+            conversation_context = kwargs.get("conversation_context")
+            context_purpose = kwargs.get("context_purpose", "document_search")
+            
+            # Log basic search info only
+            logger.info(f"Research paper search: '{query[:50]}...' for user {user_id}")
+            
+            # Enhance query based on context purpose
+            enhanced_query = query
+            if conversation_context:
+                if context_purpose == "meta_question":
+                    # For meta-questions, focus on conversation summary
+                    enhanced_query = f"""Based on the conversation history:
+{conversation_context}
+
+Question: {query}
+
+Please provide a summary or analysis of the conversation based on the context above."""
+                    logger.info(f"Enhanced query for meta-question")
+                else:
+                    # For document search, use standard enhancement
+                    enhanced_query = f"""Context from previous conversation:
+{conversation_context}
+
+Current question: {query}
+
+Please answer the current question while considering the conversation context."""
+                    logger.info(f"Enhanced query for document search")
             
             # Create research query
             research_query = ResearchQuery(
-                query=query,
+                query=enhanced_query,
                 query_type=search_type,
                 user_id=user_id,
                 document_uuid=document_uuid,
@@ -2159,7 +2221,10 @@ CONTENT TO ENRICH:
                 "metadata": result.get("metadata", {}),
                 "search_results": result.get("search_results", []),
                 "namespace": f"user_{user_id}_doc_{document_uuid}",
-                "index_name": "all-pdfs-index"
+                "index_name": "all-pdfs-index",
+                "conversation_context_used": conversation_context is not None,
+                "chat_session_id": chat_session_id,
+                "context_purpose": context_purpose
             }
             
             if not result["success"]:
@@ -2171,7 +2236,7 @@ CONTENT TO ENRICH:
             )]
             
         except Exception as e:
-            logger.error(f"❌ Research paper search failed: {e}")
+            logger.error(f"Research paper search failed: {e}")
             return [TextContent(
                 type="text",
                 text=json.dumps({
@@ -2179,9 +2244,113 @@ CONTENT TO ENRICH:
                     "error": str(e),
                     "query": query,
                     "user_id": user_id,
-                    "document_uuid": document_uuid
+                    "document_uuid": document_uuid,
+                    "conversation_context_used": conversation_context is not None,
+                    "chat_session_id": chat_session_id,
+                    "context_purpose": context_purpose
                 }, indent=2)
             )]
+
+    def _enhance_query_with_context(self, query: str, conversation_context: str = None) -> str:
+        """
+        Enhance query with conversation context using intelligent processing
+        """
+        if not conversation_context:
+            return query
+            
+        # Clean and process conversation context
+        context_lines = conversation_context.strip().split('\n')
+        cleaned_context = []
+        
+        for line in context_lines:
+            line = line.strip()
+            if line.startswith('Q:') or line.startswith('A:'):
+                # Keep only meaningful Q&A pairs
+                if len(line) > 10:  # Skip very short responses
+                    cleaned_context.append(line)
+        
+        if not cleaned_context:
+            return query
+            
+        # Create focused enhanced query
+        context_summary = '\n'.join(cleaned_context[-4:])  # Last 2 Q&A pairs
+        
+        enhanced_query = f"""Previous conversation:
+{context_summary}
+
+Current question: {query}
+
+Please provide a comprehensive answer that builds upon the conversation context."""
+        
+        logger.info(f"🔧 Enhanced query with {len(cleaned_context)} context entries")
+        return enhanced_query
+
+    async def _try_multiple_search_strategies(
+        self, 
+        query: str, 
+        user_id: str, 
+        document_uuid: str, 
+        search_type: str, 
+        max_results: int, 
+        similarity_threshold: float, 
+        focus_sections: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Try multiple search strategies with different parameters to improve success rate
+        """
+        strategies = [
+            {
+                "name": "standard",
+                "similarity_threshold": similarity_threshold,
+                "max_results": max_results,
+                "search_type": search_type
+            },
+            {
+                "name": "relaxed",
+                "similarity_threshold": max(0.1, similarity_threshold - 0.2),
+                "max_results": min(20, max_results + 5),
+                "search_type": "general"
+            },
+            {
+                "name": "comprehensive",
+                "similarity_threshold": max(0.05, similarity_threshold - 0.3),
+                "max_results": min(30, max_results + 10),
+                "search_type": "general"
+            }
+        ]
+        
+        for strategy in strategies:
+            try:
+                logger.info(f"🔍 Trying search strategy: {strategy['name']}")
+                
+                research_query = ResearchQuery(
+                    query=query,
+                    query_type=strategy["search_type"],
+                    user_id=user_id,
+                    document_uuid=document_uuid,
+                    max_results=strategy["max_results"],
+                    similarity_threshold=strategy["similarity_threshold"],
+                    focus_sections=focus_sections
+                )
+                
+                result = await self.paper_retriever.analyze_research_paper(research_query)
+                
+                if result["success"] and result.get("response", "").strip():
+                    logger.info(f"✅ Strategy '{strategy['name']}' succeeded")
+                    result["strategy_used"] = strategy["name"]
+                    return result
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Strategy '{strategy['name']}' failed: {e}")
+                continue
+        
+        # If all strategies fail, return the last attempt
+        logger.error("❌ All search strategies failed")
+        return {
+            "success": False,
+            "error": "No relevant content found with any search strategy",
+            "strategy_used": "failed"
+        }
 
     async def _handle_generate_paper_quiz(self, user_id: str, document_uuid: str, num_questions: int = 10, **kwargs) -> List[TextContent]:
         """Handle paper quiz generation"""
@@ -2932,6 +3101,63 @@ The operation has been successfully cancelled and will stop as soon as possible.
                     "success": False,
                     "error": str(e),
                     "topic": topic
+                }, indent=2)
+            )]
+
+    async def _handle_get_paper_info(self, user_id: str, document_uuid: str, **kwargs) -> List[TextContent]:
+        """
+        Get detailed information about a specific paper/document
+        """
+        try:
+            logger.info(f"Getting paper info for document: {document_uuid}, user: {user_id}")
+            
+            # Initialize Pinecone service
+            pinecone_service = PineconeService()
+            
+            # Get document metadata from Pinecone
+            document_info = await pinecone_service.get_document_metadata(document_uuid)
+            
+            if not document_info:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "success": False,
+                        "error": "Document not found",
+                        "document_uuid": document_uuid
+                    }, indent=2)
+                )]
+            
+            # Format the response
+            result = {
+                "success": True,
+                "document_uuid": document_uuid,
+                "user_id": user_id,
+                "paper_info": {
+                    "title": document_info.get("title", "Unknown"),
+                    "author": document_info.get("author", "Unknown"),
+                    "filename": document_info.get("filename", "Unknown"),
+                    "upload_date": document_info.get("upload_date", "Unknown"),
+                    "file_size": document_info.get("file_size", "Unknown"),
+                    "page_count": document_info.get("page_count", "Unknown"),
+                    "namespace": document_info.get("namespace", "Unknown"),
+                    "metadata": document_info.get("metadata", {})
+                },
+                "retrieved_at": datetime.now().isoformat()
+            }
+            
+            return [TextContent(
+                type="text",
+                text=json.dumps(result, indent=2)
+            )]
+            
+        except Exception as e:
+            logger.error(f"Get paper info failed: {e}")
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "success": False,
+                    "error": str(e),
+                    "document_uuid": document_uuid
                 }, indent=2)
             )]
 

@@ -200,10 +200,38 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    if args.debug:
-        logging.basicConfig(level=logging.DEBUG)
-    else:
-        logging.basicConfig(level=logging.INFO)
+    # Configure logging with file handlers
+    import logging.handlers
+    from pathlib import Path
+    
+    # Create logs directory if it doesn't exist
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    
+    # Create handlers
+    console_handler = logging.StreamHandler()
+    file_handler = logging.handlers.RotatingFileHandler(
+        filename=log_dir / "mcp_server.log",
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=5,
+        encoding='utf-8'
+    )
+    error_handler = logging.handlers.RotatingFileHandler(
+        filename=log_dir / "mcp_server_error.log",
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=5,
+        encoding='utf-8'
+    )
+    error_handler.setLevel(logging.ERROR)
+    
+    # Configure logging with both console and file handlers
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[console_handler, file_handler, error_handler]
+    )
     
     logger.info(f"Starting MCP Research Server on {args.host}:{args.port}")
     

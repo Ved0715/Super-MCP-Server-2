@@ -169,6 +169,19 @@ markdown_cache/
 # Log files
 logs/
 *.log
+*.log.*
+mcp_server.log
+mcp_server_error.log
+mcp_http_transport.log
+mcp_http_transport_error.log
+backend.log
+backend_error.log
+# Rotating log files
+*.log.1
+*.log.2
+*.log.3
+*.log.4
+*.log.5
 
 # Temporary files
 temp/

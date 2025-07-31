@@ -483,10 +483,9 @@ async def generate_presentation_from_namespace(
         
         # Construct secure namespace using authenticated user
         namespace = get_user_namespace(http_request, request.doc_id)
-        logger.info(f"📁 Constructed namespace: {namespace}")
+        logger.info(f"Constructed namespace: {namespace}")
         
         # Call MCP server for namespace-based PPT generation
-        logger.info(f"🔗 Calling MCP server for presentation generation...")
         mcp_start_time = time.time()
         
         result = await mcp_client.create_presentation_from_namespace(
@@ -503,24 +502,19 @@ async def generate_presentation_from_namespace(
         mcp_duration = time.time() - mcp_start_time
         total_duration = time.time() - start_time
         
-        logger.info(f"✅ MCP server call completed in {mcp_duration:.2f}s")
-        logger.info(f"🎉 Total API request completed in {total_duration:.2f}s")
+        logger.info(f"MCP server call completed in {mcp_duration:.2f}s")
         
         # Log result summary
         if result.get("success"):
-            logger.info(f"✅ Presentation generation successful")
+            logger.info(f"Presentation generation successful")
         else:
-            logger.warning(f"⚠️  Presentation generation had issues: {result.get('error', 'Unknown error')}")
+            logger.warning(f"Presentation generation had issues: {result.get('error', 'Unknown error')}")
         
-        logger.info(f"📤 Returning result to client")
         return result
         
     except Exception as e:
         total_duration = time.time() - start_time
-        logger.error(f"❌ FastAPI endpoint error after {total_duration:.2f}s: {e}")
-        logger.error(f"🔍 Error details: {str(e)}")
-        import traceback
-        logger.error(f"📋 Full traceback: {traceback.format_exc()}")
+        logger.error(f"FastAPI endpoint error after {total_duration:.2f}s: {e}")
         raise HTTPException(status_code=500, detail=f"Presentation generation failed: {str(e)}")
 
 # ============================================================================

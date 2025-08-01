@@ -383,6 +383,8 @@ class MCPHTTPTransport:
                 arguments.setdefault("max_tables", 3)
                 arguments.setdefault("max_text_chunks", 10)
                 result = await self.mcp_server._handle_multimodel_paper_search(**arguments)
+            elif tool_name == "document_qa":
+                result = await self.mcp_server._handle_document_qa(**arguments)
             else:
                 raise ValueError(f"Unknown tool: {tool_name}")
             
@@ -520,6 +522,11 @@ class MCPHTTPTransport:
                         "name": "multimodel_paper_search",
                         "description": "Perform semantic search within papers using advanced analysis and multimodal configuration to answer queries including images and tables",
                         "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}}
+                    },
+                    {
+                        "name": "document_qa",
+                        "description": "Ask questions about two documents and get comprehensive answers using both documents",
+                        "input_schema": {"type": "object", "properties": {"user_id": {"type": "string"}, "doc1_uuid": {"type": "string"}, "doc2_uuid": {"type": "string"}, "question": {"type": "string"}}}
                     }
                 ]
                 

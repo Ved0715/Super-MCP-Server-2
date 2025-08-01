@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from retrieval.paper.paper_compare import PDFComparator
+    from retrieval.paper.paper_compare_qa import DocumentQA
     PDF_COMPARATOR_AVAILABLE = True
     logger.info("✅ PDF Comparator imported successfully")
 except ImportError as e:
@@ -93,6 +94,7 @@ class PerfectMCPServer:
         self.index = self.pc.Index("all-pdfs-index")
         # Initialize all components
         self.comparator = PDFComparator()
+        self.qa_system = DocumentQA()
         self.pdf_processor = EnhancedPDFProcessor(self.config)
         self.vector_storage = AdvancedVectorStorage(self.config)
         self.research_analyzer = ResearchPaperAnalyzer(self.config)
@@ -309,8 +311,21 @@ class PerfectMCPServer:
                         },
                         "required": ["user_id", "doc1_uuid", "doc2_uuid"]
                     }
-                )
-                ,
+                ),
+                Tool(
+                    name="document_qa",
+                    description="Ask questions about two documents and get comprehensive answers using both documents",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "user_id": {"type": "string", "description": "User identifier"},
+                            "doc1_uuid": {"type": "string", "description": "First document UUID"},
+                            "doc2_uuid": {"type": "string", "description": "Second document UUID"},
+                            "question": {"type": "string", "description": "Question to ask about the documents"}
+                        },
+                        "required": ["user_id", "doc1_uuid", "doc2_uuid", "question"]
+                    }
+                ),
                 Tool(
                     name="generate_research_insights",
                     description="Generate AI-powered insights and recommendations from research analysis",
@@ -571,6 +586,8 @@ class PerfectMCPServer:
                 
                 elif name == "compare_research_papers":
                     return await self._handle_compare_papers(**arguments)
+                elif name == "document_qa":
+                    return await self._handle_document_qa(**arguments)
                 
                 elif name == "generate_research_insights":
                     return await self._handle_generate_insights(**arguments)
@@ -3660,6 +3677,34 @@ The operation has been successfully cancelled and will stop as soon as possible.
             return [TextContent(
                 type="text",
                 text=f"❌ Error comparing papers: {e}"
+            )]
+
+    async def _handle_document_qa(self, user_id: str, doc1_uuid: str, doc2_uuid: str, question: str, **arguments):
+        """Handle document Q&A request"""
+        print(f"🔍 Document Q&A: {question}")
+
+        try:
+            # Process Q&A request
+            result = self.qa_system.ask_question(user_id, doc1_uuid, doc2_uuid, question)
+            
+            if result.get("success"):
+                # Generate formatted report (streamlined by default)
+                report = self.qa_system.get_qa_report(result, include_metadata=False)
+                return [TextContent(
+                    type="text",
+                    text=report
+                )]
+            else:
+                return [TextContent(
+                    type="text",
+                    text=f"❌ Q&A failed: {result.get('error', 'Unknown error')}"
+                )]
+                
+        except Exception as e:
+            logger.error(f"Error in document Q&A: {str(e)}")
+            return [TextContent(
+                type="text",
+                text=f"❌ Q&A error: {str(e)}"
             )]
 
     async def _handle_multimodel_paper_search(self, query: str, user_id: str, 

@@ -63,7 +63,6 @@ class PDFComparator:
             ns.name for ns in self.index.list_namespaces()
             if ns.name.startswith(f"user_{user_id}_doc_")
         ]
-            self.logger.info(f"Found {len(namespaces)} namespaces for user {user_id}")
             return namespaces
         except Exception as e:
             self.logger.error(f"Error listing namespaces: {e}")
@@ -85,9 +84,7 @@ class PDFComparator:
             chunks = []
             for match in response.matches:
                 # Debug: Log the first few matches to see metadata structure
-                if len(chunks) < 3:
-                    self.logger.info(f"Sample match metadata: {match.metadata}")
-                    self.logger.info(f"Available metadata keys: {list(match.metadata.keys())}")
+
                 
                 # Extract content from multiple possible fields
                 content = match.metadata.get('content', '')
@@ -203,7 +200,6 @@ Create a JSON summary with these fields:
             # Parse JSON response
             try:
                 response_content = response.choices[0].message.content.strip()
-                self.logger.info(f"LLM Response: {response_content[:500]}...")
                 
                 # Try to extract JSON from the response
                 summary_data = json.loads(response_content)
@@ -306,7 +302,6 @@ Focus on meaningful comparisons and provide actionable insights.
             # Parse comparison result
             try:
                 response_content = response.choices[0].message.content.strip()
-                self.logger.info(f"Comparison LLM Response: {response_content[:500]}...")
                 
                 # Try to extract JSON from the response
                 comparison_data = json.loads(response_content)
@@ -672,8 +667,6 @@ Generate a COMPREHENSIVE report that provides extensive depth and thorough analy
             final_report = f"""
 {comprehensive_report}
 
----
-*Report generated in {processing_time:.2f} seconds using {metadata.get('model_used', 'AI analysis')}*
 """
             
             return final_report

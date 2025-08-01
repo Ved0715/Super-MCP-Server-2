@@ -86,16 +86,7 @@ class MultimodalIntegrator:
             self.index = self.pinecone_client.Index(index_name)
             
             # Debug logging for index status
-            logger.info(f"Using Pinecone index: {index_name}")
-            try:
-                index_stats = self.index.describe_index_stats()
-                logger.info(f"Index stats: {index_stats}")
-                if hasattr(index_stats, 'namespaces') and index_stats.namespaces:
-                    logger.info(f"Available namespaces: {list(index_stats.namespaces.keys())}")
-                else:
-                    logger.warning("No namespaces found in index stats")
-            except Exception as e:
-                logger.error(f"Error getting index stats: {e}")
+
             
             # LlamaParse initialization
             llamaparse_api_key = os.getenv('LLAMA_PARSE_API_KEY')

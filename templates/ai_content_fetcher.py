@@ -6,6 +6,66 @@ import time
 import re
 from openai import OpenAI
 
+def smart_content_adaptation_for_fallback(text, max_length):
+    """Intelligently adapt content to fit space while preserving user's meaning - for fallback use"""
+    
+    if len(text) <= max_length:
+        return text
+    
+    # Strategy 1: Try to keep complete sentences
+    sentences = text.split('. ')
+    for i in range(len(sentences), 0, -1):
+        candidate = '. '.join(sentences[:i])
+        if not candidate.endswith('.') and i < len(sentences):
+            candidate += '.'
+        if len(candidate) <= max_length:
+            return candidate
+    
+    # Strategy 2: Intelligent abbreviation while preserving meaning
+    abbreviations = {
+        'machine learning': 'ML',
+        'artificial intelligence': 'AI',
+        'natural language processing': 'NLP',
+        'for example': 'e.g.',
+        'that is': 'i.e.',
+        'and so on': 'etc.',
+        'versus': 'vs',
+        'in order to': 'to',
+        'due to the fact that': 'because',
+        'a large number of': 'many',
+        'a small number of': 'few',
+        'is able to': 'can',
+        'has the ability to': 'can',
+    }
+    
+    adapted = text
+    for long_form, short_form in abbreviations.items():
+        if long_form in adapted.lower():
+            pattern = re.compile(re.escape(long_form), re.IGNORECASE)
+            adapted = pattern.sub(short_form, adapted)
+            if len(adapted) <= max_length:
+                return adapted
+    
+    # Strategy 3: Try to keep complete phrases (comma-separated)
+    phrases = adapted.split(', ')
+    for i in range(len(phrases), 0, -1):
+        candidate = ', '.join(phrases[:i])
+        if len(candidate) <= max_length:
+            return candidate
+    
+    # Strategy 4: Keep complete words
+    words = adapted.split()
+    for i in range(len(words), 0, -1):
+        candidate = ' '.join(words[:i])
+        if len(candidate) <= max_length:
+            return candidate
+    
+    # Strategy 5: Last resort - character truncation at word boundary  
+    if ' ' in adapted[:max_length]:
+        return adapted[:max_length].rsplit(' ', 1)[0]
+    
+    return adapted[:max_length]
+
 def validate_content_quality(ai_output, original_contexts, user_topic=""):
     """Validate that AI output doesn't reuse template text"""
     for i, item in enumerate(ai_output):
@@ -258,14 +318,16 @@ def create_fallback_formatted_content(original_contexts, user_content, topic_tit
             if not text:
                 text = f"{topic_title} provides comprehensive solutions and practical applications for modern requirements."
         
-        # Ensure text fits character count but don't make it too short
+        # Ensure text fits character count using intelligent adaptation
         if len(text) > char_count:
-            text = text[:char_count-3] + "..."
+            text = smart_content_adaptation_for_fallback(text, char_count)
         elif len(text) < char_count // 3 and char_count > 50:
-            # If text is too short for larger fields, add more content
-            text += f" This aspect of {topic_title} is essential for understanding the broader concepts."
-            if len(text) > char_count:
-                text = text[:char_count-3] + "..."
+            # If text is too short for larger fields, reuse more user content
+            if sentence_index < len(all_sentences):
+                additional_text = " " + all_sentences[sentence_index]
+                if len(text + additional_text) <= char_count:
+                    text += additional_text
+                    sentence_index += 1
         
         result_item = {
             "source": context_info.get("source", "slide"),
@@ -279,17 +341,17 @@ def create_fallback_formatted_content(original_contexts, user_content, topic_tit
     return fallback_results
 
 def create_enhanced_fallback_content(original_contexts, user_content, topic_title):
-    """Create high-quality fallback content with proper header-body relationships"""
+    """Create high-quality fallback content with proper header-body relationships - ONLY uses user content"""
     fallback_results = []
     
     if not user_content or not user_content.strip():
-        # If no user content, create comprehensive generic content
+        # If no user content, use minimal topic-based content
         for i, context_info in enumerate(original_contexts):
             char_count = context_info.get("char_count", 100)
             if char_count < 80:
-                text = f"{topic_title} Overview"
+                text = f"{topic_title}"
             else:
-                text = f"{topic_title} provides comprehensive insights and practical applications for modern requirements. This technology offers significant benefits including improved efficiency, enhanced performance, and streamlined processes that drive innovation in today's competitive landscape."
+                text = f"{topic_title} - Key Information"
             
             result_item = {
                 "source": context_info.get("source", "slide"),
@@ -362,10 +424,10 @@ def create_enhanced_fallback_content(original_contexts, user_content, topic_titl
                 else:
                     header_text = f"{topic_title} - Key Concept {i+1}"
                 
-                # Ensure header fits
+                # Ensure header fits using intelligent adaptation
                 header_char_count = header_info.get("char_count", 50)
                 if len(header_text) > header_char_count:
-                    header_text = header_text[:header_char_count-3] + "..."
+                    header_text = smart_content_adaptation_for_fallback(header_text, header_char_count)
                 
                 fallback_results.append({
                     "source": header_info.get("source", "slide"),
@@ -414,25 +476,37 @@ def create_enhanced_fallback_content(original_contexts, user_content, topic_titl
                     
                     # If still too short, enhance with topic-related content
                     if len(body_text) < target_length * 0.6 and body_char_count > 100:
-                        enhancement = f" This aspect of {topic_title} demonstrates significant importance in understanding the broader concepts and practical applications within the field."
-                        body_text += enhancement
+                        # Use more user content instead of generating new content
+                        if sentence_index < len(all_sentences):
+                            additional_text = " " + all_sentences[sentence_index]
+                            if len(body_text + additional_text) <= body_char_count:
+                                body_text += additional_text
+                                sentence_index += 1
                     
-                    # Ensure it fits
+                    # Ensure it fits using intelligent adaptation
                     if len(body_text) > body_char_count:
-                        body_text = body_text[:body_char_count-3] + "..."
+                        body_text = smart_content_adaptation_for_fallback(body_text, body_char_count)
                     
                     if not body_text:
-                        body_text = f"{topic_title} encompasses comprehensive methodologies and practical approaches that provide essential insights for effective implementation and optimal results."
-                        if len(body_text) > body_char_count:
-                            body_text = body_text[:body_char_count-3] + "..."
-                    
-                    fallback_results.append({
-                        "source": body_info.get("source", "slide"),
-                        "source_index": body_info.get("source_index", 0),
-                        "slide": body_info.get("slide", 0),
-                        "shape": body_info.get("shape", body_idx),
-                        "text": body_text
-                    })
+                        # Use user content instead of generating generic content
+                        if sentence_index < len(all_sentences):
+                            text = all_sentences[sentence_index]
+                            sentence_index += 1
+                        else:
+                            text = f"{topic_title} - Overview"
+                    else:
+                        text = body_text
+                
+                if len(text) > char_count:
+                    text = smart_content_adaptation_for_fallback(text, char_count)
+                
+                fallback_results.append({
+                    "source": context_info.get("source", "slide"),
+                    "source_index": context_info.get("source_index", 0),
+                    "slide": context_info.get("slide", 0),
+                    "shape": context_info.get("shape", body_idx),
+                    "text": text
+                })
         
         else:
             # Handle slides with only headers or only bodies
@@ -469,7 +543,7 @@ def create_enhanced_fallback_content(original_contexts, user_content, topic_titl
                         text = f"{topic_title} provides comprehensive solutions and practical applications for modern requirements in this specialized field."
                 
                 if len(text) > char_count:
-                    text = text[:char_count-3] + "..."
+                    text = smart_content_adaptation_for_fallback(text, char_count)
                 
                 fallback_results.append({
                     "source": context_info.get("source", "slide"),
@@ -487,10 +561,11 @@ def create_enhanced_fallback_content(original_contexts, user_content, topic_titl
             text = all_sentences[sentence_index]
             sentence_index += 1
         else:
-            text = f"{topic_title} - Professional Presentation"
+            # Use minimal user content instead of generating
+            text = f"{topic_title}"
         
         if len(text) > char_count:
-            text = text[:char_count-3] + "..."
+            text = smart_content_adaptation_for_fallback(text, char_count)
         
         fallback_results.append({
             "source": context_info.get("source", "slide"),

@@ -24,7 +24,7 @@ import mcp.server.session
 
 from config import AdvancedConfig
 
-from templates.main import generate_presentation_api
+from templates.main import generate_presentation_api, generate_presentation_with_preview_api
 
 from enhanced_pdf_processor import EnhancedPDFProcessor
 import retrieval
@@ -49,7 +49,7 @@ try:
     from retrieval.paper.paper_compare import PDFComparator
     from retrieval.paper.paper_compare_qa import DocumentQA
     PDF_COMPARATOR_AVAILABLE = True
-    logger.info("✅ PDF Comparator imported successfully")
+    logger.debug("PDF Comparator imported successfully")
 except ImportError as e:
     PDF_COMPARATOR_AVAILABLE = False
     logger.warning(f"⚠️ PDF Comparator not available: {e}")
@@ -57,7 +57,7 @@ except ImportError as e:
 try:
     from retrieval.kb_cot_retrival import ChainOfThoughtKBRetriever
     COT_RETRIEVER_AVAILABLE = True
-    logger.info("✅ Chain of Thought KB Retriever imported successfully")
+    logger.debug("Chain of Thought KB Retriever imported successfully")
 except ImportError as e:
     COT_RETRIEVER_AVAILABLE = False
     logger.warning(f"⚠️ Chain of Thought KB Retriever not available: {e}")
@@ -238,8 +238,9 @@ class PerfectMCPServer:
                             "namespace": {"type": "string", "description": "Vector database namespace"},
                             "user_prompt": {"type": "string", "description": "User's presentation requirements"},
                             "title": {"type": "string", "description": "Presentation title"},
-                        },
-                        "required": ["namespace", "user_prompt"]
+                            "slide_count": {"type": "integer", "description": "Number of slides", "default": 5},
+                },
+                "required": ["namespace", "user_prompt", "title"]
                     }
                 ),
                 
@@ -1801,6 +1802,7 @@ class PerfectMCPServer:
         namespace: str,
         user_prompt: str,
         title: str = None,
+        slide_count: int = 5,
     ) -> List[TextContent]:
         """
         Handle namespace-based presentation creation
@@ -1817,28 +1819,22 @@ class PerfectMCPServer:
             logger.info(f"💭 User prompt: {user_prompt}")
             
             # Step 1: Search vector database in namespace
-            logger.info(f"🔍 Step 1/3: Starting vector database search in namespace...")
+            logger.debug(f"Starting vector database search in namespace: {namespace}")
             search_start_time = time.time()
             
             if not self.vector_storage:
-                logger.error("❌ Vector storage not initialized")
+                logger.error("Vector storage not initialized")
                 return [TextContent(type="text", text="Vector storage not initialized")]
             
             search_results = await self.vector_storage.search_in_namespace(
                 namespace=namespace,
                 query=user_prompt,
-                max_results=50,
+                max_results=70,
                 similarity_threshold=0.1
             )
-
-
-            
-
-
             
             search_duration = time.time() - search_start_time
-            logger.info(f"✅ Vector search completed in {search_duration:.2f}s")
-            logger.info(f"📊 Found {len(search_results)} content chunks")
+            logger.info(f"Vector search completed: {len(search_results)} chunks in {search_duration:.2f}s")
             
             if not search_results:
                 logger.warning(f"⚠️  No content found in namespace: {namespace}")
@@ -1899,53 +1895,42 @@ CONTENT TO ENRICH:
                 max_tokens=4000
             )
             enriched_text = response.choices[0].message.content.strip()
-            print(enriched_text)
             
             logger.info(f"Generating Presentation...")
-            output = generate_presentation_api(enriched_text, title)
-            # Step 3: Generate PPT using existing generator
-            # logger.info(f"🎨 Step 3/3: Starting PowerPoint generation...")
-            # ppt_start_time = time.time()
+            output = generate_presentation_with_preview_api(enriched_text, title, user_prompt, slide_count)
             
-            # if not self.ppt_generator:
-            #     logger.error("❌ PPT generator not initialized")
-            #     return [TextContent(type="text", text="PPT generator not initialized")]
-            
-            # logger.info(f"🤖 Calling PPT generator with {slide_count} slides...")
-            # presentation_path = await self.ppt_generator.create_perfect_presentation(
-            #     paper_content=aggregated_content,
-            #     user_prompt=user_prompt,
-            #     paper_id=namespace,  # Use namespace as paper_id
-            #     title=title,
-            #     theme=theme,
-            #     slide_count=slide_count,
-            #     audience_type=audience_type
-            # )
-            
-            # ppt_duration = time.time() - ppt_start_time
-            # total_duration = time.time() - start_time
-            
-            # logger.info(f"✅ PowerPoint generation completed in {ppt_duration:.2f}s")
-            # logger.info(f"📁 Presentation saved: {os.path.basename(presentation_path)}")
-            # logger.info(f"🎉 Total process completed in {total_duration:.2f}s")
-            
-            # # Performance breakdown log
-            # logger.info(f"⏱️  Performance breakdown:")
-            # logger.info(f"   - Vector search: {search_duration:.2f}s ({search_duration/total_duration*100:.1f}%)")
-            # logger.info(f"   - Content aggregation: {aggregation_duration:.2f}s ({aggregation_duration/total_duration*100:.1f}%)")
-            # logger.info(f"   - PPT generation: {ppt_duration:.2f}s ({ppt_duration/total_duration*100:.1f}%)")
-            
-            # response_parts = [f"# 🎯 Namespace-Based Presentation Created"]
-            # response_parts.append(f"**Namespace:** {namespace}")
-            # response_parts.append(f"**Content Sources:** {len(search_results)} chunks found")
-            # response_parts.append(f"**Presentation:** {os.path.basename(presentation_path)}")
-            # response_parts.append(f"**Theme:** {theme}")
-            # response_parts.append(f"**Slides:** {slide_count}")
-            # response_parts.append(f"**Total Time:** {total_duration:.2f}s")
-            
-            # return [TextContent(type="text", text="\n".join(search_results))]
-            # return [TextContent(type="text", text="\n".join("hi"))]
-            return [TextContent(type="text", text=output)]
+            import json
+            if output.get('success'):
+                # Return clean JSON with essential information
+                clean_response = {
+                    "success": True,
+                    "presentation_file": output.get('output_file'),
+                    "slides_generated": output.get('slides_generated', 0),
+                    "topic": output.get('preview_data', {}).get('topic'),
+                    "user_prompt": output.get('preview_data', {}).get('user_prompt'),
+                    "content_summary": {
+                        "total_content_length": output.get('preview_data', {}).get('content_length', 0),
+                        "content_coverage_percentage": output.get('preview_data', {}).get('content_coverage_percentage', 0)
+                    },
+                    "slides_overview": [
+                        {
+                            "slide_num": q.get('slide_num'),
+                            "question": q.get('question'),
+                            "content_length": q.get('content_length'),
+                            "format_type": q.get('format_analysis', {}).get('content_format'),
+                            "confidence_score": q.get('format_analysis', {}).get('confidence_score')
+                        }
+                        for q in output.get('preview_data', {}).get('questions', [])[:5]  # Show first 5 slides
+                    ]
+                }
+                return [TextContent(type="text", text=json.dumps(clean_response, indent=2))]
+            else:
+                error_response = {
+                    "success": False,
+                    "error": output.get('error', 'Unknown error'),
+                    "details": "Presentation generation failed"
+                }
+                return [TextContent(type="text", text=json.dumps(error_response, indent=2))]
             
         except Exception as e:
             total_duration = time.time() - start_time
@@ -1954,6 +1939,8 @@ CONTENT TO ENRICH:
             import traceback
             logger.error(f"📋 Full traceback: {traceback.format_exc()}")
             return [TextContent(type="text", text=f"Namespace presentation error: {str(e)}")]
+
+
 
     def _aggregate_search_results(self, search_results: List, namespace: str) -> Dict[str, Any]:
         """

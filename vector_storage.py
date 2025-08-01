@@ -47,7 +47,8 @@ class AdvancedVectorStorage:
         
         # Initialize Pinecone
         self.pc = Pinecone(api_key=config.PINECONE_API_KEY)
-        self.index_name = config.PINECONE_INDEX_NAME
+        # self.index_name = config.PINECONE_INDEX_NAME
+        self.index_name = "test"
         self.dimensions = config.EMBEDDING_DIMENSIONS
         
         # Create index if it doesn't exist
@@ -599,29 +600,22 @@ class AdvancedVectorStorage:
         start_time = time.time()
         
         try:
-            logger.info(f"🔍 Starting vector search in namespace: {namespace}")
-            logger.info(f"📝 Query: '{query[:100]}{'...' if len(query) > 100 else ''}'")
-            logger.info(f"⚙️  Parameters: max_results={max_results}, threshold={similarity_threshold}")
+            logger.debug(f"Starting vector search in namespace: {namespace}")
             
             if not self.index:
-                logger.error("❌ Pinecone index not initialized")
+                logger.error("Pinecone index not initialized")
                 return []
             
             # Generate query embedding
-            logger.info(f"🤖 Generating embedding for query...")
             embedding_start_time = time.time()
-            
             query_embedding = await self._generate_single_embedding(query)
-            
             embedding_duration = time.time() - embedding_start_time
-            logger.info(f"✅ Query embedding generated in {embedding_duration:.2f}s")
             
             if not query_embedding:
-                logger.error("❌ Failed to generate query embedding")
+                logger.error("Failed to generate query embedding")
                 return []
             
             # Search in Pinecone with namespace filter
-            logger.info(f"🔎 Querying Pinecone index with namespace filter...")
             pinecone_start_time = time.time()
             
             search_results = self.index.query(
@@ -633,11 +627,8 @@ class AdvancedVectorStorage:
             )
             
             pinecone_duration = time.time() - pinecone_start_time
-            logger.info(f"✅ Pinecone query completed in {pinecone_duration:.2f}s")
-            logger.info(f"📊 Raw results from Pinecone: {len(search_results.matches)} matches")
             
             # Filter by similarity threshold
-            logger.info(f"🔧 Filtering results by similarity threshold {similarity_threshold}...")
             filtered_results = []
             scores = []
             
@@ -653,35 +644,15 @@ class AdvancedVectorStorage:
             
             total_duration = time.time() - start_time
             
-            # Log detailed results
-            if scores:
-                avg_score = sum(scores) / len(scores)
-                max_score = max(scores)
-                min_score = min(scores)
-                logger.info(f"📈 Score statistics: avg={avg_score:.3f}, max={max_score:.3f}, min={min_score:.3f}")
-            
-            logger.info(f"✅ Vector search completed in {total_duration:.2f}s")
-            logger.info(f"📊 Results: {len(filtered_results)}/{len(search_results.matches)} chunks passed threshold")
-            
+            # Log summary results only
             if filtered_results:
                 total_content_chars = sum(len(r['content']) for r in filtered_results)
-                logger.info(f"📝 Total content retrieved: {total_content_chars} characters")
-                
-                # Log top 3 results summary
-                logger.info(f"🏆 Top results preview:")
-                for i, result in enumerate(filtered_results[:3]):
-                    content_preview = result['content'][:100] + "..." if len(result['content']) > 100 else result['content']
-                    logger.info(f"   {i+1}. Score: {result['score']:.3f} | Content: {content_preview}")
+                logger.info(f"Vector search completed: {len(filtered_results)} results in {total_duration:.2f}s")
+                logger.debug(f"Content retrieved: {total_content_chars} chars, avg score: {sum(scores)/len(scores):.3f}")
             else:
-                logger.warning(f"⚠️  No results found above threshold {similarity_threshold}")
+                logger.warning(f"No results found above threshold {similarity_threshold}")
                 if scores:
-                    logger.info(f"💡 Suggestion: Consider lowering threshold (best score was {max(scores):.3f})")
-            
-            # Performance breakdown
-            logger.info(f"⏱️  Search performance breakdown:")
-            logger.info(f"   - Embedding generation: {embedding_duration:.2f}s ({embedding_duration/total_duration*100:.1f}%)")
-            logger.info(f"   - Pinecone query: {pinecone_duration:.2f}s ({pinecone_duration/total_duration*100:.1f}%)")
-            logger.info(f"   - Result processing: {(total_duration-embedding_duration-pinecone_duration):.2f}s")
+                    logger.debug(f"Best score was {max(scores):.3f}")
             
             return filtered_results
             

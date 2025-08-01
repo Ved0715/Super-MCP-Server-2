@@ -81,7 +81,7 @@ def main():
     try:
         from config import AdvancedConfig
         config = AdvancedConfig()
-        research_index = config.PINECONE_INDEX_NAME or "all-pdfs-index"
+        research_index = os.getenv('PINECONE_INDEX_NAME_TEST') or config.PINECONE_INDEX_NAME or "test"
         kb_index = config.PINECONE_KB_INDEX_NAME or "optimized-kb-index"
         print(f"  📄 Research Papers:  {research_index}")
         print(f"  📚 Knowledge Base:   {kb_index}")

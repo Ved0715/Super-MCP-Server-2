@@ -18,6 +18,15 @@ class AdvancedConfig:
         self.PINECONE_API_KEY = self._get_env_var("PINECONE_API_KEY")
         
         # ============================================================================
+        # AWS S3 CONFIGURATION
+        # ============================================================================
+        self.AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+        self.AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+        self.AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+        self.S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "knoiprocessedimagesbucket")
+        self.S3_BUCKET_REGION = os.getenv("S3_BUCKET_REGION", "ap-south-1")
+        
+        # ============================================================================
         # OPTIONAL API KEYS
         # ============================================================================
         self.LLAMA_PARSE_API_KEY = os.getenv("LLAMA_PARSE_API_KEY")
@@ -102,13 +111,7 @@ class AdvancedConfig:
         self.LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
         self.LOG_DIR = os.getenv("LOG_DIR", "logs")
         self.ENABLE_DETAILED_LOGGING = os.getenv("ENABLE_DETAILED_LOGGING", "false").lower() == "true"
-
-
-        self.AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID')
-        self.AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
-        self.AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
-        self.S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME')
-        self.DEFAULT_TIMEOUT = int(os.getenv('DEFAULT_TIMEOUT'))
+        self.DEFAULT_TIMEOUT = int(os.getenv('DEFAULT_TIMEOUT', '30'))
         
         # Create necessary directories
         self._create_directories()
@@ -274,6 +277,13 @@ class AdvancedConfig:
         if not self.UNSPLASH_ACCESS_KEY:
             issues.append("WARNING: UNSPLASH_ACCESS_KEY not set - presentations will not include images")
         
+        # Check S3 configuration
+        if not self.AWS_ACCESS_KEY_ID or not self.AWS_SECRET_ACCESS_KEY:
+            issues.append("WARNING: AWS credentials not set - S3 storage will not be available")
+        else:
+            if not self.S3_BUCKET_NAME:
+                issues.append("WARNING: S3_BUCKET_NAME not set - using default bucket")
+        
         # Validate numeric ranges
         if not 0 <= self.LLM_TEMPERATURE <= 2:
             issues.append("WARNING: LLM_TEMPERATURE should be between 0 and 2")
@@ -304,9 +314,25 @@ class AdvancedConfig:
             "max_concurrent_requests": self.MAX_CONCURRENT_REQUESTS,
             "request_timeout": self.REQUEST_TIMEOUT
         }
+    
+    def get_s3_config(self) -> Dict[str, Any]:
+        """Get S3 configuration"""
+        return {
+            "aws_access_key_id": self.AWS_ACCESS_KEY_ID,
+            "aws_secret_access_key": self.AWS_SECRET_ACCESS_KEY,
+            "aws_region": self.AWS_REGION,
+            "s3_bucket_name": self.S3_BUCKET_NAME,
+            "s3_bucket_region": self.S3_BUCKET_REGION
+        }
 
 # Backward compatibility
 Config = AdvancedConfig 
 
 # Create a global config instance
-config = AdvancedConfig() 
+config = AdvancedConfig()
+
+# Export AWS credentials for backward compatibility
+AWS_ACCESS_KEY_ID = config.AWS_ACCESS_KEY_ID
+AWS_SECRET_ACCESS_KEY = config.AWS_SECRET_ACCESS_KEY
+AWS_REGION = config.AWS_REGION
+S3_BUCKET_NAME = config.S3_BUCKET_NAME 

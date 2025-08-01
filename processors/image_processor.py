@@ -28,7 +28,6 @@ import streamlit as st
 from llama_parse import LlamaParse
 
 # Local imports
-from config import AdvancedConfig
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,7 +36,6 @@ class ImageProcessor:
     """Specialized processor for LlamaParse image extraction and S3/Pinecone storage."""
     
     def __init__(self, openai_client: OpenAI, pinecone_client: Pinecone, index):
-        self.config = AdvancedConfig()
         self.openai_client = openai_client
         self.pinecone_client = pinecone_client
         self.index = index
@@ -45,7 +43,7 @@ class ImageProcessor:
         
         # Initialize S3 handler
         try:
-            from ..s3_handler import S3Handler
+            from s3_handler import S3Handler
             self.s3_handler = S3Handler()
             self.use_s3 = True
             logger.info("S3 storage enabled for image processing")
@@ -59,7 +57,7 @@ class ImageProcessor:
         self.min_ocr_confidence = 0.3
         self.max_keywords = 20
         
-    def process_images_from_llamaparse(self, json_objs: List[Dict], pdf_name: str, pdf_id: str) -> Dict[str, Any]:
+    def process_images_from_llamaparse(self, json_objs: List[Dict], pdf_name: str, pdf_id: str, skip_pinecone: bool = False) -> Dict[str, Any]:
         """Process all images from LlamaParse JSON output using proven extraction methods."""
         try:
             start_time = time.time()
@@ -70,7 +68,9 @@ class ImageProcessor:
                 storage_prefix = get_pdf_s3_prefix(pdf_name)
                 logger.info(f"Using S3 storage: {storage_prefix}")
             else:
-                image_dir = self.config.get_pdf_image_dir(pdf_name)
+                # Use temporary directory for local storage
+                import tempfile
+                image_dir = Path(tempfile.mkdtemp())
                 logger.info(f"Using local storage: {image_dir}")
             
             # Use the proven extraction method with appropriate storage
@@ -105,8 +105,12 @@ class ImageProcessor:
                     logger.error(f"Error processing image {i}: {e}")
                     continue
             
-            # Store in Pinecone
-            pinecone_stored = self._store_images_in_pinecone(processed_images, pdf_id)
+            # Store in Pinecone (skip if flag is set)
+            pinecone_stored = 0
+            if not skip_pinecone:
+                pinecone_stored = self._store_images_in_pinecone(processed_images, pdf_id)
+            else:
+                logger.info("Skipping individual image storage in Pinecone (composite chunks will be stored instead)")
             
             processing_time = time.time() - start_time
             
@@ -137,7 +141,7 @@ class ImageProcessor:
             # Initialize LlamaParse parser with same configuration
             api_key = os.getenv("LLAMA_PARSE_API_KEY")
             if not api_key:
-                logger.error("LLAMA_PARSE_API_KEY not found")
+                logger.error("LLAMA PARSE_API_KEY not found")
                 return all_images
             
             parser = LlamaParse(
@@ -206,18 +210,49 @@ class ImageProcessor:
                             'original_dict': image_dict
                         }
                         
-                        # Extract page number if available
+                        # Extract page number with enhanced logic (LlamaParse uses 0-based indexing)
+                        page_number = 1  # Default fallback
+                        
+                        # Method 1: Direct page field (already 0-based from LlamaParse)
                         if 'page' in image_dict:
-                            enhanced_img_data['page_number'] = image_dict['page']
+                            page_number = image_dict['page'] + 1  # Convert to 1-based
+                        # Method 2: Extract from filename (e.g., img_p3_1.png -> page 4, since 3+1=4)
                         elif 'name' in image_dict:
-                            # Try to extract page from filename
                             import re
-                            page_match = re.search(r'page[_-]?(\d+)', image_dict['name'], re.IGNORECASE)
+                            # Try multiple patterns for page extraction
+                            patterns = [
+                                r'img_p(\d+)_',  # img_p3_1.png -> page 4
+                                r'page[_-]?(\d+)',  # page_3.png -> page 4
+                                r'p(\d+)_',  # p3_img.png -> page 4
+                                r'_p(\d+)_',  # image_p3_1.png -> page 4
+                            ]
+                            
+                            for pattern in patterns:
+                                page_match = re.search(pattern, image_dict['name'], re.IGNORECASE)
+                                if page_match:
+                                    extracted_page = int(page_match.group(1))
+                                    page_number = extracted_page + 1  # Convert 0-based to 1-based
+                                    break
+                        
+                        # Method 3: Try to extract from path if available
+                        elif 'path' in image_dict:
+                            import re
+                            path = str(image_dict['path'])
+                            # Look for page numbers in the path
+                            page_match = re.search(r'page[_-]?(\d+)', path, re.IGNORECASE)
                             if page_match:
-                                enhanced_img_data['page_number'] = int(page_match.group(1))
+                                extracted_page = int(page_match.group(1))
+                                page_number = extracted_page + 1  # Convert 0-based to 1-based
+                        
+                        enhanced_img_data['page_number'] = page_number
+                        
+                        # Debug logging to understand image_dict structure
+                        logger.info(f"Image dict keys: {list(image_dict.keys())}")
+                        logger.info(f"Image name: {image_dict.get('name', 'NO_NAME')}")
+                        logger.info(f"Extracted page number: {page_number}")
                         
                         all_images.append(enhanced_img_data)
-                        logger.info(f"Extracted image with OCR: {storage_path} ({len(ocr_text)} chars OCR, {len(keywords)} keywords)")
+                        logger.info(f"Extracted image with OCR: {storage_path} (Page {enhanced_img_data.get('page_number', 'NO_PAGE')}, {len(ocr_text)} chars OCR, {len(keywords)} keywords)")
                     else:
                         logger.debug(f"Skipping non-image file: {image_path}")
                 
@@ -270,7 +305,7 @@ class ImageProcessor:
                                 'keywords': keywords
                             }
                             all_images.append(enhanced_img_data)
-                            logger.info(f"Saved fallback image with OCR: {saved_path} ({len(ocr_text)} chars OCR)")
+                            logger.info(f"Saved fallback image with OCR: {saved_path} (Page {enhanced_img_data.get('page_number', 'NO_PAGE')}, {len(ocr_text)} chars OCR)")
                 
                 logger.info(f"Fallback extraction found {len(all_images)} image references")
                 return all_images
@@ -565,187 +600,7 @@ class ImageProcessor:
             logger.error(f"Error downloading image {pdf_id}_p{page_num}_img{img_index}: {e}")
             return None
     
-    def _download_job_images(self, job_id: str, save_dir: Path, pdf_id: str):
-        """Download actual images from LlamaParse job results."""
-        try:
-            import requests
-            import os
-            
-            # Get API key
-            api_key = os.getenv('LLAMA_PARSE_API_KEY')
-            if not api_key:
-                logger.error("LLAMA_PARSE_API_KEY not found")
-                return
-            
-            # LlamaParse API endpoints
-            base_url = "https://api.cloud.llamaindex.ai/api/parsing"
-            
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            # Get job info to see available result types
-            job_url = f"{base_url}/job/{job_id}"
-            response = requests.get(job_url, headers=headers)
-            
-            if response.status_code != 200:
-                logger.error(f"Failed to get job info: {response.status_code}")
-                return
-            
-            job_info = response.json()
-            logger.info(f"Job info: {job_info.get('status', 'unknown status')}")
-            
-            # Download images from job results
-            # Try different image result endpoints
-            image_endpoints = [
-                f"{base_url}/job/{job_id}/result/images",
-                f"{base_url}/job/{job_id}/result/image",
-                f"{base_url}/job/{job_id}/images"
-            ]
-            
-            for endpoint in image_endpoints:
-                try:
-                    logger.info(f"Trying image endpoint: {endpoint}")
-                    img_response = requests.get(endpoint, headers=headers)
-                    
-                    if img_response.status_code == 200:
-                        content_type = img_response.headers.get('content-type', '')
-                        
-                        if 'application/json' in content_type:
-                            # JSON response with image URLs or data
-                            images_data = img_response.json()
-                            self._process_images_json_response(images_data, save_dir, pdf_id)
-                        elif 'application/zip' in content_type:
-                            # ZIP file with images
-                            self._extract_images_from_zip(img_response.content, save_dir, pdf_id)
-                        elif content_type.startswith('image/'):
-                            # Single image file
-                            image_path = save_dir / f"{pdf_id}_image.png"
-                            with open(image_path, 'wb') as f:
-                                f.write(img_response.content)
-                            logger.info(f"Downloaded single image: {image_path}")
-                        
-                        return  # Success, stop trying other endpoints
-                        
-                except Exception as e:
-                    logger.warning(f"Failed endpoint {endpoint}: {e}")
-                    continue
-            
-            logger.warning("No image endpoints returned successful results")
-            
-        except Exception as e:
-            logger.error(f"Error downloading job images: {e}")
-    
-    def _process_images_json_response(self, images_data: Dict, save_dir: Path, pdf_id: str):
-        """Process JSON response containing image data or URLs."""
-        try:
-            import requests
-            
-            if isinstance(images_data, list):
-                # List of image objects
-                for i, img_info in enumerate(images_data):
-                    self._download_single_job_image(img_info, save_dir, pdf_id, i)
-            elif isinstance(images_data, dict):
-                # Check for different possible structures
-                if 'images' in images_data:
-                    for i, img_info in enumerate(images_data['images']):
-                        self._download_single_job_image(img_info, save_dir, pdf_id, i)
-                elif 'urls' in images_data:
-                    for i, url in enumerate(images_data['urls']):
-                        self._download_image_from_url(url, save_dir, pdf_id, i)
-                else:
-                    # Treat entire response as single image info
-                    self._download_single_job_image(images_data, save_dir, pdf_id, 0)
-                    
-        except Exception as e:
-            logger.error(f"Error processing images JSON response: {e}")
-    
-    def _download_single_job_image(self, img_info: Dict, save_dir: Path, pdf_id: str, index: int):
-        """Download a single image from job result info."""
-        try:
-            import requests
-            
-            # Look for URL in various possible fields
-            url = None
-            for url_field in ['url', 'download_url', 'image_url', 'src', 'href']:
-                if url_field in img_info and img_info[url_field]:
-                    url = img_info[url_field]
-                    break
-            
-            if url:
-                self._download_image_from_url(url, save_dir, pdf_id, index)
-            else:
-                logger.warning(f"No URL found in image info: {list(img_info.keys())}")
-                
-        except Exception as e:
-            logger.error(f"Error downloading single job image: {e}")
-    
-    def _download_image_from_url(self, url: str, save_dir: Path, pdf_id: str, index: int):
-        """Download image from URL."""
-        try:
-            import requests
-            import os
-            
-            headers = {}
-            api_key = os.getenv('LLAMA_PARSE_API_KEY')
-            if api_key and 'llamaindex.ai' in url:
-                headers['Authorization'] = f"Bearer {api_key}"
-            
-            response = requests.get(url, headers=headers, timeout=30)
-            if response.status_code == 200:
-                # Determine file extension from content type or URL
-                content_type = response.headers.get('content-type', '')
-                if 'jpeg' in content_type or 'jpg' in content_type:
-                    ext = '.jpg'
-                elif 'png' in content_type:
-                    ext = '.png'
-                elif 'gif' in content_type:
-                    ext = '.gif'
-                else:
-                    ext = '.png'  # default
-                
-                image_path = save_dir / f"{pdf_id}_img_{index}{ext}"
-                with open(image_path, 'wb') as f:
-                    f.write(response.content)
-                
-                logger.info(f"Downloaded image from URL: {image_path}")
-                return str(image_path)
-            else:
-                logger.warning(f"Failed to download image: {response.status_code}")
-                
-        except Exception as e:
-            logger.error(f"Error downloading image from URL: {e}")
-        
-        return None
-    
-    def _extract_images_from_zip(self, zip_content: bytes, save_dir: Path, pdf_id: str):
-        """Extract images from ZIP file."""
-        try:
-            import zipfile
-            import io
-            
-            with zipfile.ZipFile(io.BytesIO(zip_content)) as zip_file:
-                image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'}
-                
-                for file_info in zip_file.filelist:
-                    file_ext = Path(file_info.filename).suffix.lower()
-                    
-                    if file_ext in image_extensions:
-                        # Extract image file
-                        image_data = zip_file.read(file_info.filename)
-                        
-                        # Clean filename
-                        clean_name = Path(file_info.filename).name
-                        image_path = save_dir / f"{pdf_id}_{clean_name}"
-                        
-                        with open(image_path, 'wb') as f:
-                            f.write(image_data)
-                        
-                        logger.info(f"Extracted image from ZIP: {image_path}")
-                        
-        except Exception as e:
-            logger.error(f"Error extracting images from ZIP: {e}")
+
     
     def _find_downloaded_image(self, pdf_image_dir: Path, image_id: str, page_num: int, img_index: int) -> Optional[str]:
         """Find downloaded image file that matches the image metadata."""
@@ -1133,87 +988,7 @@ class ImageProcessor:
         # Combine with separators for better tokenization
         return ' | '.join(embedding_parts)
     
-    def _store_images_in_pinecone(self, processed_images: List[Dict], pdf_id: str) -> int:
-        """Store processed images in Pinecone with comprehensive metadata."""
-        if not processed_images:
-            return 0
-        
-        vectors = []
-        
-        for img_data in processed_images:
-            try:
-                # Generate embedding
-                embedding_text = img_data['embedding_text']
-                embedding = self._get_embedding(embedding_text)
-                
-                # Create enhanced metadata for Pinecone optimized for semantic search
-                ocr_text = img_data.get('ocr_text', '')
-                keywords = img_data.get('keywords', [])
-                
-                metadata = {
-                    'content_type': 'image',
-                    'image_id': img_data['image_id'],
-                    'pdf_id': pdf_id,
-                    'pdf_name': img_data['pdf_name'],
-                    'page_number': img_data['page_number'],
-                    
-                    # Enhanced OCR and semantic data for search
-                    'ocr_text': ocr_text[:8000],  # Increased limit for better search
-                    'keywords': keywords[:20] if isinstance(keywords, list) else [],
-                    'has_text': bool(ocr_text and len(ocr_text.strip()) > 0),
-                    'keywords_count': len(keywords) if isinstance(keywords, list) else 0,
-                    'ocr_length': len(ocr_text) if ocr_text else 0,
-                    
-                    # Content classification
-                    'content_classification': img_data.get('content_type', 'figure'),
-                    'confidence_score': img_data.get('confidence_score', 0.0),
-                    
-                    # Positioning - handle missing position data gracefully
-                    'position_x': img_data.get('position', {}).get('x', 0),
-                    'position_y': img_data.get('position', {}).get('y', 0),
-                    'page_position': img_data.get('position', {}).get('page_position', 'unknown'),
-                    
-                    # Dimensions - handle missing dimension data gracefully
-                    'width': img_data.get('dimensions', {}).get('width', 0),
-                    'height': img_data.get('dimensions', {}).get('height', 0),
-                    
-                    # Storage information (S3 or local)
-                    'storage_type': img_data.get('storage_type', 'local'),
-                    'storage_path': img_data.get('storage_path', ''),
-                    's3_url': img_data.get('s3_url', ''),
-                    's3_key': img_data.get('s3_key', ''),
-                    'local_path': img_data.get('local_path', ''),  # Legacy field
-                    'original_name': img_data.get('original_name', 'unknown'),
-                    'saved_successfully': bool(img_data.get('saved_successfully', False)),
-                    
-                    # Processing metadata
-                    'extraction_source': img_data.get('extraction_source', 'unknown'),
-                    'processed_timestamp': img_data.get('processed_timestamp', datetime.now().isoformat())
-                }
-                
-                vector = {
-                    'id': f"img_{img_data['image_id']}",
-                    'values': embedding,
-                    'metadata': metadata
-                }
-                
-                vectors.append(vector)
-                
-            except Exception as e:
-                logger.error(f"Error creating vector for image {img_data.get('image_id')}: {e}")
-                continue
-        
-        # Batch upsert to Pinecone
-        if vectors:
-            try:
-                self.index.upsert(vectors=vectors, namespace=pdf_id)
-                logger.info(f"Stored {len(vectors)} image vectors in Pinecone namespace: {pdf_id}")
-                return len(vectors)
-            except Exception as e:
-                logger.error(f"Error upserting image vectors to Pinecone: {e}")
-                return 0
-        
-        return 0
+
     
     def _get_embedding(self, text: str) -> List[float]:
         """Generate embedding using OpenAI API."""
@@ -1232,242 +1007,8 @@ class ImageProcessor:
             logger.error(f"Error generating embedding: {e}")
             return [0.0] * 3072
     
-    def extract_images_from_uploaded_file(self, uploaded_file, pdf_id: str = None) -> Dict[str, Any]:
-        """Extract images from uploaded PDF file using proven LlamaParse method."""
-        try:
-            start_time = time.time()
-            
-            # Generate PDF ID if not provided
-            if not pdf_id:
-                pdf_content = uploaded_file.getvalue()
-                pdf_hash = hashlib.md5(pdf_content).hexdigest()[:10]
-                pdf_id = f"pdf_{pdf_hash}"
-            
-            # Create temporary file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                tmp_file.write(uploaded_file.getvalue())
-                tmp_file_path = tmp_file.name
-            
-            try:
-                # Setup download directory using PDF name
-                from config import get_pdf_image_dir
-                download_path = get_pdf_image_dir(uploaded_file.name)
-                
-                # Initialize parser
-                api_key = os.getenv("LLAMA_PARSE_API_KEY")
-                if not api_key:
-                    raise ValueError("LLAMA_PARSE_API_KEY not found")
-                
-                parser = LlamaParse(
-                    api_key=api_key,
-                    result_type="markdown",
-                    num_workers=4,
-                    verbose=True,
-                    language="en"
-                )
-                
-                images = []
-                image_paths = []
-                
-                # Method 1: Try get_json_result() and get_images()
-                try:
-                    logger.info("🔄 Using LlamaParse JSON mode for comprehensive extraction...")
-                    json_objs = parser.get_json_result(tmp_file_path)
-                    
-                    if json_objs and len(json_objs) > 0:
-                        # Extract images using get_images method
-                        image_dicts = parser.get_images(json_objs, download_path=str(download_path))
-                        
-                        for idx, image_dict in enumerate(image_dicts):
-                            # Read the downloaded image file
-                            image_path = Path(image_dict["path"])
-                            if image_path.exists():
-                                with open(image_path, 'rb') as f:
-                                    image_data = f.read()
-                                
-                                images.append(image_data)
-                                image_paths.append(str(image_path))
-                        
-                        if images:
-                            processing_time = time.time() - start_time
-                            logger.info(f"✅ Successfully extracted {len(images)} images in {processing_time:.2f}s")
-                            return {
-                                'images': images,
-                                'image_paths': image_paths,
-                                'pdf_id': pdf_id,
-                                'extraction_method': 'llamaparse_get_images',
-                                'processing_time': processing_time,
-                                'success': True
-                            }
-                            
-                except Exception as json_error:
-                    logger.warning(f"get_json_result() method failed: {json_error}, trying standard method...")
-                
-                # Method 2: Fallback to standard load_data method
-                try:
-                    logger.info("🔄 Falling back to standard LlamaParse method...")
-                    documents = parser.load_data(tmp_file_path)
-                    
-                    # Try to extract images from document metadata
-                    for doc in documents:
-                        if hasattr(doc, 'metadata') and 'images' in doc.metadata:
-                            for i, image_data in enumerate(doc.metadata['images']):
-                                saved_path = self._save_image_locally_from_data(image_data, download_path, pdf_id, len(images))
-                                if saved_path:
-                                    if isinstance(image_data, str):
-                                        image_bytes = base64.b64decode(image_data)
-                                    else:
-                                        image_bytes = image_data
-                                    images.append(image_bytes)
-                                    image_paths.append(saved_path)
-                    
-                    processing_time = time.time() - start_time
-                    return {
-                        'images': images,
-                        'image_paths': image_paths,
-                        'pdf_id': pdf_id,
-                        'extraction_method': 'llamaparse_standard',
-                        'processing_time': processing_time,
-                        'success': len(images) > 0
-                    }
-                    
-                except Exception as load_error:
-                    logger.error(f"Standard LlamaParse method also failed: {load_error}")
-                    return {
-                        'images': [],
-                        'image_paths': [],
-                        'pdf_id': pdf_id,
-                        'extraction_method': 'failed',
-                        'processing_time': time.time() - start_time,
-                        'success': False,
-                        'error': str(load_error)
-                    }
-                
-            finally:
-                # Clean up temporary file
-                os.unlink(tmp_file_path)
-                
-        except Exception as e:
-            logger.error(f"Error extracting images from uploaded file: {e}")
-            return {
-                'images': [],
-                'image_paths': [],
-                'pdf_id': pdf_id or 'unknown',
-                'extraction_method': 'failed',
-                'processing_time': time.time() - start_time if 'start_time' in locals() else 0,
-                'success': False,
-                'error': str(e)
-            }
-    
-    def _save_image_locally_from_data(self, image_data, save_dir: Path, pdf_id: str, index: int) -> Optional[str]:
-        """Save image locally from raw image data."""
-        try:
-            # Create PDF-specific image directory
-            pdf_image_dir = save_dir
-            pdf_image_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Save image
-            image_path = pdf_image_dir / f"image_{index + 1}.png"
-            
-            # Handle different data formats
-            if isinstance(image_data, str):
-                # If it's base64, decode it
-                image_bytes = base64.b64decode(image_data)
-            else:
-                image_bytes = image_data
-                
-            # Save the image
-            with open(image_path, "wb") as f:
-                f.write(image_bytes)
-            
-            logger.info(f"Saved image locally: {image_path}")
-            return str(image_path)
-            
-        except Exception as e:
-            logger.error(f"Error saving image {index + 1}: {str(e)}")
-            return None
 
-    def retrieve_relevant_images(self, query: str, pdf_id: str, top_k: int = 5) -> List[Dict]:
-        """Retrieve most relevant images for a query using vector similarity."""
-        try:
-            # Generate query embedding
-            query_embedding = self._get_embedding(query)
-            
-            # Enhanced query for better semantic search
-            results = self.index.query(
-                vector=query_embedding,
-                top_k=min(top_k * 2, 20),  # Get more candidates for better filtering
-                namespace=pdf_id,
-                filter={"content_type": "image"},
-                include_metadata=True,
-                include_values=False
-            )
-            
-            relevant_images = []
-            
-            for match in results.matches:
-                # Enhanced relevance scoring with OCR text consideration
-                base_score = match.score
-                has_text = match.metadata.get('has_text', False)
-                ocr_length = match.metadata.get('ocr_length', 0)
-                keywords_count = match.metadata.get('keywords_count', 0)
-                
-                # Boost score for images with relevant text content
-                relevance_boost = 0.0
-                if has_text and ocr_length > 20:
-                    relevance_boost += 0.1
-                if keywords_count > 3:
-                    relevance_boost += 0.05
-                
-                adjusted_score = base_score + relevance_boost
-                
-                # Dynamic threshold based on content quality
-                min_threshold = 0.15 if has_text else 0.25
-                
-                if adjusted_score > min_threshold:
-                    ocr_text = match.metadata.get('ocr_text', '')
-                    keywords = match.metadata.get('keywords', [])
-                    
-                    # Get storage information
-                    storage_type = match.metadata.get('storage_type', 'local')
-                    storage_path = match.metadata.get('storage_path', '')
-                    s3_url = match.metadata.get('s3_url', '')
-                    local_path = match.metadata.get('local_path', '')
-                    
-                    image_data = {
-                        'image_id': match.metadata.get('image_id', ''),
-                        'relevance_score': adjusted_score,
-                        'original_score': base_score,
-                        'storage_type': storage_type,
-                        'storage_path': storage_path,
-                        's3_url': s3_url,
-                        'local_path': local_path,
-                        'display_url': s3_url if storage_type == 's3' else local_path,  # For easy UI access
-                        'page_number': match.metadata.get('page_number', 0),
-                        'ocr_text': ocr_text,
-                        'keywords': keywords,
-                        'has_text': has_text,
-                        'content_type': match.metadata.get('content_classification', 'figure'),
-                        'confidence_score': match.metadata.get('confidence_score', 0.0),
-                        'position': {
-                            'x': match.metadata.get('position_x', 0),
-                            'y': match.metadata.get('position_y', 0),
-                            'page_position': match.metadata.get('page_position', 'unknown')
-                        }
-                    }
-                    relevant_images.append(image_data)
-            
-            # Sort by adjusted relevance score
-            relevant_images.sort(key=lambda x: x['relevance_score'], reverse=True)
-            
-            # Return top k results
-            relevant_images = relevant_images[:top_k]
-            
-            logger.info(f"Retrieved {len(relevant_images)} relevant images for query")
-            return relevant_images
-            
-        except Exception as e:
-            logger.error(f"Error retrieving relevant images: {e}")
-            return []
+
+
 
 print("ImageProcessor class created successfully")

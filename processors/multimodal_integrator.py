@@ -27,11 +27,13 @@ import streamlit as st
 from llama_cloud_services import LlamaParse
 
 # Local imports
-from config import AdvancedConfig
+from config import *
 from .image_processor import ImageProcessor
 from .table_processor import TableProcessor
-from s3_handler import S3Handler
 from .inline_multimodal_generator import InlineMultimodalGenerator
+
+# Constants
+DEFAULT_TIMEOUT = 60000  # 60 seconds timeout for LlamaParse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,7 +43,6 @@ class MultimodalIntegrator:
     
     def __init__(self):
         """Initialize the multimodal integrator."""
-        self.config = AdvancedConfig()
         self.openai_client = None
         self.pinecone_client = None
         self.index = None
@@ -79,28 +80,28 @@ class MultimodalIntegrator:
             
             self.pinecone_client = Pinecone(api_key=pinecone_api_key)
             
-            index_name = os.getenv('PINECONE_INDEX_NAME_TEST')
+            index_name = os.getenv('PINECONE_INDEX_NAME_TEST') or os.getenv('PINECONE_INDEX_NAME')
             if not index_name:
-                raise ValueError("PINECONE_INDEX_NAME not found")
+                raise ValueError("PINECONE_INDEX_NAME_TEST or PINECONE_INDEX_NAME not found")
             
             self.index = self.pinecone_client.Index(index_name)
+            logger.info(f"✅ Connected to Pinecone index: {index_name}")
             
-            # Debug logging for index status
-
-            
-            # LlamaParse initialization
+            # LlamaParse initialization (optional - only needed for new document processing)
             llamaparse_api_key = os.getenv('LLAMA_PARSE_API_KEY')
-            if not llamaparse_api_key:
-                raise ValueError("LLAMA_PARSE_API_KEY not found")
-            
-            self.llamaparse_parser = LlamaParse(
-                api_key=llamaparse_api_key,
-                result_type="markdown",
-                system_prompt="Extract all text content, images, and tables with complete metadata. Preserve document structure and formatting.",
-                max_timeout=self.config.DEFAULT_TIMEOUT,
-                split_by_page=True,
-                verbose=True
-            )
+            if llamaparse_api_key:
+                self.llamaparse_parser = LlamaParse(
+                    api_key=llamaparse_api_key,
+                    result_type="markdown",
+                    system_prompt="Extract all text content, images, and tables with complete metadata. Preserve document structure and formatting.",
+                    max_timeout=DEFAULT_TIMEOUT,
+                    split_by_page=True,
+                    verbose=True
+                )
+                logger.info("✅ LlamaParse initialized successfully")
+            else:
+                self.llamaparse_parser = None
+                logger.warning("⚠️  LLAMA PARSE_API_KEY not found - document processing disabled, queries on existing documents will still work")
             
             logger.info("All clients initialized successfully")
             
@@ -156,6 +157,9 @@ class MultimodalIntegrator:
             
             st.info(f"🚀 Starting complete multimodal processing: {pdf_name}")
             
+            if not self.llamaparse_parser:
+                raise ValueError("LlamaParse not available - LLAMAPARSE_API_KEY not configured. Document processing is disabled.")
+            
             with st.spinner("Parsing PDF with LlamaParse..."):
                 # Parse PDF with LlamaParse and capture job ID
                 json_objs = self.llamaparse_parser.get_json_result(pdf_path)
@@ -176,10 +180,14 @@ class MultimodalIntegrator:
                     json_objs, pdf_name, pdf_id
                 )
             
-            # Process text content
-            with st.spinner("Processing text content..."):
-                text_results = self._process_text_content(json_objs, pdf_name, pdf_id)
-                processing_results['text'] = text_results
+            # Create composite chunks combining all content types
+            with st.spinner("Creating composite chunks..."):
+                composite_results = self._process_composite_chunks(
+                    json_objs, pdf_name, pdf_id, 
+                    processing_results.get('images', {}), 
+                    processing_results.get('tables', {})
+                )
+                processing_results['composite'] = composite_results
             
             # Display comprehensive results
             self._display_processing_results(processing_results, time.time() - start_time)
@@ -198,19 +206,20 @@ class MultimodalIntegrator:
     
     def _process_multimodal_content_parallel(self, json_objs: List[Dict], 
                                            pdf_name: str, pdf_id: str) -> Dict[str, Any]:
-        """Process images and tables in parallel for efficiency."""
+        """Process content and create composite chunks with unified embeddings."""
         results = {}
         
+        # Extract all content types first (skip individual Pinecone storage for composite chunks)
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submit processing tasks
+            # Submit processing tasks with skip_pinecone flag
             futures = {
                 executor.submit(
                     self.image_processor.process_images_from_llamaparse, 
-                    json_objs, pdf_name, pdf_id
+                    json_objs, pdf_name, pdf_id, skip_pinecone=True
                 ): 'images',
                 executor.submit(
                     self.table_processor.process_tables_from_llamaparse, 
-                    json_objs, pdf_name, pdf_id
+                    json_objs, pdf_name, pdf_id, skip_pinecone=True
                 ): 'tables'
             }
             
@@ -226,8 +235,9 @@ class MultimodalIntegrator:
         
         return results
     
-    def _process_text_content(self, json_objs: List[Dict], pdf_name: str, pdf_id: str) -> Dict[str, Any]:
-        """Process text content and store in unified namespace."""
+    def _process_composite_chunks(self, json_objs: List[Dict], pdf_name: str, pdf_id: str, 
+                                images_data: Dict, tables_data: Dict) -> Dict[str, Any]:
+        """Create composite chunks combining text, images, and tables with unified embeddings."""
         try:
             if not json_objs:
                 return {'processed_chunks': 0, 'pinecone_stored': 0}
@@ -235,7 +245,13 @@ class MultimodalIntegrator:
             json_data = json_objs[0]
             pages = json_data.get('pages', [])
             
-            text_chunks = []
+            # Extract tables directly from LlamaParse JSON structure
+            tables_by_page = self._extract_tables_from_llamaparse_json(json_objs, pdf_id)
+            
+            # Organize images by page
+            images_by_page = self._organize_content_by_page(images_data.get('processed_images', []))
+            
+            composite_chunks = []
             
             for page_data in pages:
                 page_num = page_data.get('page', 0)
@@ -243,94 +259,908 @@ class MultimodalIntegrator:
                 # Extract text content
                 text_content = page_data.get('text', '') or page_data.get('md', '')
                 
-                if text_content and len(text_content.strip()) > 50:
-                    # Create text chunk with metadata
-                    chunk = {
-                        'chunk_id': f"{pdf_id}_text_p{page_num}",
-                        'pdf_id': pdf_id,
-                        'pdf_name': pdf_name,
-                        'page_number': page_num,
-                        'content': text_content,
-                        'content_type': 'text',
-                        'word_count': len(text_content.split()),
-                        'char_count': len(text_content),
-                        'processed_timestamp': datetime.now().isoformat()
-                    }
+                # Debug text content length
+                text_length = len(text_content.strip()) if text_content else 0
+                logger.info(f"Page {page_num}: text content length = {text_length}")
+                
+                if text_content and len(text_content.strip()) > 10:  # Lowered from 50 to 10
+                    # Get associated images and tables for this page
+                    page_images = images_by_page.get(page_num, [])
+                    page_tables = tables_by_page.get(page_num, [])
                     
-                    text_chunks.append(chunk)
+                    logger.info(f"Page {page_num}: {len(page_images)} images, {len(page_tables)} tables")
+                    
+                    # Create composite chunk
+                    composite_chunk = self._create_composite_chunk(
+                        text_content, page_images, page_tables, 
+                        pdf_id, pdf_name, page_num
+                    )
+                    
+                    if composite_chunk:
+                        composite_chunks.append(composite_chunk)
+                else:
+                    logger.warning(f"Page {page_num}: Skipped due to insufficient text content ({text_length} chars)")
             
-            # Store text chunks in Pinecone (same namespace as images and tables)
-            stored_count = self._store_text_chunks_in_pinecone(text_chunks, pdf_id)
+            # Store composite chunks in Pinecone
+            stored_count = self._store_composite_chunks_in_pinecone(composite_chunks, pdf_id)
             
-            logger.info(f"Text processing complete: {len(text_chunks)} chunks, {stored_count} stored")
+            logger.info(f"Composite chunk processing complete: {len(composite_chunks)} chunks, {stored_count} stored")
             
             return {
-                'processed_chunks': len(text_chunks),
+                'processed_chunks': len(composite_chunks),
                 'pinecone_stored': stored_count,
-                'text_chunks': text_chunks
+                'composite_chunks': composite_chunks
             }
             
         except Exception as e:
-            logger.error(f"Error processing text content: {e}")
+            logger.error(f"Error processing composite chunks: {e}")
             return {'error': str(e)}
     
-    def _store_text_chunks_in_pinecone(self, text_chunks: List[Dict], pdf_id: str) -> int:
-        """Store text chunks in Pinecone with unified namespace."""
-        if not text_chunks:
+    def _organize_content_by_page(self, content_list: List[Dict]) -> Dict[int, List[Dict]]:
+        """Organize content items by page number."""
+        by_page = {}
+        for item in content_list:
+            page_num = item.get('page_number', 0)
+            if page_num not in by_page:
+                by_page[page_num] = []
+            by_page[page_num].append(item)
+        return by_page
+    
+    def _extract_tables_from_llamaparse_json(self, json_objs: List[Dict], pdf_id: str) -> Dict[int, List[Dict]]:
+        """Extract tables directly from LlamaParse JSON structure: pages->items->type:'table'."""
+        tables_by_page = {}
+        
+        try:
+            if not json_objs:
+                return tables_by_page
+            
+            json_data = json_objs[0]  # LlamaParse returns single JSON object
+            pages = json_data.get('pages', [])
+            
+            for page_data in pages:
+                page_num = page_data.get('page', 0)
+                items = page_data.get('items', [])
+                
+                page_tables = []
+                table_count = 0
+                
+                for item in items:
+                    if item.get('type') == 'table':
+                        table_count += 1
+                        
+                        # Create structured table JSON from LlamaParse data
+                        table_json = self._create_structured_table_json(item, page_num, table_count, pdf_id)
+                        
+                        if table_json:
+                            page_tables.append({
+                                'table_id': f"{pdf_id}_p{page_num}_table{table_count}",
+                                'page_number': page_num,
+                                'table_index': table_count,
+                                'table_content_json': table_json,
+                                'table_summary': self._extract_table_summary_from_llamaparse(item),
+                                'raw_llamaparse_data': item
+                            })
+                
+                if page_tables:
+                    tables_by_page[page_num] = page_tables
+                    logger.info(f"Extracted {len(page_tables)} tables from page {page_num}")
+            
+            return tables_by_page
+            
+        except Exception as e:
+            logger.error(f"Error extracting tables from LlamaParse JSON: {e}")
+            return tables_by_page
+    
+    def _create_structured_table_json(self, table_item: Dict, page_num: int, table_count: int, pdf_id: str) -> str:
+        """Create structured table JSON from LlamaParse table item."""
+        try:
+            # Extract rows from LlamaParse table item
+            rows = table_item.get('rows', [])
+            if not rows or len(rows) < 2:
+                logger.warning(f"Table on page {page_num} has insufficient data")
+                return ""
+            
+            # Create structured table with headers as keys
+            table_dict = {}
+            
+            # Use first row as headers
+            headers = rows[0]
+            data_rows = rows[1:] if len(rows) > 1 else []
+            
+            # Create columns with headers as keys
+            for i, header in enumerate(headers):
+                if header:  # Skip empty headers
+                    column_data = []
+                    for row in data_rows:
+                        if i < len(row):
+                            cell_value = row[i] if row[i] else ""
+                            column_data.append(str(cell_value).strip())
+                        else:
+                            column_data.append("")
+                    table_dict[str(header).strip()] = column_data
+            
+            # Add metadata
+            table_dict["_metadata"] = {
+                "total_rows": len(rows),
+                "total_columns": len(headers),
+                "has_headers": True,
+                "source": "llamaparse_direct",
+                "page_number": page_num,
+                "table_id": f"{pdf_id}_p{page_num}_table{table_count}"
+            }
+            
+            return json.dumps(table_dict)
+            
+        except Exception as e:
+            logger.error(f"Error creating structured table JSON: {e}")
+            return ""
+    
+    def _extract_table_summary_from_llamaparse(self, table_item: Dict) -> str:
+        """Generate intelligent table summary using LLM."""
+        try:
+            # Extract table data for LLM processing
+            rows = table_item.get('rows', [])
+            if not rows or len(rows) < 2:
+                return "Table with insufficient data"
+            
+            # Create table content for LLM
+            table_content = self._create_table_content_for_llm(rows)
+            
+            # Generate summary using LLM
+            summary = self._generate_table_summary_with_llm(table_content)
+            
+            return summary
+            
+        except Exception as e:
+            logger.warning(f"Error generating table summary with LLM: {e}")
+            # Fallback to basic summary
+            rows = table_item.get('rows', [])
+            if rows:
+                row_count = len(rows)
+                col_count = len(rows[0]) if rows else 0
+                return f"Table with {row_count} rows and {col_count} columns"
+            return "Table data"
+    
+    def _create_table_content_for_llm(self, rows: List[List]) -> str:
+        """Create formatted table content for LLM processing."""
+        try:
+            if not rows:
+                return ""
+            
+            # Create markdown table format
+            table_lines = []
+            
+            # Add headers
+            headers = rows[0]
+            table_lines.append("| " + " | ".join(str(h) for h in headers) + " |")
+            table_lines.append("|" + "|".join(["---"] * len(headers)) + "|")
+            
+            # Add data rows
+            for row in rows[1:]:
+                table_lines.append("| " + " | ".join(str(cell) for cell in row) + " |")
+            
+            return "\n".join(table_lines)
+            
+        except Exception as e:
+            logger.error(f"Error creating table content for LLM: {e}")
+            return ""
+    
+    def _generate_table_summary_with_llm(self, table_content: str) -> str:
+        """Generate intelligent table summary using OpenAI LLM."""
+        try:
+            if not table_content or len(table_content.strip()) < 10:
+                return "Table with minimal content"
+            
+            # Create prompt for table summary
+            prompt = f"""Please provide a concise, intelligent summary of this table data. Focus on the key insights, patterns, and what the table represents.
+
+Table:
+{table_content}
+
+Summary (2-3 sentences, focus on main insights):"""
+
+            # Call OpenAI API
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are an expert at analyzing and summarizing table data. Provide clear, concise summaries that highlight the key information and insights."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=150,
+                temperature=0.3
+            )
+            
+            summary = response.choices[0].message.content.strip()
+            
+            # Clean up summary
+            if summary and len(summary) > 10:
+                return summary
+            else:
+                return "Table data summary"
+                
+        except Exception as e:
+            logger.warning(f"Error calling LLM for table summary: {e}")
+            return "Table data summary"
+    
+    def _create_composite_chunk(self, text_content: str, page_images: List[Dict], 
+                               page_tables: List[Dict], pdf_id: str, pdf_name: str, 
+                               page_num: int) -> Optional[Dict]:
+        """Create composite chunk with unified text embedding combining text + image OCR + table summaries.
+        
+        Uses the exact format: 'text [Image OCR: ...] [Image Keywords: ...] [Table Summary: ...]'
+        Implements comprehensive error handling with fallbacks.
+        """
+        try:
+            # Generate unique chunk ID
+            chunk_id = f"{pdf_id}_p{page_num}_c{int(time.time() * 1000) % 100000}"
+            
+            # Start building composite text with main content
+            composite_text_parts = [text_content.strip()]
+            
+            # Initialize lightweight metadata (content goes into vector embeddings)
+            chunk_metadata = {
+                "chunk_id": chunk_id,
+                "source_document": pdf_name,
+                "page_number": page_num,
+                "contains_image": False,
+                "image_url": "",
+                "image_id": "",
+                "contains_table": False,
+                "table_id": "",
+                "pdf_id": pdf_id
+            }
+            
+            # Process images with comprehensive error handling
+            if page_images:
+                try:
+                    image_summaries = []
+                    image_keywords = []
+                    
+                    for i, img_data in enumerate(page_images[:3]):  # Limit to 3 images per chunk
+                        try:
+                            # Extract image summary with fallbacks
+                            img_summary = self._extract_image_summary_with_fallbacks(img_data)
+                            if img_summary:
+                                image_summaries.append(img_summary)
+                            
+                            # Extract keywords with fallbacks
+                            img_keywords = self._extract_image_keywords_with_fallbacks(img_data)
+                            if img_keywords:
+                                image_keywords.extend(img_keywords)
+                            
+                            # Update metadata with first image details (store summary for context)
+                            if not chunk_metadata["contains_image"]:
+                                chunk_metadata["contains_image"] = True
+                                chunk_metadata["image_url"] = img_data.get('s3_url', '') or img_data.get('local_path', '')
+                                chunk_metadata["image_id"] = img_data.get('image_id', '')
+                                chunk_metadata["image_summary"] = img_summary  # Store for UI context
+                                
+                        except Exception as e:
+                            logger.warning(f"Error processing image in chunk {chunk_id}: {e}")
+                            continue
+                    
+                    # Add image information to composite text using exact format
+                    if image_summaries:
+                        composite_text_parts.append(f"[Image OCR: {' '.join(image_summaries)}]")
+                    
+                    if image_keywords:
+                        # Remove duplicates and limit keywords
+                        unique_keywords = list(set(image_keywords))[:10]
+                        composite_text_parts.append(f"[Image Keywords: {', '.join(unique_keywords)}]")
+                        
+                except Exception as e:
+                    logger.error(f"Error processing images for chunk {chunk_id}: {e}")
+                    # Continue without image data - graceful degradation
+            
+            # Process tables with comprehensive error handling
+            if page_tables:
+                try:
+                    table_summaries = []
+                    
+                    for table_data in page_tables[:2]:  # Limit to 2 tables per chunk
+                        try:
+                            # Use pre-extracted table data from LlamaParse
+                            table_summary = table_data.get('table_summary', '')
+                            table_json = table_data.get('table_content_json', '')
+                            
+                            if table_summary:
+                                table_summaries.append(table_summary)
+                            
+                            # Update metadata with first table details (store JSON for UI display)
+                            if not chunk_metadata["contains_table"]:
+                                chunk_metadata["contains_table"] = True
+                                chunk_metadata["table_id"] = table_data.get('table_id', '')
+                                chunk_metadata["table_content_json"] = table_json  # Store for UI display
+                                chunk_metadata["table_summary"] = table_summary  # Store for UI display
+                                
+                                # Log table extraction for debugging
+                                logger.info(f"Added table to chunk {chunk_id}: {table_data.get('table_id', '')} with {len(table_json)} chars JSON")
+                                
+                        except Exception as e:
+                            logger.warning(f"Error processing table in chunk {chunk_id}: {e}")
+                            continue
+                    
+                    # Add table information to composite text using exact format
+                    if table_summaries:
+                        composite_text_parts.append(f"[Table Summary: {' | '.join(table_summaries)}]")
+                        
+                except Exception as e:
+                    logger.error(f"Error processing tables for chunk {chunk_id}: {e}")
+                    # Continue without table data - graceful degradation
+            
+            # Create final composite text
+            composite_text = ' '.join(composite_text_parts)
+            
+            # Debug logging for composite text creation
+            logger.info(f"Composite text for chunk {chunk_id}: {len(composite_text)} chars")
+            logger.info(f"Text content length: {len(text_content.strip())}")
+            logger.info(f"Composite text parts: {len(composite_text_parts)} parts")
+            if len(composite_text.strip()) < 50:  # Show details for short text
+                logger.info(f"Short composite text: '{composite_text[:100]}...'")
+            
+            # Validate composite text meets minimum requirements (lowered threshold)
+            if len(composite_text.strip()) < 10:  # Lowered from 20 to 10
+                logger.warning(f"Composite text too short for chunk {chunk_id}, skipping")
+                return None
+            
+            # Add composite text and timestamp to metadata
+            chunk_metadata["composite_text"] = composite_text
+            chunk_metadata["processed_timestamp"] = datetime.now().isoformat()
+            
+            logger.info(f"Created composite chunk {chunk_id}: {len(composite_text)} chars, "
+                       f"images: {chunk_metadata['contains_image']}, tables: {chunk_metadata['contains_table']}")
+            
+            return chunk_metadata
+            
+        except Exception as e:
+            logger.error(f"Critical error creating composite chunk for page {page_num}: {e}")
+            # Return basic fallback chunk with just text
+            try:
+                return {
+                    "chunk_id": f"{pdf_id}_p{page_num}_fallback",
+                    "source_document": pdf_name,
+                    "page_number": page_num,
+                    "composite_text": text_content.strip(),
+                    "contains_image": False,
+                    "image_url": "",
+                    "image_id": "",
+                    "image_summary": "",
+                    "contains_table": False,
+                    "table_id": "",
+                    "table_content_json": "",
+                    "table_summary": "",
+                    "pdf_id": pdf_id,
+                    "processed_timestamp": datetime.now().isoformat(),
+                    "fallback_chunk": True
+                }
+            except Exception as fallback_error:
+                logger.error(f"Even fallback chunk creation failed: {fallback_error}")
+                return None
+    
+    def _extract_image_summary_with_fallbacks(self, img_data: Dict) -> str:
+        """Generate intelligent image summary using LLM with OCR text and keywords."""
+        try:
+            # Extract OCR text and keywords for LLM processing
+            ocr_text = ""
+            keywords = []
+            
+            # Get OCR text
+            for field in ['ocr_text', 'extracted_text', 'text_content']:
+                if field in img_data and img_data[field]:
+                    ocr_text = str(img_data[field]).strip()
+                    break
+            
+            # Get keywords
+            if 'keywords' in img_data and img_data['keywords']:
+                if isinstance(img_data['keywords'], list):
+                    keywords = img_data['keywords']
+                elif isinstance(img_data['keywords'], str):
+                    keywords = img_data['keywords'].split(',')
+            
+            # Generate summary using LLM
+            if ocr_text or keywords:
+                summary = self._generate_image_summary_with_llm(ocr_text, keywords, img_data)
+                return summary
+            
+            # Fallback: Generate basic summary from metadata
+            img_type = img_data.get('type', 'image')
+            page_num = img_data.get('page_number', 0)
+            return f"Visual content from page {page_num} ({img_type})"
+            
+        except Exception as e:
+            logger.warning(f"Error generating image summary with LLM: {e}")
+            # Fallback to basic summary
+            img_type = img_data.get('type', 'image')
+            page_num = img_data.get('page_number', 0)
+            return f"Visual content from page {page_num} ({img_type})"
+    
+    def _generate_image_summary_with_llm(self, ocr_text: str, keywords: List[str], img_data: Dict) -> str:
+        """Generate intelligent image summary using OpenAI LLM."""
+        try:
+            # Prepare content for LLM
+            content_parts = []
+            
+            if ocr_text and len(ocr_text.strip()) > 10:
+                content_parts.append(f"OCR Text: {ocr_text}")
+            
+            if keywords:
+                content_parts.append(f"Keywords: {', '.join(keywords)}")
+            
+            if not content_parts:
+                return "Image with minimal text content"
+            
+            # Add image metadata
+            img_type = img_data.get('type', 'image')
+            page_num = img_data.get('page_number', 0)
+            content_parts.append(f"Image Type: {img_type}")
+            content_parts.append(f"Page: {page_num}")
+            
+            # Create prompt for image summary
+            content = "\n".join(content_parts)
+            prompt = f"""Please provide a concise, intelligent summary of this image based on its OCR text and keywords. Focus on what the image represents, its key elements, and any important information it conveys.
+
+Image Content:
+{content}
+
+Summary (2-3 sentences, focus on main content and purpose):"""
+
+            # Call OpenAI API
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are an expert at analyzing and summarizing image content based on OCR text and keywords. Provide clear, concise summaries that highlight the key information and purpose of the image."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=150,
+                temperature=0.3
+            )
+            
+            summary = response.choices[0].message.content.strip()
+            
+            # Clean up summary
+            if summary and len(summary) > 10:
+                return summary
+            else:
+                return "Image with text content"
+                
+        except Exception as e:
+            logger.warning(f"Error calling LLM for image summary: {e}")
+            # Fallback to OCR text or basic summary
+            if ocr_text and len(ocr_text.strip()) > 10:
+                return f"OCR: {ocr_text[:200]}"
+            return "Image with text content"
+    
+    def _extract_image_keywords_with_fallbacks(self, img_data: Dict) -> List[str]:
+        """Extract image keywords with multiple fallback methods."""
+        try:
+            keywords = []
+            
+            # Method 1: Use existing keywords
+            if 'keywords' in img_data and img_data['keywords']:
+                if isinstance(img_data['keywords'], list):
+                    keywords.extend(img_data['keywords'])
+                elif isinstance(img_data['keywords'], str):
+                    keywords.extend(img_data['keywords'].split(','))
+            
+            # Method 2: Extract from OCR text
+            ocr_text = img_data.get('ocr_text', '') or img_data.get('extracted_text', '')
+            if ocr_text and len(ocr_text) > 10:
+                # Simple keyword extraction - get important words
+                words = ocr_text.split()
+                important_words = [w.strip('.,!?;:') for w in words 
+                                 if len(w) > 3 and w.isalpha()][:5]
+                keywords.extend(important_words)
+            
+            # Method 3: Use image type/metadata
+            if img_data.get('type'):
+                keywords.append(img_data['type'])
+            
+            return keywords[:10]  # Limit to 10 keywords
+            
+        except Exception as e:
+            logger.warning(f"Error extracting image keywords: {e}")
+            return []
+    
+    def _extract_table_summary_with_fallbacks(self, table_data: Dict) -> str:
+        """Extract table summary with multiple fallback methods."""
+        try:
+            # Method 1: Use existing summary
+            if 'summary' in table_data and table_data['summary']:
+                return str(table_data['summary']).strip()
+            
+            # Method 2: Use table description
+            for field in ['description', 'caption', 'title']:
+                if field in table_data and table_data[field]:
+                    return str(table_data[field]).strip()
+            
+            # Method 3: Generate summary from table structure
+            rows_count = 0
+            cols_count = 0
+            
+            # Try to get dimensions from different fields
+            if 'rows' in table_data:
+                if isinstance(table_data['rows'], list):
+                    rows_count = len(table_data['rows'])
+                    if rows_count > 0 and isinstance(table_data['rows'][0], list):
+                        cols_count = len(table_data['rows'][0])
+            
+            if 'dimensions' in table_data:
+                dims = table_data['dimensions']
+                if isinstance(dims, dict):
+                    rows_count = dims.get('rows', rows_count)
+                    cols_count = dims.get('cols', cols_count)
+            
+            # Create basic summary
+            page_num = table_data.get('page_number', 0)
+            if rows_count > 0 and cols_count > 0:
+                return f"Table from page {page_num} with {rows_count} rows and {cols_count} columns"
+            else:
+                return f"Data table from page {page_num}"
+            
+        except Exception as e:
+            logger.warning(f"Error extracting table summary: {e}")
+            return "Data table"
+    
+    def _extract_table_json_with_fallbacks(self, table_data: Dict) -> str:
+        """Extract table JSON content with multiple fallback methods optimized for LlamaParse structure."""
+        try:
+            # Method 1: Use existing JSON content
+            for field in ['table_content_json', 'json_content', 'data_json']:
+                if field in table_data and table_data[field]:
+                    content = table_data[field]
+                    if isinstance(content, str):
+                        return content
+                    elif isinstance(content, dict):
+                        return json.dumps(content)
+            
+            # Method 2: Convert LlamaParse rows to structured JSON (Primary method)
+            if 'rows' in table_data and table_data['rows']:
+                rows = table_data['rows']
+                if isinstance(rows, list) and len(rows) > 0:
+                    # Create structured table data
+                    if isinstance(rows[0], list) and len(rows[0]) > 0:
+                        # First row contains headers
+                        headers = rows[0]
+                        data_rows = rows[1:] if len(rows) > 1 else []
+                        
+                        # Create table structure with headers as keys
+                        table_dict = {}
+                        for i, header in enumerate(headers):
+                            if header:  # Skip empty headers
+                                column_data = []
+                                for row in data_rows:
+                                    if i < len(row):
+                                        cell_value = row[i] if row[i] else ""
+                                        column_data.append(cell_value)
+                                    else:
+                                        column_data.append("")
+                                table_dict[str(header).strip()] = column_data
+                        
+                        # Add metadata
+                        table_dict["_metadata"] = {
+                            "total_rows": len(rows),
+                            "total_columns": len(headers),
+                            "has_headers": True,
+                            "source": "llamaparse_rows"
+                        }
+                        
+                        return json.dumps(table_dict)
+            
+            # Method 3: Use LlamaParse CSV content
+            if 'csv' in table_data and table_data['csv']:
+                csv_content = table_data['csv']
+                if isinstance(csv_content, str) and len(csv_content.strip()) > 0:
+                    try:
+                        import csv
+                        from io import StringIO
+                        
+                        # Parse CSV using proper CSV parser
+                        csv_reader = csv.reader(StringIO(csv_content))
+                        rows = list(csv_reader)
+                        
+                        if len(rows) > 1:
+                            headers = rows[0]
+                            data_rows = rows[1:]
+                            
+                            # Create table structure
+                            table_dict = {}
+                            for i, header in enumerate(headers):
+                                if header:  # Skip empty headers
+                                    column_data = []
+                                    for row in data_rows:
+                                        if i < len(row):
+                                            cell_value = row[i] if row[i] else ""
+                                            column_data.append(cell_value)
+                                        else:
+                                            column_data.append("")
+                                    table_dict[str(header).strip()] = column_data
+                            
+                            # Add metadata
+                            table_dict["_metadata"] = {
+                                "total_rows": len(rows),
+                                "total_columns": len(headers),
+                                "has_headers": True,
+                                "source": "llamaparse_csv"
+                            }
+                            
+                            return json.dumps(table_dict)
+                    except Exception as csv_error:
+                        logger.warning(f"CSV parsing failed: {csv_error}")
+            
+            # Method 4: Use LlamaParse markdown table
+            if 'md' in table_data and table_data['md']:
+                md_content = table_data['md']
+                if isinstance(md_content, str) and '|' in md_content:
+                    try:
+                        # Parse markdown table
+                        lines = md_content.strip().split('\n')
+                        table_lines = []
+                        
+                        for line in lines:
+                            if '|' in line and line.strip():
+                                # Remove markdown table formatting
+                                clean_line = line.strip()
+                                if clean_line.startswith('|'):
+                                    clean_line = clean_line[1:]
+                                if clean_line.endswith('|'):
+                                    clean_line = clean_line[:-1]
+                                
+                                # Split by pipe and clean cells
+                                cells = [cell.strip() for cell in clean_line.split('|')]
+                                table_lines.append(cells)
+                        
+                        if len(table_lines) > 2:  # Headers + separator + data
+                            headers = table_lines[0]
+                            data_rows = table_lines[2:]  # Skip separator line
+                            
+                            # Create table structure
+                            table_dict = {}
+                            for i, header in enumerate(headers):
+                                if header:  # Skip empty headers
+                                    column_data = []
+                                    for row in data_rows:
+                                        if i < len(row):
+                                            cell_value = row[i] if row[i] else ""
+                                            column_data.append(cell_value)
+                                        else:
+                                            column_data.append("")
+                                    table_dict[str(header).strip()] = column_data
+                            
+                            # Add metadata
+                            table_dict["_metadata"] = {
+                                "total_rows": len(table_lines) - 1,  # Exclude separator
+                                "total_columns": len(headers),
+                                "has_headers": True,
+                                "source": "llamaparse_markdown"
+                            }
+                            
+                            return json.dumps(table_dict)
+                    except Exception as md_error:
+                        logger.warning(f"Markdown parsing failed: {md_error}")
+            
+            # Method 5: Extract from text content if available
+            if 'text' in table_data and table_data['text']:
+                text_content = table_data['text']
+                if isinstance(text_content, str) and len(text_content.strip()) > 10:
+                    # Try to parse table from text content
+                    lines = text_content.strip().split('\n')
+                    if len(lines) > 1:
+                        # Look for tabular structure
+                        table_data_list = []
+                        for line in lines:
+                            # Split by common delimiters
+                            cells = re.split(r'\s{2,}|\t|,', line.strip())
+                            if len(cells) > 1:
+                                table_data_list.append(cells)
+                        
+                        if len(table_data_list) > 1:
+                            # Create table structure
+                            headers = table_data_list[0]
+                            data_rows = table_data_list[1:]
+                            
+                        table_dict = {}
+                        for i, header in enumerate(headers):
+                            if header:  # Skip empty headers
+                                column_data = []
+                                for row in data_rows:
+                                    if i < len(row):
+                                        cell_value = row[i] if row[i] else ""
+                                        column_data.append(cell_value)
+                                    else:
+                                        column_data.append("")
+                                table_dict[str(header).strip()] = column_data
+                        
+                        # Add metadata
+                        table_dict["_metadata"] = {
+                            "total_rows": len(table_data_list),
+                            "total_columns": len(headers),
+                            "has_headers": True,
+                            "source": "llamaparse_text"
+                        }
+                        
+                        return json.dumps(table_dict)
+            
+            # Method 6: Create enhanced JSON structure with available data
+            enhanced_data = {
+                "table_id": table_data.get('table_id', 'unknown'),
+                "page": table_data.get('page_number', 0),
+                "table_type": table_data.get('type', 'table'),
+                "has_content": bool(table_data.get('text') or table_data.get('rows') or table_data.get('csv') or table_data.get('md')),
+                "available_formats": []
+            }
+            
+            # Add available formats
+            if table_data.get('rows'):
+                enhanced_data['available_formats'].append('rows')
+                enhanced_data['row_count'] = len(table_data['rows'])
+            
+            if table_data.get('csv'):
+                enhanced_data['available_formats'].append('csv')
+            
+            if table_data.get('md'):
+                enhanced_data['available_formats'].append('markdown')
+            
+            if table_data.get('text'):
+                enhanced_data['available_formats'].append('text')
+                enhanced_data['text_content'] = table_data['text'][:500]  # Limit length
+            
+            return json.dumps(enhanced_data)
+            
+        except Exception as e:
+            logger.warning(f"Error extracting table JSON: {e}")
+            return "{}"
+    
+    def _store_composite_chunks_in_pinecone(self, composite_chunks: List[Dict], pdf_id: str) -> int:
+        """Store composite chunks in Pinecone with unified embeddings and comprehensive error handling."""
+        if not composite_chunks:
+            logger.warning("No composite chunks to store")
             return 0
         
-        vectors = []
-        
-        for chunk in text_chunks:
-            try:
-                # Generate embedding
-                embedding = self._get_embedding(chunk['content'])
-                
-                # Create metadata
-                metadata = {
-                    'content_type': 'text',
-                    'chunk_id': chunk['chunk_id'],
-                    'pdf_id': pdf_id,
-                    'pdf_name': chunk['pdf_name'],
-                    'page_number': chunk['page_number'],
-                    'content': chunk['content'][:5000],  # Limit for Pinecone
-                    'word_count': chunk['word_count'],
-                    'char_count': chunk['char_count'],
-                    'processed_timestamp': chunk['processed_timestamp']
-                }
-                
-                vector = {
-                    'id': f"txt_{chunk['chunk_id']}",
-                    'values': embedding,
-                    'metadata': metadata
-                }
-                
-                vectors.append(vector)
-                
-            except Exception as e:
-                logger.error(f"Error creating vector for chunk {chunk.get('chunk_id')}: {e}")
-                continue
-        
-        # Batch upsert to unified namespace
-        if vectors:
-            try:
-                self.index.upsert(vectors=vectors, namespace=pdf_id)
-                logger.info(f"Stored {len(vectors)} text vectors in unified namespace: {pdf_id}")
-                return len(vectors)
-            except Exception as e:
-                logger.error(f"Error upserting text vectors to Pinecone: {e}")
+        try:
+            vectors = []
+            stored_count = 0
+            
+            logger.info(f"Processing {len(composite_chunks)} composite chunks for storage")
+            
+            for chunk in composite_chunks:
+                try:
+                    # Get composite text for embedding
+                    composite_text = chunk.get('composite_text', '')
+                    if not composite_text or len(composite_text.strip()) < 5:  # Lowered threshold
+                        logger.warning(f"Skipping chunk {chunk.get('chunk_id')} - insufficient composite text ({len(composite_text.strip())} chars)")
+                        continue
+                    
+                    # Generate embedding from composite text
+                    embedding = self._get_embedding_with_retry(composite_text)
+                    if not embedding or len(embedding) == 0:
+                        logger.warning(f"Failed to generate embedding for chunk {chunk.get('chunk_id')}")
+                        continue
+                    
+                    # Create metadata with actual content
+                    metadata = {
+                        'content_type': 'composite_chunk',
+                        'chunk_id': chunk.get('chunk_id', ''),
+                        'pdf_id': pdf_id,
+                        'source_document': chunk.get('source_document', '')[:100],
+                        'page_number': chunk.get('page_number', 0),
+                        
+                        # Store actual text content
+                        'text_content': composite_text[:8000],  # Store the actual text content
+                        'composite_text': composite_text[:8000],  # Also store as composite_text for compatibility
+                        
+                        # Lightweight flags and IDs
+                        'contains_image': chunk.get('contains_image', False),
+                        'image_url': chunk.get('image_url', '')[:500],
+                        'image_id': chunk.get('image_id', ''),
+                        'image_summary': chunk.get('image_summary', '')[:1000],  # Store for UI context
+                        
+                        'contains_table': chunk.get('contains_table', False),
+                        'table_id': chunk.get('table_id', ''),
+                        'table_content_json': chunk.get('table_content_json', '')[:8000],  # Store table JSON for UI
+                        'table_summary': chunk.get('table_summary', '')[:1000],  # Store table summary for UI
+                        
+                        'processed_timestamp': chunk.get('processed_timestamp', ''),
+                        'fallback_chunk': chunk.get('fallback_chunk', False)
+                    }
+                    
+                    # Create vector for Pinecone
+                    vector = {
+                        'id': f"comp_{chunk.get('chunk_id', f'unknown_{len(vectors)}')}",
+                        'values': embedding,
+                        'metadata': metadata
+                    }
+                    
+                    vectors.append(vector)
+                    logger.debug(f"Prepared vector for chunk {chunk.get('chunk_id')}")
+                    
+                except Exception as e:
+                    logger.error(f"Error preparing vector for chunk {chunk.get('chunk_id', 'unknown')}: {e}")
+                    continue
+            
+            # Batch upsert vectors to Pinecone
+            if vectors:
+                try:
+                    # Upsert in batches to avoid timeout
+                    batch_size = 50
+                    for i in range(0, len(vectors), batch_size):
+                        batch = vectors[i:i + batch_size]
+                        
+                        try:
+                            self.index.upsert(vectors=batch, namespace=pdf_id)
+                            stored_count += len(batch)
+                            logger.info(f"Stored batch {i//batch_size + 1}: {len(batch)} vectors in namespace {pdf_id}")
+                            
+                        except Exception as batch_error:
+                            logger.error(f"Error storing batch {i//batch_size + 1}: {batch_error}")
+                            # Try individual vectors in this batch
+                            for vector in batch:
+                                try:
+                                    self.index.upsert(vectors=[vector], namespace=pdf_id)
+                                    stored_count += 1
+                                except Exception as single_error:
+                                    logger.error(f"Error storing single vector {vector['id']}: {single_error}")
+                    
+                    logger.info(f"Successfully stored {stored_count}/{len(vectors)} composite chunk vectors in Pinecone namespace: {pdf_id}")
+                    
+                except Exception as e:
+                    logger.error(f"Critical error during Pinecone upsert: {e}")
+                    return 0
+            else:
+                logger.warning("No valid vectors prepared for storage")
                 return 0
+            
+            return stored_count
+            
+        except Exception as e:
+            logger.error(f"Critical error in _store_composite_chunks_in_pinecone: {e}")
+            return 0
+    
+    def _get_embedding_with_retry(self, text: str, max_retries: int = 3) -> List[float]:
+        """Generate embedding with retry logic and comprehensive error handling."""
+        for attempt in range(max_retries):
+            try:
+                if not text or len(text.strip()) < 3:
+                    logger.warning("Text too short for embedding, returning zeros")
+                    return [0.0] * 3072
+                
+                # Truncate text to OpenAI limit
+                truncated_text = text[:8191]
+                
+                response = self.openai_client.embeddings.create(
+                    model=self.embedding_model,
+                    input=truncated_text
+                )
+                
+                embedding = response.data[0].embedding
+                
+                # Validate embedding
+                if not embedding or len(embedding) == 0:
+                    raise ValueError("Empty embedding received")
+                
+                return embedding
+                
+            except Exception as e:
+                logger.warning(f"Embedding attempt {attempt + 1} failed: {e}")
+                if attempt == max_retries - 1:
+                    logger.error(f"All embedding attempts failed for text: {text[:100]}...")
+                    return [0.0] * 3072
+                else:
+                    time.sleep(1)  # Brief pause before retry
         
-        return 0
+        return [0.0] * 3072
+    
+
     
     def _generate_pdf_id(self, pdf_path: str) -> str:
         """Generate PDF ID based on filename for reuse detection."""
+        from config import generate_pdf_id_from_name
         pdf_name = Path(pdf_path).name
-        return self.config.generate_pdf_id_from_name(pdf_name)
+        return generate_pdf_id_from_name(pdf_name)
     
     def _generate_pdf_id_from_name(self, pdf_name: str) -> str:
         """Generate PDF ID directly from filename for reuse detection."""
-        return self.config.generate_pdf_id_from_name(pdf_name)
+        from config import generate_pdf_id_from_name
+        return generate_pdf_id_from_name(pdf_name)
     
     def _is_pdf_processed(self, pdf_id: str, pdf_name: str = None) -> bool:
         """Check if PDF has been fully processed by checking BOTH S3 storage AND Pinecone vectors."""
@@ -357,325 +1187,1774 @@ class MultimodalIntegrator:
         """Generate embedding using OpenAI API."""
         try:
             if not text or len(text.strip()) < 3:
-                logger.warning(f"Text too short for embedding: '{text}' (length: {len(text) if text else 0})")
                 return [0.0] * 3072
-            
-            logger.debug(f"Generating embedding for text: '{text[:100]}...' (length: {len(text)})")
             
             response = self.openai_client.embeddings.create(
                 model=self.embedding_model,
                 input=text[:8191]  # OpenAI token limit
             )
             
-            embedding = response.data[0].embedding
-            logger.debug(f"Generated embedding with {len(embedding)} dimensions")
-            return embedding
+            return response.data[0].embedding
             
         except Exception as e:
             logger.error(f"Error generating embedding: {e}")
             return [0.0] * 3072
     
     def query_multimodal_content(self, query: str, pdf_id: str, 
-                               max_images: int = 5, max_tables: int = 3, 
-                               max_text_chunks: int = 8) -> Dict[str, Any]:
-        """Query all content types with intelligent relevance scoring."""
+                               max_chunks: int = 5, **kwargs) -> Dict[str, Any]:
+        """Query composite chunks using enhanced vector search with adaptive thresholds."""
         try:
             start_time = time.time()
             
             # Generate query embedding
             query_embedding = self._get_embedding(query)
             
-            # Debug: Log query parameters
-            top_k_requested = max_images + max_tables + max_text_chunks + 10
-            logger.info(f"Querying namespace '{pdf_id}' with top_k={top_k_requested}")
-            logger.info(f"Query embedding shape: {len(query_embedding) if query_embedding else 'None'}")
+            # Enhanced vector search with adaptive parameters
+            search_params = self._get_adaptive_search_params(query)
             
-            # Query unified namespace for all content types
-            all_results = self.index.query(
+            # Check if namespace exists first
+            try:
+                index_stats = self.index.describe_index_stats()
+                available_namespaces = list(index_stats.namespaces.keys()) if index_stats.namespaces else []
+                
+                if pdf_id not in available_namespaces:
+                    logger.warning(f"Namespace '{pdf_id}' not found. Available namespaces: {available_namespaces[:5]}...")
+                    return {
+                        'inline_elements': [{
+                            'type': 'text', 
+                            'content': f"Document not found. The document '{pdf_id}' has not been processed yet or doesn't exist in the database."
+                        }],
+                        'performance_metrics': {
+                            'query_time': time.time() - start_time,
+                            'total_results': 0,
+                            'relevant_chunks': 0,
+                            'search_strategy': 'namespace_not_found'
+                        }
+                    }
+            except Exception as e:
+                logger.warning(f"Could not check namespace existence: {e}")
+            
+            chunk_results = self.index.query(
                 vector=query_embedding,
-                top_k=top_k_requested,  # Extra for filtering
+                top_k=search_params['top_k'],
                 namespace=pdf_id,
                 include_metadata=True,
                 include_values=False
             )
             
-            logger.info(f"Pinecone query returned {len(all_results.matches)} matches for namespace '{pdf_id}'")
+            logger.info(f"Composite chunk query returned {len(chunk_results.matches)} matches for namespace '{pdf_id}'")
             
-            # Debug: Log details about the results
-            if len(all_results.matches) == 0:
-                logger.warning(f"No matches found! Checking if namespace '{pdf_id}' exists...")
-                try:
-                    # Check current index stats to see available namespaces
-                    current_stats = self.index.describe_index_stats()
-                    if hasattr(current_stats, 'namespaces') and current_stats.namespaces:
-                        available_namespaces = list(current_stats.namespaces.keys())
-                        logger.info(f"Available namespaces in index: {available_namespaces}")
-                        if pdf_id not in available_namespaces:
-                            logger.error(f"Target namespace '{pdf_id}' not found in available namespaces!")
-                    else:
-                        logger.warning("No namespace information available in index stats")
-                except Exception as e:
-                    logger.error(f"Error checking namespaces: {e}")
-            else:
-                # Log sample match details
-                sample_match = all_results.matches[0]
-                logger.info(f"Sample match - Score: {sample_match.score}, Content type: {sample_match.metadata.get('content_type', 'unknown')}")
-            
-            # Separate results by content type
-            text_results = []
-            image_results = []
-            table_results = []
-            
-            for match in all_results.matches:
-                if match.score > 0.1:  # Minimum relevance threshold
-                    content_type = match.metadata.get('content_type', 'unknown')
-                    
-                    if content_type == 'text':
-                        text_results.append(match)
-                    elif content_type == 'image':
-                        image_results.append(match)
-                    elif content_type == 'table':
-                        table_results.append(match)
-            
-            logger.info(f"Content type breakdown: {len(text_results)} text, {len(image_results)} images, {len(table_results)} tables")
-            
-            # Apply content-specific filtering and limits
-            filtered_content = self._apply_intelligent_filtering(
-                query, text_results[:max_text_chunks], 
-                image_results[:max_images], table_results[:max_tables]
+            # Enhanced filtering with multi-stage intelligent selection
+            relevant_chunks = self._filter_chunks_with_enhanced_scoring(
+                chunk_results.matches, query, search_params
             )
             
-            logger.info(f"After filtering: {len(filtered_content['text'])} text, {len(filtered_content['images'])} images, {len(filtered_content['tables'])} tables")
+            # Apply additional advanced filtering if the basic filtering didn't use the new methods
+            if not search_params.get('query_intent'):
+                relevant_chunks = self._apply_content_aware_selection(relevant_chunks, query, max_chunks)
+            # The new filtering already includes intelligent selection
             
-            # Generate intelligent inline response
-            response_data = self.inline_generator.generate_inline_response(
-                query, filtered_content
-            )
+            logger.info(f"Selected {len(relevant_chunks)} relevant composite chunks")
+            
+            # Generate response using composite chunks with conditional instructions
+            query_intent = search_params.get('query_intent', {})
+            conditional_instructions = query_intent.get('conditional_instructions', {})
+            response_data = self._generate_composite_response(query, relevant_chunks, conditional_instructions)
             
             response_data['performance_metrics'] = {
                 'query_time': time.time() - start_time,
-                'total_results': len(all_results.matches),
-                'text_results': len(filtered_content['text']),
-                'image_results': len(filtered_content['images']),
-                'table_results': len(filtered_content['tables'])
+                'total_results': len(chunk_results.matches),
+                'relevant_chunks': len(relevant_chunks),
+                'search_strategy': search_params['strategy']
             }
             
             return response_data
             
         except Exception as e:
-            logger.error(f"Error in multimodal query: {e}")
+            logger.error(f"Error in composite chunk query: {e}")
             return {
                 'response': f"Error processing query: {str(e)}",
-                'content_elements': [],
+                'inline_elements': [{'type': 'text', 'content': f"Error: {str(e)}"}],
                 'error': str(e)
             }
     
-    def _apply_intelligent_filtering(self, query: str, text_results: List, 
-                                   image_results: List, table_results: List) -> Dict[str, List]:
-        """Apply intelligent filtering based on query context and content relevance."""
+    def _get_adaptive_search_params(self, query: str) -> Dict[str, Any]:
+        """Get intelligent search parameters using enhanced dynamic query intent analysis."""
+        # Use enhanced AI-powered query intent detection
+        query_intent = self._analyze_query_intent_with_cot(query)
         
-        # Analyze query intent
-        query_lower = query.lower()
-        query_intent = self._analyze_query_intent(query_lower)
+        # Extract search parameters from intent analysis
+        search_params = query_intent.get('search_parameters', {})
+        base_top_k = 100
         
-        filtered_content = {'text': [], 'images': [], 'tables': []}
+        # Apply multipliers from intent analysis
+        top_k_multiplier = search_params.get('top_k_multiplier', 1.0)
+        min_score_adjustment = search_params.get('min_score_adjustment', 0.0)
         
-        # Filter text results
-        for match in text_results:
-            if match.score > 0.2:  # Higher threshold for text
-                text_data = {
-                    'content': match.metadata.get('content', ''),
-                    'page_number': match.metadata.get('page_number', 0),
-                    'relevance_score': match.score,
-                    'chunk_id': match.metadata.get('chunk_id', ''),
-                    'word_count': match.metadata.get('word_count', 0)
-                }
-                filtered_content['text'].append(text_data)
+        # Dynamic parameter adjustment based on enhanced intent analysis - FIXED: Lower thresholds
+        if query_intent['scope'] == 'comprehensive':
+            top_k = int(base_top_k * max(top_k_multiplier, 1.5))
+            min_score = max(0.01, 0.02 + min_score_adjustment)  # Very low threshold for comprehensive queries
+        elif query_intent['scope'] == 'specific':
+            top_k = int(base_top_k * max(top_k_multiplier, 0.8))
+            min_score = max(0.01, 0.04 + min_score_adjustment)  # Lowered from 0.08
+        else:  # focused
+            top_k = int(base_top_k * max(top_k_multiplier, 0.6))
+            min_score = max(0.02, 0.06 + min_score_adjustment)  # Lowered from 0.12
         
-        # Filter image results with context awareness
-        for match in image_results:
-            # Adjust threshold based on query intent - lowered for better recall
-            threshold = 0.10 if query_intent.get('visual_focus', False) else 0.12
-            
-            if match.score > threshold:
-                image_data = {
-                    'image_id': match.metadata.get('image_id', ''),
-                    'local_path': match.metadata.get('local_path', ''),
-                    's3_url': match.metadata.get('s3_url', ''),
-                    'display_url': match.metadata.get('s3_url', '') or match.metadata.get('local_path', ''),
-                    'page_number': match.metadata.get('page_number', 0),
-                    'relevance_score': match.score,
-                    'ocr_text': match.metadata.get('ocr_text', ''),
-                    'keywords': match.metadata.get('keywords', []),
-                    'content_type': match.metadata.get('content_classification', 'figure'),
-                    'confidence_score': match.metadata.get('confidence_score', 0.0)
-                }
-                filtered_content['images'].append(image_data)
+        # Adjust based on search strategy - FIXED: Less aggressive precision penalty
+        strategy = query_intent.get('search_strategy', 'balanced')
+        if strategy == 'recall':
+            top_k = int(top_k * 1.3)
+            min_score *= 0.6  # More aggressive recall
+        elif strategy == 'precision':
+            top_k = int(top_k * 0.7)
+            min_score *= 1.2  # Less aggressive precision (was 1.4)
+        elif strategy == 'hybrid':
+            # Use multiple search passes with different parameters
+            top_k = int(top_k * 1.1)
         
-        # Filter table results with structure awareness and duplicate prevention
-        seen_table_keys = set()
+        # Adjust based on complexity
+        complexity = query_intent.get('complexity_level', 'medium')
+        if complexity == 'complex':
+            top_k = int(top_k * 1.2)
+            min_score *= 0.8
+        elif complexity == 'simple':
+            top_k = int(top_k * 0.8)
+            min_score *= 1.1
         
-        for match in table_results:
-            # Adjust threshold based on query intent - lowered for better recall
-            threshold = 0.10 if query_intent.get('data_focus', False) else 0.15
-            
-            if match.score > threshold:
-                table_id = match.metadata.get('table_id', '')
-                page_number = match.metadata.get('page_number', 0)
-                
-                # Create unique key for this table
-                unique_key = f"{table_id}_{page_number}" if table_id else f"page_{page_number}_idx_{len(filtered_content['tables'])}"
-                
-                # Only add if not already seen
-                if unique_key not in seen_table_keys:
-                    seen_table_keys.add(unique_key)
-                    
-                    table_data = {
-                        'table_id': table_id,
-                        'page_number': page_number,
-                        'relevance_score': match.score,
-                        'summary': match.metadata.get('summary', ''),
-                        'markdown_content': match.metadata.get('markdown_content', ''),
-                        'row_count': match.metadata.get('row_count', 0),
-                        'column_count': match.metadata.get('column_count', 0),
-                        'structure_type': match.metadata.get('structure_type', 'unknown'),
-                        'quality_score': match.metadata.get('overall_quality', 0.0)
-                    }
-                    filtered_content['tables'].append(table_data)
+        # Ensure reasonable bounds
+        top_k = min(max(top_k, 20), 200)
+        min_score = min(max(min_score, 0.01), 0.3)
         
-        return filtered_content
+        return {
+            'strategy': strategy,
+            'top_k': top_k,
+            'min_score': min_score,
+            'query_intent': query_intent,
+            'complexity': complexity,
+            'diversity_requirement': search_params.get('diversity_requirement', 'medium'),
+            'semantic_expansion': search_params.get('semantic_expansion', False),
+            'cross_content_boost': search_params.get('cross_content_boost', True)
+        }
     
-    def _analyze_query_intent(self, query_lower: str) -> Dict[str, bool]:
-        """Analyze query to understand user intent."""
-        intent = {
-            'visual_focus': False,
-            'data_focus': False,
-            'detail_focus': False,
-            'summary_focus': False
+    def _filter_chunks_with_enhanced_scoring(self, matches, query: str, search_params: Dict) -> List[Dict]:
+        """Enhanced filtering with intelligent content scoring and preference-based selection."""
+        relevant_chunks = []
+        query_keywords = set(query.lower().split())
+        
+        # Extract enhanced query intent information
+        query_intent = search_params.get('query_intent', {})
+        conditional_instructions = query_intent.get('conditional_instructions', {})
+        content_preferences = query_intent.get('content_preferences', ['text', 'images', 'tables'])
+        semantic_concepts = query_intent.get('semantic_concepts', [])
+        intent_keywords = query_intent.get('intent_keywords', [])
+        
+        # Extract conditional parameters
+        include_content = conditional_instructions.get('include_content', [])
+        exclude_content = conditional_instructions.get('exclude_content', [])
+        positive_keywords = conditional_instructions.get('positive_keywords', [])
+        negative_keywords = conditional_instructions.get('negative_keywords', [])
+        
+        # Content type preference weights
+        content_type_weights = {
+            'text': 1.0 if 'text' in content_preferences else 0.7,
+            'images': 1.2 if 'images' in content_preferences else 0.8,
+            'tables': 1.1 if 'tables' in content_preferences else 0.8
         }
         
-        # Visual indicators
-        visual_keywords = ['image', 'figure', 'chart', 'graph', 'diagram', 'picture', 'visual', 'show']
-        if any(keyword in query_lower for keyword in visual_keywords):
-            intent['visual_focus'] = True
+        # First pass: collect all potentially relevant chunks with enhanced scoring
+        potential_chunks = []
         
-        # Data indicators
-        data_keywords = ['table', 'data', 'number', 'statistic', 'value', 'result', 'metric']
-        if any(keyword in query_lower for keyword in data_keywords):
-            intent['data_focus'] = True
+        filtered_count = 0
+        for match in matches:
+            if match.score < search_params['min_score']:
+                filtered_count += 1
+                continue
+            
+            # Check conditional content exclusions
+            if self._should_exclude_chunk(match, exclude_content, negative_keywords):
+                filtered_count += 1
+                continue
+                
+            # Check conditional content inclusions
+            if include_content and not self._should_include_chunk(match, include_content, positive_keywords):
+                filtered_count += 1
+                continue
+            
+            # Apply content type preference filtering
+            chunk_content_types = self._identify_chunk_content_types(match)
+            content_type_boost = self._calculate_content_type_boost(chunk_content_types, content_type_weights)
+            
+            # Enhanced relevance scoring with multiple signals
+            enhanced_score = self._calculate_enhanced_relevance_score_advanced(
+                match, query_keywords, search_params['strategy'], 
+                positive_keywords, negative_keywords, semantic_concepts, 
+                intent_keywords, content_type_boost
+            )
+            
+            if enhanced_score > 0.01:  # Much lower minimum enhanced score threshold for better recall
+                # Extract text content with multiple field name fallbacks
+                text_content = (match.metadata.get('text_content') or 
+                              match.metadata.get('content') or 
+                              match.metadata.get('text') or 
+                              match.metadata.get('composite_text') or 
+                              match.metadata.get('_node_content') or '')  # Added _node_content fallback
+                
+                # Extract image information with fallbacks
+                contains_image = (match.metadata.get('contains_image', False) or 
+                                bool(match.metadata.get('image_url')) or
+                                bool(match.metadata.get('s3_url')) or
+                                match.metadata.get('content_type') == 'image')
+                
+                image_url = (match.metadata.get('image_url') or 
+                           match.metadata.get('s3_url') or 
+                           match.metadata.get('storage_path', ''))
+                
+                # Extract table information with fallbacks  
+                contains_table = (match.metadata.get('contains_table', False) or
+                                bool(match.metadata.get('table_content_json')) or
+                                bool(match.metadata.get('table_content')) or
+                                match.metadata.get('content_type') == 'table')
+                
+                table_content = (match.metadata.get('table_content_json') or
+                               match.metadata.get('table_content') or
+                               match.metadata.get('markdown_content', ''))
+                
+                # If no text content found, try to reconstruct from available metadata
+                if not text_content:
+                    # Try to reconstruct content from available metadata
+                    reconstructed_content = []
+                    
+                    # Add image summary if available
+                    image_summary = match.metadata.get('image_summary', '')
+                    if image_summary:
+                        reconstructed_content.append(f"Image content: {image_summary}")
+                    
+                    # Add table summary if available
+                    table_summary = match.metadata.get('table_summary', '')
+                    if table_summary:
+                        reconstructed_content.append(f"Table content: {table_summary}")
+                    
+                    # Add any other available text
+                    other_content = match.metadata.get('content', '') or match.metadata.get('text', '')
+                    if other_content:
+                        reconstructed_content.append(other_content)
+                    
+                    # If we have reconstructed content, use it
+                    if reconstructed_content:
+                        text_content = ' '.join(reconstructed_content)
+                    else:
+                        # Last resort: create a generic description
+                        text_content = f"Content from page {match.metadata.get('page_number', 0)} of document {match.metadata.get('source_document', 'unknown')}"
+                
+                # Debug log for content extraction
+                logger.info(f"Extracted text content for chunk {match.metadata.get('chunk_id', match.id)}: {len(text_content)} chars")
+                if len(text_content) < 100:  # Show short content for debugging
+                    logger.info(f"Short content: '{text_content[:100]}...'")
+                
+                chunk_data = {
+                    'chunk_id': match.metadata.get('chunk_id', match.id),
+                    'relevance_score': enhanced_score,
+                    'original_score': match.score,
+                    'page_number': match.metadata.get('page_number', 0),
+                    'text_content': text_content,
+                    
+                    # Image information
+                    'contains_image': contains_image,
+                    'image_url': image_url,
+                    'image_summary': match.metadata.get('image_summary', ''),
+                    
+                    # Table information
+                    'contains_table': contains_table,
+                    'table_content_json': table_content,
+                    'table_summary': match.metadata.get('table_summary', ''),
+                    
+                    'source_document': match.metadata.get('source_document', ''),
+                    'content_type': match.metadata.get('content_type', 'text')
+                }
+                potential_chunks.append(chunk_data)
         
-        # Detail indicators
-        detail_keywords = ['detail', 'specific', 'exact', 'precise', 'complete']
-        if any(keyword in query_lower for keyword in detail_keywords):
-            intent['detail_focus'] = True
+        # Log filtering results for debugging
+        logger.info(f"Enhanced filtering results: {len(matches)} initial matches, {filtered_count} filtered out, {len(potential_chunks)} potential chunks")
         
-        # Summary indicators
-        summary_keywords = ['summary', 'overview', 'general', 'main', 'key']
-        if any(keyword in query_lower for keyword in summary_keywords):
-            intent['summary_focus'] = True
+        # AI-powered content selection
+        if potential_chunks:
+            relevant_chunks = self._ai_powered_content_selection(query, potential_chunks, search_params)
+        else:
+            logger.warning("No potential chunks found after enhanced filtering - using fallback with original scores")
+            # Fallback: use original scoring if enhanced filtering is too strict
+            fallback_chunks = []
+            for match in matches[:10]:  # Take top 10 by original score
+                if match.score >= search_params['min_score']:
+                    # Extract content with multiple fallbacks
+                    text_content = (match.metadata.get('text_content') or 
+                                  match.metadata.get('content') or 
+                                  match.metadata.get('text') or 
+                                  match.metadata.get('composite_text') or 
+                                  match.metadata.get('_node_content') or '')
+                    
+                    # If no text content found, try to reconstruct from available metadata
+                    if not text_content:
+                        # Try to reconstruct content from available metadata
+                        reconstructed_content = []
+                        
+                        # Add image summary if available
+                        image_summary = match.metadata.get('image_summary', '')
+                        if image_summary:
+                            reconstructed_content.append(f"Image content: {image_summary}")
+                        
+                        # Add table summary if available
+                        table_summary = match.metadata.get('table_summary', '')
+                        if table_summary:
+                            reconstructed_content.append(f"Table content: {table_summary}")
+                        
+                        # Add any other available text
+                        other_content = match.metadata.get('content', '') or match.metadata.get('text', '')
+                        if other_content:
+                            reconstructed_content.append(other_content)
+                        
+                        # If we have reconstructed content, use it
+                        if reconstructed_content:
+                            text_content = ' '.join(reconstructed_content)
+                        else:
+                            # Last resort: create a generic description
+                            text_content = f"Content from page {match.metadata.get('page_number', 0)} of document {match.metadata.get('source_document', 'unknown')}"
+                    
+                    chunk_data = {
+                        'chunk_id': match.metadata.get('chunk_id', match.id),
+                        'relevance_score': match.score,
+                        'original_score': match.score,
+                        'page_number': match.metadata.get('page_number', 0),
+                        'text_content': text_content,
+                        'contains_image': match.metadata.get('contains_image', False),
+                        'image_url': match.metadata.get('image_url', ''),
+                        'image_summary': match.metadata.get('image_summary', ''),
+                        'contains_table': match.metadata.get('contains_table', False),
+                        'table_content_json': match.metadata.get('table_content_json', ''),
+                        'table_summary': match.metadata.get('table_summary', ''),
+                        'source_document': match.metadata.get('source_document', ''),
+                        'content_type': match.metadata.get('content_type', 'text')
+                    }
+                    fallback_chunks.append(chunk_data)
+            relevant_chunks = fallback_chunks
         
-        return intent
+        logger.info(f"Final selection: {len(relevant_chunks)} chunks after AI selection")
+        return relevant_chunks
     
-    def _generate_multimodal_response(self, query: str, filtered_content: Dict, pdf_id: str) -> Dict[str, Any]:
-        """Generate comprehensive multimodal response."""
+    def _should_exclude_chunk(self, match, exclude_content: List[str], negative_keywords: List[str]) -> bool:
+        """Check if chunk should be excluded based on conditional instructions."""
+        # Check content type exclusions
+        for content_type in exclude_content:
+            if content_type == 'images' and match.metadata.get('contains_image'):
+                return True
+            elif content_type == 'tables' and match.metadata.get('contains_table'):
+                return True
+            elif content_type == 'text' and match.metadata.get('text_content'):
+                return True
+        
+        # Check negative keywords
+        text_content = match.metadata.get('text_content', '').lower()
+        for keyword in negative_keywords:
+            if keyword.lower() in text_content:
+                return True
+        
+        return False
+    
+    def _ai_powered_content_selection(self, query: str, potential_chunks: List[Dict], search_params: Dict) -> List[Dict]:
+        """Use AI to intelligently select the best content for the response."""
         try:
-            # Build context from all content types
-            context_parts = []
-            content_elements = []
+            # Prepare content summary for AI analysis
+            content_summary = self._prepare_content_summary_for_ai(potential_chunks)
             
-            # Add text context
-            for text_data in filtered_content['text']:
-                context_parts.append(f"\n--- PAGE {text_data['page_number']} TEXT ---\n{text_data['content'][:1000]}")
-                content_elements.append({
-                    'type': 'text',
-                    'page_number': text_data['page_number'],
-                    'content_preview': text_data['content'][:500],
-                    'relevance_score': text_data['relevance_score']
-                })
+            # AI prompt for content selection
+            selection_prompt = f"""Analyze this user query and available content to determine the optimal content selection strategy.
+
+USER QUERY: "{query}"
+
+AVAILABLE CONTENT SUMMARY:
+{content_summary}
+
+QUERY INTENT ANALYSIS:
+- Strategy: {search_params.get('query_intent', {}).get('strategy', 'unknown')}
+- Scope: {search_params.get('query_intent', {}).get('scope', 'unknown')}
+- Complexity: {search_params.get('query_intent', {}).get('complexity', 'unknown')}
+
+TASK: Determine the optimal content selection strategy based on the user's query intent and available content.
+
+Consider:
+1. What content types are most relevant to the query?
+2. How many items of each content type should be included?
+3. What's the optimal balance between comprehensiveness and focus?
+4. Should we prioritize quality over quantity?
+
+Respond with ONLY this JSON format:
+{{
+    "selection_strategy": "[comprehensive|focused|balanced|minimal]",
+    "content_limits": {{
+        "text_sections": [min, max],
+        "images": [min, max], 
+        "tables": [min, max]
+    }},
+    "priority_order": ["text|images|tables"],
+    "reasoning": "Brief explanation of the selection strategy"
+}}"""
+
+            response = self.openai_client.chat.completions.create(
+                model='gpt-4o-mini',
+                messages=[{"role": "user", "content": selection_prompt}],
+                max_tokens=300,
+                temperature=0.1
+            )
             
-            # Add image context
-            for img_data in filtered_content['images']:
-                if img_data.get('ocr_text'):
-                    context_parts.append(f"\n--- PAGE {img_data['page_number']} IMAGE ---\n{img_data['ocr_text']}")
-                
-                content_elements.append({
-                    'type': 'image',
-                    'image_id': img_data['image_id'],
-                    's3_url': img_data.get('s3_url', ''),
-                    'display_url': img_data.get('display_url', ''),
-                    'page_number': img_data['page_number'],
-                    'ocr_text': img_data['ocr_text'],
-                    'content_type': img_data['content_type'],
-                    'relevance_score': img_data['relevance_score']
-                })
+            import json
+            selection_strategy = json.loads(response.choices[0].message.content)
+            logger.info(f"AI content selection strategy: {selection_strategy}")
             
-            # Add table context
-            for table_data in filtered_content['tables']:
-                context_parts.append(f"\n--- PAGE {table_data['page_number']} TABLE ---\n{table_data['summary']}\n{table_data['markdown_content']}")
-                
-                content_elements.append({
-                    'type': 'table',
-                    'table_id': table_data['table_id'],
-                    'page_number': table_data['page_number'],
-                    'summary': table_data['summary'],
-                    'markdown_content': table_data['markdown_content'],
-                    'row_count': table_data['row_count'],
-                    'column_count': table_data['column_count'],
-                    'relevance_score': table_data['relevance_score']
-                })
+            # Apply the AI-determined selection strategy
+            selected_chunks = self._apply_ai_selection_strategy(potential_chunks, selection_strategy)
             
-            full_context = '\n'.join(context_parts[:15])  # Limit context length
-            
-            # Generate AI response if we have context
-            if full_context.strip():
-                response_text = self._generate_ai_response(query, full_context)
-            else:
-                response_text = "I couldn't find relevant information in the document for this query."
-            
-            return {
-                'response': response_text,
-                'content_elements': content_elements,
-                'context_used': bool(full_context.strip())
-            }
+            return selected_chunks
             
         except Exception as e:
-            logger.error(f"Error generating multimodal response: {e}")
+            logger.error(f"Error in AI-powered content selection: {e}")
+            # Fallback to top-scoring chunks
+            return sorted(potential_chunks, key=lambda x: x['relevance_score'], reverse=True)[:10]
+    
+    def _prepare_content_summary_for_ai(self, chunks: List[Dict]) -> str:
+        """Prepare a summary of available content for AI analysis."""
+        text_count = sum(1 for c in chunks if c.get('text_content'))
+        image_count = sum(1 for c in chunks if c.get('contains_image'))
+        table_count = sum(1 for c in chunks if c.get('contains_table'))
+        
+        # Sample content descriptions
+        text_samples = [c.get('text_content', '')[:100] for c in chunks if c.get('text_content')][:3]
+        image_samples = [c.get('image_summary', '') for c in chunks if c.get('contains_image')][:3]
+        table_samples = [c.get('table_summary', '') for c in chunks if c.get('contains_table')][:3]
+        
+        summary = f"""TOTAL CONTENT:
+- Text sections: {text_count}
+- Images: {image_count} 
+- Tables: {table_count}
+
+SAMPLE CONTENT:
+- Text samples: {text_samples}
+- Image descriptions: {image_samples}
+- Table summaries: {table_samples}
+
+RELEVANCE SCORES:
+- Average score: {sum(c['relevance_score'] for c in chunks) / len(chunks):.3f}
+- Score range: {min(c['relevance_score'] for c in chunks):.3f} - {max(c['relevance_score'] for c in chunks):.3f}"""
+        
+        return summary
+    
+    def _apply_ai_selection_strategy(self, chunks: List[Dict], strategy: Dict) -> List[Dict]:
+        """Apply the AI-determined selection strategy to choose optimal content."""
+        selected_chunks = []
+        
+        # Sort chunks by relevance score
+        sorted_chunks = sorted(chunks, key=lambda x: x['relevance_score'], reverse=True)
+        
+        # Get content limits from strategy
+        content_limits = strategy.get('content_limits', {})
+        text_limits = content_limits.get('text_sections', [0, 5])
+        image_limits = content_limits.get('images', [0, 3])
+        table_limits = content_limits.get('tables', [0, 3])
+        
+        # Get priority order
+        priority_order = strategy.get('priority_order', ['text', 'images', 'tables'])
+        
+        # Apply selection based on priority order
+        text_selected = 0
+        image_selected = 0
+        table_selected = 0
+        
+        for content_type in priority_order:
+            if content_type == 'text':
+                for chunk in sorted_chunks:
+                    if (chunk.get('text_content') and 
+                        text_selected < text_limits[1] and 
+                        chunk not in selected_chunks):
+                        selected_chunks.append(chunk)
+                        text_selected += 1
+                        
+            elif content_type == 'images':
+                for chunk in sorted_chunks:
+                    if (chunk.get('contains_image') and 
+                        image_selected < image_limits[1] and 
+                        chunk not in selected_chunks):
+                        selected_chunks.append(chunk)
+                        image_selected += 1
+                        
+            elif content_type == 'tables':
+                for chunk in sorted_chunks:
+                    if (chunk.get('contains_table') and 
+                        table_selected < table_limits[1] and 
+                        chunk not in selected_chunks):
+                        selected_chunks.append(chunk)
+                        table_selected += 1
+        
+        # Ensure minimum content requirements are met
+        if text_selected < text_limits[0]:
+            for chunk in sorted_chunks:
+                if (chunk.get('text_content') and 
+                    chunk not in selected_chunks and 
+                    text_selected < text_limits[0]):
+                    selected_chunks.append(chunk)
+                    text_selected += 1
+        
+        if image_selected < image_limits[0]:
+            for chunk in sorted_chunks:
+                if (chunk.get('contains_image') and 
+                    chunk not in selected_chunks and 
+                    image_selected < image_limits[0]):
+                    selected_chunks.append(chunk)
+                    image_selected += 1
+        
+        if table_selected < table_limits[0]:
+            for chunk in sorted_chunks:
+                if (chunk.get('contains_table') and 
+                    chunk not in selected_chunks and 
+                    table_selected < table_limits[0]):
+                    selected_chunks.append(chunk)
+                    table_selected += 1
+        
+        logger.info(f"AI selection applied: {len(selected_chunks)} chunks selected (Text: {text_selected}, Images: {image_selected}, Tables: {table_selected})")
+        return selected_chunks
+    
+    def _determine_content_organization_strategy(self, query: str, chunks: List[Dict], conditional_instructions: Dict = None) -> Dict:
+        """Use AI to determine the optimal content organization strategy."""
+        try:
+            # Prepare content summary for AI analysis
+            content_summary = self._prepare_content_summary_for_ai(chunks)
+            
+            # AI prompt for content organization
+            organization_prompt = f"""Analyze this user query and available content to determine the optimal content organization strategy.
+
+USER QUERY: "{query}"
+
+AVAILABLE CONTENT SUMMARY:
+{content_summary}
+
+CONDITIONAL INSTRUCTIONS:
+{conditional_instructions if conditional_instructions else 'None'}
+
+TASK: Determine the optimal content organization strategy for the response.
+
+Consider:
+1. What content types are most relevant to the query?
+2. How should content be prioritized and organized?
+3. What's the optimal balance between different content types?
+4. Should we focus on quality, quantity, or diversity?
+
+Respond with ONLY this JSON format:
+{{
+    "organization_strategy": "[balanced|focused|comprehensive|minimal]",
+    "content_priorities": {{
+        "text": [min_count, max_count, priority_score],
+        "images": [min_count, max_count, priority_score],
+        "tables": [min_count, max_count, priority_score]
+    }},
+    "inclusion_criteria": {{
+        "text": ["relevance_threshold", "quality_focus"],
+        "images": ["relevance_threshold", "quality_focus"],
+        "tables": ["relevance_threshold", "quality_focus"]
+    }},
+    "reasoning": "Brief explanation of the organization strategy"
+}}"""
+
+            response = self.openai_client.chat.completions.create(
+                model='gpt-4o-mini',
+                messages=[{"role": "user", "content": organization_prompt}],
+                max_tokens=300,
+                temperature=0.3
+            )
+            
+            import json
+            organization_strategy = json.loads(response.choices[0].message.content)
+            logger.info(f"AI content organization strategy: {organization_strategy}")
+            
+            return organization_strategy
+            
+        except Exception as e:
+            logger.error(f"Error in AI content organization strategy: {e}")
+            # Fallback to balanced strategy
             return {
-                'response': f"Error generating response: {str(e)}",
-                'content_elements': [],
-                'error': str(e)
+                "organization_strategy": "balanced",
+                "content_priorities": {
+                    "text": [1, 5, 0.8],
+                    "images": [0, 3, 0.7],
+                    "tables": [0, 3, 0.7]
+                },
+                "inclusion_criteria": {
+                    "text": [0.3, "balanced"],
+                    "images": [0.4, "balanced"],
+                    "tables": [0.4, "balanced"]
+                }
             }
     
-    def _generate_ai_response(self, query: str, context: str) -> str:
-        """Generate AI response using OpenAI API."""
+    def _should_include_text_content(self, chunk: Dict, content_strategy: Dict) -> bool:
+        """Determine if text content should be included based on AI strategy."""
         try:
-            system_prompt = """You are an expert AI assistant that provides comprehensive answers using multimodal document content.
-
-You have access to text content, images with OCR data, and structured tables. When responding:
-1. Integrate information from all content types naturally
-2. Reference specific pages when mentioning content
-3. Highlight key insights from images and tables
-4. Provide structured, well-organized responses
-5. Be concise but comprehensive
-6. Use the content to provide rich, detailed answers"""
+            text_priorities = content_strategy.get('content_priorities', {}).get('text', [1, 5, 0.8])
+            text_criteria = content_strategy.get('inclusion_criteria', {}).get('text', [0.3, "balanced"])
             
-            user_prompt = f"""Document content:
+            # Handle "none" or non-numeric values
+            try:
+                if text_criteria[0] == "none" or text_criteria[0] is None:
+                    relevance_threshold = 0.0  # Include all when "none"
+                else:
+                    relevance_threshold = float(text_criteria[0])
+            except (ValueError, TypeError):
+                relevance_threshold = 0.1  # Much more lenient default threshold
+            
+            quality_focus = text_criteria[1] if isinstance(text_criteria[1], str) else "balanced"
+            
+            # Check relevance score
+            chunk_score = float(chunk.get('relevance_score', 0))
+            if chunk_score < relevance_threshold:
+                return False
+            
+            # Apply quality focus
+            if quality_focus == "high_quality":
+                return chunk_score > 0.3
+            elif quality_focus == "balanced":
+                return True
+            else:  # minimal
+                return chunk_score > 0.2
+            
+        except Exception as e:
+            logger.error(f"Error in text content inclusion check: {e}")
+            return float(chunk.get('relevance_score', 0)) > 0.1  # Much more lenient threshold
+    
+    def _should_include_image_content(self, chunk: Dict, content_strategy: Dict, used_image_ids: set) -> bool:
+        """Determine if image content should be included based on AI strategy."""
+        try:
+            image_priorities = content_strategy.get('content_priorities', {}).get('images', [0, 3, 0.7])
+            image_criteria = content_strategy.get('inclusion_criteria', {}).get('images', [0.4, "balanced"])
+            selection_strategy = content_strategy.get('selection_strategy', 'balanced')
+            
+            logger.info(f"Image inclusion check - strategy: {selection_strategy}, priorities: {image_priorities}, criteria: {image_criteria}")
+            
+            # Special case: If AI explicitly wants images, include them regardless of strategy
+            if len(image_priorities) >= 2:
+                desired_images = int(image_priorities[1])
+                if desired_images > 0:  # AI wants any images (changed from > 3)
+                    logger.info(f"AI wants {desired_images} images ({selection_strategy} strategy): including image (have {len(used_image_ids)})")
+                    return len(used_image_ids) < desired_images
+            
+            # Ensure proper data types
+            max_images = int(image_priorities[1]) if len(image_priorities) > 1 else 3
+            
+            # Handle both old and new format - could be a list or single values
+            if isinstance(image_criteria, list) and len(image_criteria) >= 2:
+                # Handle "none" or non-numeric values
+                try:
+                    if image_criteria[0] == "none" or image_criteria[0] is None:
+                        relevance_threshold = 0.0  # Include all when "none"
+                    else:
+                        relevance_threshold = float(image_criteria[0])
+                except (ValueError, TypeError):
+                    relevance_threshold = 0.4
+                
+                quality_focus = image_criteria[1] if isinstance(image_criteria[1], str) else "balanced"
+            else:
+                relevance_threshold = 0.4
+                quality_focus = "balanced"
+            
+            # Check if we've reached the maximum number of images
+            if len(used_image_ids) >= max_images:
+                return False
+            
+            # Check relevance score with proper type conversion
+            chunk_score = float(chunk.get('relevance_score', 0))
+            if chunk_score < relevance_threshold:
+                return False
+            
+            # Apply quality focus
+            if quality_focus == "high_quality":
+                return chunk_score > 0.3
+            elif quality_focus == "balanced":
+                return True
+            else:  # minimal
+                return chunk_score > 0.2
+            
+        except Exception as e:
+            logger.error(f"Error in image content inclusion check: {e}")
+            return float(chunk.get('relevance_score', 0)) > 0.4 and len(used_image_ids) < 3
+    
+    def _should_include_table_content(self, chunk: Dict, content_strategy: Dict, used_table_ids: set) -> bool:
+        """Determine if table content should be included based on AI strategy."""
+        try:
+            table_priorities = content_strategy.get('content_priorities', {}).get('tables', [0, 3, 0.7])
+            table_criteria = content_strategy.get('inclusion_criteria', {}).get('tables', [0.4, "balanced"])
+            selection_strategy = content_strategy.get('selection_strategy', 'balanced')
+            
+            logger.info(f"Table inclusion check - strategy: {selection_strategy}, priorities: {table_priorities}, criteria: {table_criteria}")
+            
+            # Special case: If AI explicitly wants tables, include them regardless of strategy
+            if len(table_priorities) >= 2:
+                desired_tables = int(table_priorities[1])
+                if desired_tables > 0:  # AI wants any tables (changed from > 3)
+                    logger.info(f"AI wants {desired_tables} tables ({selection_strategy} strategy): including table (have {len(used_table_ids)})")
+                    return len(used_table_ids) < desired_tables
+            
+            # Ensure proper data types
+            max_tables = int(table_priorities[1]) if len(table_priorities) > 1 else 3
+            
+            # Handle both old and new format - could be a list or single values
+            if isinstance(table_criteria, list) and len(table_criteria) >= 2:
+                # Handle "none" or non-numeric values
+                try:
+                    if table_criteria[0] == "none" or table_criteria[0] is None:
+                        relevance_threshold = 0.0  # Include all when "none"
+                    else:
+                        relevance_threshold = float(table_criteria[0])
+                except (ValueError, TypeError):
+                    relevance_threshold = 0.4
+                
+                quality_focus = table_criteria[1] if isinstance(table_criteria[1], str) else "balanced"
+            else:
+                relevance_threshold = 0.4
+                quality_focus = "balanced"
+            
+            # Check if we've reached the maximum number of tables
+            if len(used_table_ids) >= max_tables:
+                return False
+            
+            # Check relevance score with proper type conversion
+            chunk_score = float(chunk.get('relevance_score', 0))
+            if chunk_score < relevance_threshold:
+                return False
+            
+            # Apply quality focus
+            if quality_focus == "high_quality":
+                return chunk_score > 0.6
+            elif quality_focus == "balanced":
+                return True
+            else:  # minimal
+                return chunk_score > 0.4
+            
+        except Exception as e:
+            logger.error(f"Error in table content inclusion check: {e}")
+            return float(chunk.get('relevance_score', 0)) > 0.4 and len(used_table_ids) < 3
+    
+    def _should_include_chunk(self, match, include_content: List[str], positive_keywords: List[str]) -> bool:
+        """Check if chunk should be included based on conditional instructions."""
+        # Check content type inclusions
+        for content_type in include_content:
+            if content_type == 'images' and match.metadata.get('contains_image'):
+                return True
+            elif content_type == 'tables' and match.metadata.get('contains_table'):
+                return True
+            elif content_type == 'text' and match.metadata.get('text_content'):
+                return True
+        
+        # Check positive keywords
+        text_content = match.metadata.get('text_content', '').lower()
+        for keyword in positive_keywords:
+            if keyword.lower() in text_content:
+                return True
+        
+        return False
+    
+    def _calculate_enhanced_relevance_score_with_conditionals(self, match, query_keywords: set, strategy: str, 
+                                                           positive_keywords: List[str], negative_keywords: List[str]) -> float:
+        """Calculate enhanced relevance score with conditional adjustments."""
+        base_score = match.score
+        
+        # Content type boosting based on strategy
+        content_boost = 0.0
+        if strategy == 'table_focused' and match.metadata.get('contains_table'):
+            content_boost += 0.2
+        elif strategy == 'image_focused' and match.metadata.get('contains_image'):
+            content_boost += 0.2
+        elif strategy == 'text_focused' and match.metadata.get('text_content'):
+            content_boost += 0.1
+        
+        # Keyword matching boost
+        text_content = match.metadata.get('text_content', '').lower()
+        keyword_matches = sum(1 for keyword in query_keywords if keyword in text_content)
+        keyword_boost = min(keyword_matches * 0.05, 0.3)
+        
+        # Conditional keyword adjustments
+        conditional_boost = 0.0
+        conditional_penalty = 0.0
+        
+        # Positive keyword boost
+        for keyword in positive_keywords:
+            if keyword.lower() in text_content:
+                conditional_boost += 0.1
+        
+        # Negative keyword penalty
+        for keyword in negative_keywords:
+            if keyword.lower() in text_content:
+                conditional_penalty += 0.2
+        
+        enhanced_score = base_score + content_boost + keyword_boost + conditional_boost - conditional_penalty
+        return max(0.0, min(enhanced_score, 1.0))  # Ensure score is between 0 and 1
+    
+    def _calculate_enhanced_relevance_score(self, match, query_keywords: set, strategy: str) -> float:
+        """Calculate enhanced relevance score based on content type and keyword matching."""
+        base_score = match.score
+        
+        # Content type bonus
+        content_bonus = 0.0
+        if strategy == 'table_focused' and match.metadata.get('contains_table', False):
+            content_bonus += 0.1
+        elif strategy == 'image_focused' and match.metadata.get('contains_image', False):
+            content_bonus += 0.1
+        
+        # Keyword matching bonus
+        text_content = match.metadata.get('text_content', '').lower()
+        keyword_matches = sum(1 for keyword in query_keywords if keyword in text_content)
+        keyword_bonus = min(keyword_matches * 0.05, 0.2)  # Max 0.2 bonus
+        
+        enhanced_score = base_score + content_bonus + keyword_bonus
+        return min(enhanced_score, 1.0)  # Cap at 1.0
+    
+    def _analyze_query_intent_with_cot(self, query: str) -> Dict[str, Any]:
+        """Analyze query intent using chain-of-thought reasoning with AI, including conditional instructions."""
+        try:
+            cot_prompt = f"""You are an expert query analyst for a multimodal document retrieval system. Analyze this user query with deep understanding to optimize search and response generation.
+
+QUERY: "{query}"
+
+PERFORM COMPREHENSIVE ANALYSIS:
+
+1. SEMANTIC INTENT ANALYSIS:
+   - What is the user's underlying information need?
+   - Is this factual, analytical, exploratory, comparative, or summarization?
+   - What domain knowledge areas are involved?
+   - What level of detail is expected?
+
+2. CONTENT TYPE REQUIREMENTS:
+   - Text: Does the user need textual explanations, definitions, or narratives?
+   - Images: Are visual elements like figures, charts, diagrams, or photos needed?
+   - Tables: Does the query require numerical data, statistics, or structured information?
+   - Mixed: Would a combination provide the best answer?
+
+3. SEARCH STRATEGY OPTIMIZATION:
+   - Precision: User wants highly relevant, specific results
+   - Recall: User wants comprehensive coverage, don't miss anything
+   - Balanced: Standard approach balancing precision and recall
+   - Semantic: Focus on conceptual similarity over keyword matching
+   - Hybrid: Combine multiple approaches for complex queries
+
+4. QUERY COMPLEXITY & SCOPE:
+   - Simple: Single concept, direct question, factual lookup
+   - Medium: Multiple related concepts, requires some analysis
+   - Complex: Multi-faceted, requires synthesis, comparison, or deep analysis
+   - Comprehensive: User wants complete coverage of topic
+   - Specific: User wants targeted, focused information
+   - Focused: User wants particular aspect or content type
+
+5. CONDITIONAL LOGIC DETECTION:
+   - Positive filters: "show", "include", "focus on", "with", "containing"
+   - Negative filters: "without", "exclude", "not", "except", "avoid"
+   - Content preferences: "only tables", "just images", "text only"
+   - Quality requirements: "detailed", "brief", "comprehensive"
+
+6. CONTEXTUAL UNDERSTANDING:
+   - Temporal context: "recent", "historical", "current", "latest"
+   - Comparative context: "compare", "versus", "difference", "similar"
+   - Analytical context: "analyze", "evaluate", "assess", "interpret"
+   - Visual context: "show me", "display", "visualize"
+
+RESPOND WITH THIS EXACT JSON FORMAT:
+{{
+    "query_type": "factual|analytical|exploratory|comparative|summarization|visual|procedural",
+    "search_strategy": "precision|recall|balanced|semantic|hybrid",
+    "content_preferences": ["text", "images", "tables"],
+    "complexity_level": "simple|medium|complex", 
+    "scope": "comprehensive|specific|focused",
+    "semantic_concepts": ["concept1", "concept2", "concept3"],
+    "intent_keywords": ["key1", "key2", "key3"],
+    "conditional_instructions": {{
+        "include_content": ["content_types_to_prioritize"],
+        "exclude_content": ["content_types_to_avoid"],
+        "positive_keywords": ["boost_these_terms"],
+        "negative_keywords": ["downrank_these_terms"],
+        "quality_requirements": ["detailed|brief|comprehensive"],
+        "temporal_context": "recent|historical|current|null"
+    }},
+    "search_parameters": {{
+        "top_k_multiplier": 1.0,
+        "min_score_adjustment": 0.0,
+        "diversity_requirement": "high|medium|low",
+        "cross_content_boost": true,
+        "semantic_expansion": true
+    }},
+    "confidence_score": 0.95,
+    "reasoning": "Detailed explanation of analysis and strategy selection"
+}}
+
+Think step-by-step about what the user really wants and how to optimally retrieve it."""
+            
+            response = self.openai_client.chat.completions.create(
+                model='gpt-4o-mini',
+                messages=[{"role": "user", "content": cot_prompt}],
+                max_tokens=500,
+                temperature=0.1
+            )
+            
+            import json
+            
+            # Parse JSON response with better error handling
+            response_content = response.choices[0].message.content.strip()
+            
+            try:
+                # Try to extract JSON if it's embedded in other text
+                if '{' in response_content and '}' in response_content:
+                    start_idx = response_content.find('{')
+                    end_idx = response_content.rfind('}') + 1
+                    json_content = response_content[start_idx:end_idx]
+                    intent_analysis = json.loads(json_content)
+                else:
+                    # Fallback if no JSON found
+                    raise json.JSONDecodeError("No JSON found in response", response_content, 0)
+                    
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse JSON from LLM response: {e}. Response: {response_content[:200]}...")
+                # Use enhanced fallback instead of simple fallback
+                return self._fallback_intent_analysis_enhanced(query)
+            
+            # Validate and enrich the analysis
+            intent_analysis = self._validate_and_enrich_intent(intent_analysis, query)
+            
+            logger.info(f"Enhanced query intent analysis - Type: {intent_analysis.get('query_type')}, Strategy: {intent_analysis.get('search_strategy')}, Confidence: {intent_analysis.get('confidence_score')}")
+            return intent_analysis
+            
+        except Exception as e:
+            logger.error(f"Error in enhanced query intent analysis: {e}")
+            # Fallback to advanced heuristic analysis
+            return self._fallback_intent_analysis_enhanced(query)
+    
+    def _validate_and_enrich_intent(self, intent_analysis: Dict[str, Any], query: str) -> Dict[str, Any]:
+        """Validate and enrich the intent analysis with additional processing."""
+        try:
+            # Ensure all required fields are present
+            required_fields = ['query_type', 'search_strategy', 'content_preferences', 'complexity_level', 'scope']
+            for field in required_fields:
+                if field not in intent_analysis:
+                    logger.warning(f"Missing required field {field} in intent analysis")
+                    return self._fallback_intent_analysis_enhanced(query)
+            
+            # Validate search parameters and adjust if needed
+            search_params = intent_analysis.get('search_parameters', {})
+            
+            # Auto-adjust parameters based on query characteristics
+            query_length = len(query.split())
+            if query_length > 15:  # Complex query
+                search_params['top_k_multiplier'] = max(search_params.get('top_k_multiplier', 1.0), 1.2)
+                search_params['diversity_requirement'] = 'high'
+            elif query_length < 5:  # Simple query
+                search_params['min_score_adjustment'] = max(search_params.get('min_score_adjustment', 0.0), 0.05)
+                search_params['diversity_requirement'] = 'low'
+            
+            # Enrich with query-specific keywords if semantic_concepts is empty
+            if not intent_analysis.get('semantic_concepts'):
+                intent_analysis['semantic_concepts'] = [word for word in query.split() if len(word) > 3]
+            
+            if not intent_analysis.get('intent_keywords'):
+                intent_analysis['intent_keywords'] = query.lower().split()
+            
+            # Ensure confidence score is reasonable
+            if intent_analysis.get('confidence_score', 0.5) < 0.3:
+                intent_analysis['confidence_score'] = 0.5
+            
+            intent_analysis['search_parameters'] = search_params
+            
+            return intent_analysis
+            
+        except Exception as e:
+            logger.error(f"Error validating intent analysis: {e}")
+            return self._fallback_intent_analysis_enhanced(query)
+    
+    def _fallback_intent_analysis_enhanced(self, query: str) -> Dict[str, Any]:
+        """Enhanced fallback heuristic-based intent analysis with comprehensive classification."""
+        query_lower = query.lower()
+        words = query_lower.split()
+        
+        # Analyze query type based on patterns
+        query_type = 'factual'  # default
+        if any(word in query_lower for word in ['analyze', 'analysis', 'evaluate', 'assess', 'interpret']):
+            query_type = 'analytical'
+        elif any(word in query_lower for word in ['compare', 'versus', 'vs', 'difference', 'between']):
+            query_type = 'comparative'
+        elif any(word in query_lower for word in ['summarize', 'summary', 'overview', 'brief']):
+            query_type = 'summarization'
+        elif any(word in query_lower for word in ['show', 'display', 'visualize', 'image', 'figure']):
+            query_type = 'visual'
+        elif any(word in query_lower for word in ['explore', 'discover', 'find out', 'investigate']):
+            query_type = 'exploratory'
+        
+        # Determine search strategy
+        search_strategy = 'balanced'  # default
+        if any(word in query_lower for word in ['all', 'everything', 'complete', 'comprehensive']):
+            search_strategy = 'recall'
+        elif any(word in query_lower for word in ['exactly', 'precisely', 'specific', 'particular']):
+            search_strategy = 'precision'
+        elif query_type in ['analytical', 'comparative']:
+            search_strategy = 'semantic'
+        elif len(words) > 10:
+            search_strategy = 'hybrid'
+        
+        # Determine content preferences
+        content_preferences = ['text', 'images', 'tables']  # default to all
+        if any(word in query_lower for word in ['table', 'chart', 'data', 'metrics', 'numbers', 'statistics']):
+            content_preferences = ['tables', 'text']
+        elif any(word in query_lower for word in ['image', 'picture', 'visual', 'figure', 'diagram', 'photo']):
+            content_preferences = ['images', 'text']
+        elif any(word in query_lower for word in ['text', 'description', 'explain', 'definition']):
+            content_preferences = ['text']
+        
+        # Determine scope and complexity
+        scope = 'balanced'
+        complexity_level = 'medium'
+        
+        if any(word in query_lower for word in ['all', 'everything', 'complete', 'comprehensive', 'entire']):
+            scope = 'comprehensive'
+            complexity_level = 'complex'
+        elif any(word in query_lower for word in ['what', 'who', 'when', 'where', 'which']):
+            scope = 'specific'
+            complexity_level = 'simple'
+        elif len(words) < 4:
+            scope = 'focused'
+            complexity_level = 'simple'
+        elif len(words) > 12:
+            complexity_level = 'complex'
+        
+        # Extract semantic concepts and keywords
+        semantic_concepts = [word for word in words if len(word) > 3 and word not in ['what', 'how', 'why', 'when', 'where', 'which', 'show', 'tell', 'give']]
+        intent_keywords = words
+        
+        # Build conditional instructions
+        conditional_instructions = {
+            'include_content': content_preferences,
+            'exclude_content': [],
+            'positive_keywords': semantic_concepts,
+            'negative_keywords': [],
+            'quality_requirements': ['detailed' if complexity_level == 'complex' else 'balanced'],
+            'temporal_context': 'null'
+        }
+        
+        # Detect negative instructions
+        if any(word in query_lower for word in ['not', 'without', 'exclude', 'except', 'avoid']):
+            # Simple negative keyword extraction
+            negative_words = []
+            for i, word in enumerate(words):
+                if word in ['not', 'without', 'except'] and i + 1 < len(words):
+                    negative_words.append(words[i + 1])
+            conditional_instructions['negative_keywords'] = negative_words
+        
+        # Set search parameters
+        search_parameters = {
+            'top_k_multiplier': 1.2 if scope == 'comprehensive' else 0.8 if scope == 'focused' else 1.0,
+            'min_score_adjustment': 0.05 if search_strategy == 'precision' else -0.02 if search_strategy == 'recall' else 0.0,
+            'diversity_requirement': 'high' if scope == 'comprehensive' else 'low' if scope == 'focused' else 'medium',
+            'cross_content_boost': True,
+            'semantic_expansion': search_strategy in ['semantic', 'hybrid']
+        }
+        
+        return {
+            'query_type': query_type,
+            'search_strategy': search_strategy,
+            'content_preferences': content_preferences,
+            'complexity_level': complexity_level,
+            'scope': scope,
+            'semantic_concepts': semantic_concepts,
+            'intent_keywords': intent_keywords,
+            'conditional_instructions': conditional_instructions,
+            'search_parameters': search_parameters,
+            'confidence_score': 0.6,  # Lower confidence for fallback
+            'reasoning': f'Fallback analysis based on heuristic patterns. Query type: {query_type}, Strategy: {search_strategy}, Scope: {scope}'
+        }
+    
+    def _fallback_intent_analysis(self, query: str) -> Dict[str, Any]:
+        """Fallback heuristic-based intent analysis."""
+        query_lower = query.lower()
+        
+        # Determine scope
+        if any(word in query_lower for word in ['all', 'everything', 'complete', 'comprehensive', 'entire']):
+            scope = 'comprehensive'
+        elif any(word in query_lower for word in ['what', 'how', 'why', 'explain', 'describe']):
+            scope = 'specific'
+        else:
+            scope = 'focused'
+        
+        # Determine primary content type
+        if any(word in query_lower for word in ['table', 'chart', 'data', 'metrics', 'numbers']):
+            strategy = 'table_focused'
+            primary_content = 'tables'
+        elif any(word in query_lower for word in ['image', 'picture', 'visual', 'figure', 'diagram']):
+            strategy = 'image_focused' 
+            primary_content = 'images'
+        elif scope == 'comprehensive':
+            strategy = 'comprehensive_overview'
+            primary_content = 'mixed'
+        else:
+            strategy = 'multimodal_balanced'
+            primary_content = 'mixed'
+        
+        # Determine complexity
+        word_count = len(query.split())
+        if word_count <= 5:
+            complexity = 'simple'
+        elif word_count <= 12:
+            complexity = 'medium'
+        else:
+            complexity = 'complex'
+        
+        return {
+            'strategy': strategy,
+            'scope': scope,
+            'complexity': complexity,
+            'primary_content': primary_content,
+            'reasoning': 'Heuristic fallback analysis'
+        }
+    
+    def _apply_content_type_boosting(self, chunks: List[Dict], query_intent: Dict) -> List[Dict]:
+        """Apply content-type specific boosting based on query intent."""
+        strategy = query_intent.get('strategy', 'multimodal_balanced')
+        
+        for chunk in chunks:
+            base_score = chunk['relevance_score']
+            boost_factor = 1.0
+            
+            # Apply strategy-specific boosting
+            if strategy == 'table_focused' and chunk['contains_table']:
+                boost_factor = 1.5
+            elif strategy == 'image_focused' and chunk['contains_image']:
+                boost_factor = 1.5
+            elif strategy == 'multimodal_balanced':
+                if chunk['contains_image'] or chunk['contains_table']:
+                    boost_factor = 1.2  # Slight preference for multimedia
+            elif strategy == 'comprehensive_overview':
+                if chunk['contains_image'] and chunk['contains_table']:
+                    boost_factor = 1.8  # Strong preference for rich content
+                elif chunk['contains_image'] or chunk['contains_table']:
+                    boost_factor = 1.3
+            
+            chunk['boosted_score'] = base_score * boost_factor
+        
+        # Re-sort by boosted score
+        chunks.sort(key=lambda x: x['boosted_score'], reverse=True)
+        return chunks
+    
+    def _apply_diversity_filtering(self, chunks: List[Dict], query_intent: Dict) -> List[Dict]:
+        """Apply diversity filtering to avoid redundant content."""
+        diverse_chunks = []
+        text_similarity_threshold = 0.8
+        
+        for chunk in chunks:
+            page_num = chunk['page_number']
+            
+            # Skip if too many chunks from same page (unless comprehensive query)
+            if query_intent.get('scope') != 'comprehensive':
+                page_count = sum(1 for c in diverse_chunks if c['page_number'] == page_num)
+                if page_count >= 2:  # Max 2 chunks per page for non-comprehensive queries
+                    continue
+            
+            # Check text similarity with existing chunks
+            is_duplicate = False
+            chunk_text = chunk['text_content'][:200].lower()
+            
+            for existing in diverse_chunks:
+                existing_text = existing['text_content'][:200].lower()
+                if self._calculate_text_similarity(chunk_text, existing_text) > text_similarity_threshold:
+                    is_duplicate = True
+                    break
+            
+            if not is_duplicate:
+                diverse_chunks.append(chunk)
+        
+        logger.info(f"Diversity filtering: {len(diverse_chunks)} unique chunks retained")
+        return diverse_chunks
+    
+    def _apply_intelligent_selection(self, chunks: List[Dict], query: str, query_intent: Dict) -> List[Dict]:
+        """Apply final intelligent selection based on query complexity and intent."""
+        complexity = query_intent.get('complexity', 'medium')
+        scope = query_intent.get('scope', 'specific')
+        
+        # Determine optimal chunk count based on complexity and scope
+        if scope == 'comprehensive':
+            max_chunks = min(25, len(chunks))  # Up to 25 for comprehensive
+        elif complexity == 'complex':
+            max_chunks = min(15, len(chunks))  # Up to 15 for complex queries
+        elif complexity == 'medium':
+            max_chunks = min(10, len(chunks))  # Up to 10 for medium queries
+        else:
+            max_chunks = min(6, len(chunks))   # Up to 6 for simple queries
+        
+        # Ensure content type balance for multimodal queries
+        if query_intent.get('strategy') in ['multimodal_balanced', 'comprehensive_overview']:
+            selected_chunks = self._ensure_content_balance(chunks[:max_chunks * 2], max_chunks)
+        else:
+            selected_chunks = chunks[:max_chunks]
+        
+        return selected_chunks
+    
+    def _ensure_content_balance(self, chunks: List[Dict], max_chunks: int) -> List[Dict]:
+        """Ensure balanced representation of different content types."""
+        text_chunks = [c for c in chunks if not c['contains_image'] and not c['contains_table']]
+        image_chunks = [c for c in chunks if c['contains_image']]
+        table_chunks = [c for c in chunks if c['contains_table']]
+        mixed_chunks = [c for c in chunks if c['contains_image'] and c['contains_table']]
+        
+        # Prioritize mixed content, then distribute remaining slots
+        selected = []
+        
+        # Add mixed content first (highest value)
+        selected.extend(mixed_chunks[:min(3, len(mixed_chunks))])
+        remaining_slots = max_chunks - len(selected)
+        
+        if remaining_slots > 0:
+            # Distribute remaining slots proportionally
+            image_slots = min(remaining_slots // 3, len(image_chunks))
+            table_slots = min(remaining_slots // 3, len(table_chunks))
+            text_slots = remaining_slots - image_slots - table_slots
+            
+            selected.extend(image_chunks[:image_slots])
+            selected.extend(table_chunks[:table_slots])
+            selected.extend(text_chunks[:text_slots])
+        
+        # Fill any remaining slots with highest scoring chunks
+        if len(selected) < max_chunks:
+            remaining_chunks = [c for c in chunks if c not in selected]
+            selected.extend(remaining_chunks[:max_chunks - len(selected)])
+        
+        # Sort final selection by boosted score
+        selected.sort(key=lambda x: x.get('boosted_score', x['relevance_score']), reverse=True)
+        return selected[:max_chunks]
+    
+    def _calculate_text_similarity(self, text1: str, text2: str) -> float:
+        """Calculate similarity between two text strings using simple word overlap."""
+        if not text1 or not text2:
+            return 0.0
+        
+        words1 = set(text1.lower().split())
+        words2 = set(text2.lower().split())
+        
+        if not words1 or not words2:
+            return 0.0
+        
+        intersection = words1.intersection(words2)
+        union = words1.union(words2)
+        
+        return len(intersection) / len(union) if union else 0.0
+    
+    def _apply_content_aware_selection(self, chunks: List[Dict], query: str, max_chunks: int) -> List[Dict]:
+        """Apply content-aware chunk selection to ensure diverse content types."""
+        if not chunks:
+            return chunks
+        
+        # Check for "show all" type queries
+        query_lower = query.lower()
+        show_all_keywords = ['show all', 'all the', 'every', 'complete', 'entire', 'full', 'comprehensive']
+        is_show_all_query = any(keyword in query_lower for keyword in show_all_keywords)
+        
+        if is_show_all_query:
+            # For "show all" queries, return all chunks with relevant content
+            logger.info(f"Show all query detected, returning all {len(chunks)} chunks")
+            return chunks
+        else:
+            # Sort by enhanced relevance score for regular queries
+            chunks.sort(key=lambda x: x['relevance_score'], reverse=True)
+            
+            # Ensure diversity in content types
+            selected_chunks = []
+            content_types_seen = set()
+            
+            for chunk in chunks:
+                content_type = 'text'
+                if chunk.get('contains_table', False):
+                    content_type = 'table'
+                elif chunk.get('contains_image', False):
+                    content_type = 'image'
+                
+                # Add if we haven't seen this content type or if it's highly relevant
+                if content_type not in content_types_seen or chunk['relevance_score'] > 0.8:
+                    selected_chunks.append(chunk)
+                    content_types_seen.add(content_type)
+                
+                if len(selected_chunks) >= max_chunks:
+                    break
+            
+            return selected_chunks
+    
+    def _generate_composite_response(self, query: str, relevant_chunks: List[Dict], conditional_instructions: Dict = None) -> Dict[str, Any]:
+        """Generate seamlessly integrated response using composite chunks and inline generator with conditional instructions."""
+        try:
+            if not relevant_chunks:
+                return {
+                    'inline_elements': [{
+                        'type': 'text', 
+                        'content': f"No relevant content found for your query: '{query}'. This could mean:\n\n• The document doesn't contain information about this topic\n• Try using different or more specific keywords\n• The content might be in a different section of the document\n• Consider broadening your search terms"
+                    }],
+                    'content_summary': {
+                        'has_text': False,
+                        'has_images': False,
+                        'has_tables': False,
+                        'total_elements': 1
+                    }
+                }
+            
+            # Extract and organize multimodal content from chunks with conditional filtering
+            filtered_content = self._extract_multimodal_content_from_chunks_with_conditionals(relevant_chunks, query, conditional_instructions)
+            
+            # Use the enhanced inline generator for seamless integration with conditional instructions
+            response_data = self.inline_generator.generate_inline_response(query, filtered_content, conditional_instructions)
+            
+            # Add chunk-level metadata for performance tracking
+            response_data['content_summary']['total_chunks'] = len(relevant_chunks)
+            response_data['content_summary']['context_strategy'] = self._determine_context_strategy(query, relevant_chunks)
+            
+            return response_data
+            
+        except Exception as e:
+            logger.error(f"Error generating seamless composite response: {e}")
+            return {
+                'inline_elements': [{
+                    'type': 'text', 
+                    'content': f"Error generating response: {str(e)}"
+                }]
+            }
+    
+    def _extract_multimodal_content_from_chunks_with_conditionals(self, chunks: List[Dict], query: str, conditional_instructions: Dict = None) -> Dict[str, List]:
+        """Extract and organize multimodal content from composite chunks with AI-powered intelligent selection."""
+        content = {
+            'text': [],
+            'images': [],
+            'tables': []
+        }
+        
+        used_image_ids = set()
+        used_table_ids = set()
+        
+        # Extract conditional instructions
+        include_content = []
+        exclude_content = []
+        if conditional_instructions:
+            include_content = conditional_instructions.get('include_content', [])
+            exclude_content = conditional_instructions.get('exclude_content', [])
+        
+        # AI-powered content organization and selection
+        content_strategy = self._determine_content_organization_strategy(query, chunks, conditional_instructions)
+        
+        # Apply AI-determined content organization
+        for i, chunk in enumerate(chunks):
+            # Debug: log available fields in chunk
+            available_fields = [k for k, v in chunk.items() if v and k not in ['relevance_score', 'original_score', 'page_number']]
+            logger.info(f"Processing chunk {i}: available_fields={available_fields}")
+            logger.info(f"Processing chunk {i}: has_text={bool(chunk.get('text_content'))}, has_image={chunk.get('contains_image')}, has_image_url={bool(chunk.get('image_url'))}, has_table={chunk.get('contains_table')}, table_content={bool(chunk.get('table_content_json'))}")
+            
+            # Apply conditional filtering
+            if exclude_content:
+                if 'text' in exclude_content and chunk.get('text_content'):
+                    continue
+                if 'images' in exclude_content and chunk.get('contains_image'):
+                    continue
+                if 'tables' in exclude_content and chunk.get('contains_table'):
+                    continue
+            
+            # Add text content with enhanced metadata
+            if chunk.get('text_content') and self._should_include_text_content(chunk, content_strategy):
+                content['text'].append({
+                    'content': chunk['text_content'],
+                    'page_number': chunk.get('page_number', 0),
+                    'relevance_score': chunk.get('relevance_score', 0),
+                    'chunk_type': 'composite',
+                    'source': 'composite_chunk'
+                })
+            
+            # Add image content if present and should be included
+            if chunk.get('contains_image') and chunk.get('image_url'):
+                should_include = self._should_include_image_content(chunk, content_strategy, used_image_ids)
+                logger.info(f"Image chunk assessment: has_image={chunk.get('contains_image')}, has_url={bool(chunk.get('image_url'))}, should_include={should_include}, used_images={len(used_image_ids)}")
+                if should_include:
+                    image_id = f"img_{chunk['page_number']}_{hash(chunk['image_url'])}"
+                    if image_id not in used_image_ids:
+                        used_image_ids.add(image_id)
+                        content['images'].append({
+                        's3_url': chunk.get('image_url'),
+                        'display_url': chunk.get('image_url'),
+                        'page_number': chunk.get('page_number', 0),
+                        'image_summary': chunk.get('image_summary', ''),
+                        'ocr_text': chunk.get('image_summary', ''),
+                        'relevance_score': chunk.get('relevance_score', 0),
+                        'source': 'composite_chunk'
+                    })
+            
+            # Add table content if present and should be included
+            if chunk.get('contains_table') and chunk.get('table_content_json'):
+                should_include = self._should_include_table_content(chunk, content_strategy, used_table_ids)
+                logger.info(f"Table chunk assessment: has_table={chunk.get('contains_table')}, has_content={bool(chunk.get('table_content_json'))}, should_include={should_include}, used_tables={len(used_table_ids)}")
+                if should_include:
+                    table_id = f"table_{chunk['page_number']}_{hash(chunk['table_content_json'])}"
+                    if table_id not in used_table_ids:
+                        used_table_ids.add(table_id)
+                        content['tables'].append({
+                        'table_content_json': chunk.get('table_content_json'),
+                        'table_id': table_id,
+                        'page_number': chunk.get('page_number', 0),
+                        'summary': chunk.get('table_summary', ''),
+                        'relevance_score': chunk.get('relevance_score', 0),
+                        'source': 'composite_chunk'
+                    })
+        
+        logger.info(f"Extracted multimodal content with AI selection: {len(content['text'])} text sections, {len(content['images'])} images, {len(content['tables'])} tables")
+        
+        # If no content was extracted, create a fallback response
+        if not any([content['text'], content['images'], content['tables']]):
+            logger.warning("No content extracted - creating fallback response")
+            # Create a basic text response from available chunks
+            for i, chunk in enumerate(chunks[:3]):  # Use first 3 chunks
+                if chunk.get('text_content'):
+                    content['text'].append({
+                        'content': chunk['text_content'],
+                        'page_number': chunk.get('page_number', 0),
+                        'relevance_score': chunk.get('relevance_score', 0),
+                        'chunk_type': 'fallback',
+                        'source': 'fallback_extraction'
+                    })
+                    break  # Just use the first one with content
+            
+            # If still no content, create a generic response
+            if not any([content['text'], content['images'], content['tables']]):
+                logger.warning("Still no content - creating generic response")
+                content['text'].append({
+                    'content': f"I couldn't find specific content matching '{query}' in the document. This might be because:\n\n• The content doesn't contain those specific terms\n• The similarity threshold is too high\n• The document hasn't been fully processed yet\n\nTry using broader search terms or check if the document was processed successfully.",
+                    'page_number': 0,
+                    'relevance_score': 0.1,
+                    'chunk_type': 'generic',
+                    'source': 'generic_fallback'
+                })
+        
+        return content
+    
+    def _extract_multimodal_content_from_chunks(self, chunks: List[Dict], query: str) -> Dict[str, List]:
+        """Extract and organize multimodal content from composite chunks for seamless integration."""
+        content = {
+            'text': [],
+            'images': [],
+            'tables': []
+        }
+        
+        used_image_ids = set()
+        used_table_ids = set()
+        
+        for chunk in chunks:
+            # Add text content with enhanced metadata
+            if chunk.get('text_content'):
+                content['text'].append({
+                    'content': chunk['text_content'],
+                    'page_number': chunk.get('page_number', 0),
+                    'relevance_score': chunk.get('relevance_score', 0),
+                    'chunk_type': 'composite',
+                    'source': 'composite_chunk'
+                })
+            
+            # Add image content if present and not duplicate
+            if chunk.get('contains_image') and chunk.get('image_url'):
+                image_id = f"img_{chunk['page_number']}_{hash(chunk['image_url'])}"
+                if image_id not in used_image_ids:
+                    used_image_ids.add(image_id)
+                    content['images'].append({
+                        's3_url': chunk.get('image_url'),
+                        'display_url': chunk.get('image_url'),
+                        'page_number': chunk.get('page_number', 0),
+                        'image_summary': chunk.get('image_summary', ''),
+                        'ocr_text': chunk.get('image_summary', ''),
+                        'relevance_score': chunk.get('relevance_score', 0),
+                        'source': 'composite_chunk'
+                    })
+            
+            # Add table content if present and not duplicate
+            if chunk.get('contains_table') and chunk.get('table_content_json'):
+                table_id = f"table_{chunk['page_number']}_{hash(chunk['table_content_json'])}"
+                if table_id not in used_table_ids:
+                    used_table_ids.add(table_id)
+                    content['tables'].append({
+                        'table_content_json': chunk.get('table_content_json'),
+                        'table_id': table_id,
+                        'page_number': chunk.get('page_number', 0),
+                        'summary': chunk.get('table_summary', ''),
+                        'relevance_score': chunk.get('relevance_score', 0),
+                        'source': 'composite_chunk'
+                    })
+        
+        logger.info(f"Extracted multimodal content: {len(content['text'])} text sections, {len(content['images'])} images, {len(content['tables'])} tables")
+        return content
+    
+    def _determine_context_strategy(self, query: str, chunks: List[Dict]) -> str:
+        """Determine the best context strategy based on query type and available content."""
+        query_lower = query.lower()
+        
+        # Enhanced strategy detection with content analysis
+        has_tables = any(c.get('contains_table') for c in chunks)
+        has_images = any(c.get('contains_image') for c in chunks)
+        
+        # Check for "show all" type queries
+        if any(word in query_lower for word in ['show all', 'all the', 'every', 'complete', 'entire', 'comprehensive']):
+            return 'comprehensive_overview'
+        
+        # Check for specific content types in query
+        if any(word in query_lower for word in ['table', 'chart', 'data', 'figure', 'graph']) and has_tables:
+            return 'table_focused'
+        elif any(word in query_lower for word in ['image', 'picture', 'photo', 'visual']) and has_images:
+            return 'image_focused'
+        elif any(word in query_lower for word in ['summary', 'overview', 'main points']):
+            return 'summary_focused'
+        else:
+            return 'seamless_narrative'
+    
+    def _select_optimal_chunks(self, chunks: List[Dict], strategy: str) -> List[Dict]:
+        """Select optimal chunks based on enhanced context strategy for seamless integration."""
+        if strategy == 'comprehensive_overview':
+            # Include more chunks for comprehensive coverage
+            return sorted(chunks, key=lambda x: x['relevance_score'], reverse=True)[:15]
+        elif strategy == 'table_focused':
+            # Prioritize chunks with tables
+            return sorted(chunks, key=lambda x: (x.get('contains_table', False), x['relevance_score']), reverse=True)[:8]
+        elif strategy == 'image_focused':
+            # Prioritize chunks with images
+            return sorted(chunks, key=lambda x: (x.get('contains_image', False), x['relevance_score']), reverse=True)[:8]
+        elif strategy == 'summary_focused':
+            # Take top chunks by relevance for summary
+            return sorted(chunks, key=lambda x: x['relevance_score'], reverse=True)[:5]
+        else:
+            # Seamless narrative approach - balanced mix optimized for narrative flow
+            # Sort by relevance but ensure mix of content types
+            sorted_chunks = sorted(chunks, key=lambda x: x['relevance_score'], reverse=True)
+            selected = []
+            
+            # First, add highly relevant chunks regardless of type
+            for chunk in sorted_chunks[:3]:
+                selected.append(chunk)
+            
+            # Then add chunks with multimedia content for narrative richness
+            remaining = sorted_chunks[3:]
+            for chunk in remaining:
+                if len(selected) >= 8:
+                    break
+                if chunk.get('contains_image') or chunk.get('contains_table'):
+                    selected.append(chunk)
+            
+            # Fill remaining slots with text-only chunks if needed
+            for chunk in remaining:
+                if len(selected) >= 8:
+                    break
+                if chunk not in selected:
+                    selected.append(chunk)
+            
+            return selected[:8]
+    
+    def _add_visual_content_to_response(self, chunks: List[Dict], inline_elements: List[Dict], used_content_ids: set, query: str):
+        """Add visual content to response with smart content type prioritization."""
+        added_images = set()  # Track unique images by URL
+        added_tables = set()  # Track unique tables by content hash
+        
+        # Determine if this is a table-focused query
+        table_keywords = ['table', 'data', 'chart', 'graph', 'figure', 'statistics', 'numbers', 'values', 'columns', 'rows']
+        query_lower = query.lower() if query else ''
+        is_table_query = any(keyword in query_lower for keyword in table_keywords)
+        
+        logger.info(f"Query analysis: table_query={is_table_query}, query='{query_lower}'")
+        
+        # Check for "show all" type queries
+        query_lower = query.lower()
+        show_all_keywords = ['show all', 'all the', 'every', 'complete', 'entire', 'full', 'comprehensive']
+        is_show_all_query = any(keyword in query_lower for keyword in show_all_keywords)
+        
+        # Determine chunk limit based on query type
+        chunk_limit = len(chunks) if is_show_all_query else 3
+        
+        for chunk in chunks[:chunk_limit]:  # Use dynamic limit
+            # For table queries, prioritize tables over images
+            if is_table_query and chunk['contains_table'] and chunk.get('table_content_json'):
+                table_id = chunk.get('table_id', '')
+                table_content_hash = hash(chunk['table_content_json'])
+                if table_content_hash not in added_tables:
+                    inline_elements.append({
+                        'type': 'table',
+                        'data': {
+                            'page_number': chunk['page_number'],
+                            'relevance_score': chunk['relevance_score'],
+                            'summary': chunk.get('table_summary', ''),
+                            'table_content_json': chunk['table_content_json'],
+                            'table_id': table_id,
+                            'pdf_id': chunk.get('pdf_id', ''),
+                            'table_markdown': '',  # Not stored in metadata
+                            'table_html': ''  # Not stored in metadata
+                        }
+                    })
+                    added_tables.add(table_content_hash)
+                    logger.info(f"Added table to response: {table_id} from page {chunk['page_number']}")
+                else:
+                    logger.info(f"Skipped duplicate table: {table_id}")
+            
+            # For non-table queries or when no tables available, add images
+            elif not is_table_query and chunk['contains_image']:
+                image_url = chunk.get('image_url', '')
+                
+                if image_url and image_url not in added_images:
+                    inline_elements.append({
+                        'type': 'image',
+                        'data': {
+                            'display_url': image_url,
+                            's3_url': image_url,  # Use image_url as S3 URL
+                            'local_path': '',  # No longer stored in metadata
+                            'page_number': chunk['page_number'],
+                            'relevance_score': chunk['relevance_score'],
+                            'image_summary': chunk.get('image_summary', ''),  # Use stored summary
+                            'image_keywords': [],  # Will be retrieved from original data if needed
+                            'ocr_text': '',  # Will be retrieved from original data if needed
+                            'image_id': chunk.get('image_id', ''),
+                            'pdf_id': chunk.get('pdf_id', '')
+                        }
+                    })
+                    added_images.add(image_url)
+                    logger.info(f"Added image to response: {image_url} from page {chunk['page_number']}")
+                elif image_url in added_images:
+                    logger.info(f"Skipped duplicate image: {image_url}")
+                else:
+                    logger.warning(f"Chunk contains image but no URL found for page {chunk['page_number']}")
+            
+            # For non-table queries, also add tables if available
+            elif not is_table_query and chunk['contains_table'] and chunk.get('table_content_json'):
+                table_id = chunk.get('table_id', '')
+                table_content_hash = hash(chunk['table_content_json'])
+                if table_content_hash not in added_tables:
+                    inline_elements.append({
+                        'type': 'table',
+                        'data': {
+                            'page_number': chunk['page_number'],
+                            'relevance_score': chunk['relevance_score'],
+                            'summary': chunk.get('table_summary', ''),
+                            'table_content_json': chunk['table_content_json'],
+                            'table_id': table_id,
+                            'pdf_id': chunk.get('pdf_id', ''),
+                            'table_markdown': '',  # Not stored in metadata
+                            'table_html': ''  # Not stored in metadata
+                        }
+                    })
+                    added_tables.add(table_content_hash)
+                    logger.info(f"Added table to response: {table_id} from page {chunk['page_number']}")
+                else:
+                    logger.info(f"Skipped duplicate table: {table_id}")
+    
+    def _generate_ai_response_for_chunks(self, query: str, context: str, context_strategy: str = 'balanced', conditional_instructions: Dict = None) -> str:
+        """Generate AI response using composite chunk context with adaptive strategy and conditional instructions."""
+        try:
+            # Build conditional instruction prompt
+            conditional_prompt = ""
+            if conditional_instructions:
+                include_content = conditional_instructions.get('include_content', [])
+                exclude_content = conditional_instructions.get('exclude_content', [])
+                positive_keywords = conditional_instructions.get('positive_keywords', [])
+                negative_keywords = conditional_instructions.get('negative_keywords', [])
+                
+                conditional_prompt = f"""
+
+CONDITIONAL INSTRUCTIONS:
+- INCLUDE: {', '.join(include_content) if include_content else 'All content types'}
+- EXCLUDE: {', '.join(exclude_content) if exclude_content else 'None'}
+- FOCUS ON: {', '.join(positive_keywords) if positive_keywords else 'All relevant content'}
+- AVOID: {', '.join(negative_keywords) if negative_keywords else 'Nothing specific'}
+
+IMPORTANT: Follow these conditional instructions strictly in your response."""
+
+            # Adaptive system prompt based on context strategy
+            if context_strategy == 'table_focused':
+                system_prompt = f"""You are a document analysis assistant that analyzes tables and data STRICTLY from the provided document content.
+
+ABSOLUTE CONSTRAINTS:
+- Use ONLY the table data and text provided in the document chunks
+- Do NOT add external knowledge about data analysis or general interpretations
+- Every statement must reference specific values or text from the document
+
+When responding to queries about tables and data:
+1. Quote exact numbers and values from the document tables
+2. Reference specific page numbers where data is found
+3. Only describe patterns explicitly shown in the provided data
+4. Use phrases like "The document shows the following data..." or "According to the table on page X..."
+5. If asked about data not in the document, state it's not available
+
+CRITICAL: Base all analysis solely on the document content provided.{conditional_prompt}"""
+            
+            elif context_strategy == 'image_focused':
+                system_prompt = """You are a document analysis assistant that describes visual content STRICTLY from the provided document content.
+
+ABSOLUTE CONSTRAINTS:
+- Use ONLY the image descriptions and text provided in the document chunks
+- Do NOT add external knowledge about visual analysis or general interpretations
+- Every statement must reference specific descriptions or text from the document
+
+When responding to queries about images and visual content:
+1. Quote exact descriptions from the document about images
+2. Reference specific page numbers where images are located
+3. Only describe what is explicitly mentioned in the document text
+4. Use phrases like "The document describes the image as..." or "According to the text on page X..."
+5. If asked about visual elements not described in the document, state it's not available
+
+CRITICAL: Base all descriptions solely on the document content provided."""
+            
+            elif context_strategy == 'summary_focused':
+                system_prompt = """You are a document analysis assistant that creates summaries STRICTLY from the provided document content.
+
+ABSOLUTE CONSTRAINTS:
+- Use ONLY the information provided in the document chunks
+- Do NOT add external knowledge, context, or general information
+- Every point in the summary must reference specific document content
+
+When providing summaries or overviews:
+1. Extract points directly from the document text
+2. Quote specific statements from the document
+3. Reference exact page numbers for all information
+4. Use phrases like "The document states..." or "According to page X..."
+5. If comprehensive information is not available in the chunks, note the limitation
+
+CRITICAL: Create summaries based solely on the document content provided."""
+            
+            else:  # balanced
+                system_prompt = """You are a document analysis assistant that STRICTLY uses only the provided document content.
+
+ABSOLUTE CONSTRAINTS:
+- You MUST ONLY use information from the provided document chunks below
+- Do NOT add any external knowledge, general information, or assumptions
+- If information is not in the chunks, clearly state it's not available in the document
+- Every statement must be traceable to the specific document content provided
+
+DOCUMENT-GROUNDED RESPONSE REQUIREMENTS:
+1. **Quote Exact Text**: Use direct quotes from the chunks: "The document states: '[exact quote]'"
+2. **Reference Pages**: Always mention specific page numbers: "On page X, the text says..."
+3. **No External Knowledge**: Do not add information not explicitly in the chunks
+4. **Explicit Attribution**: Start responses with "According to the document..." or "The provided content shows..."
+5. **Document Limitations**: If asked about something not in the chunks, respond: "This information is not available in the provided document content."
+
+GOOD EXAMPLE:
+"According to the document on page 13, the text explicitly states: 'The encoder-decoder architecture consists of two main components: the Encoder and the Decoder.' The document further explains on the same page that 'The Encoder processes the input data and generates encoded representations.'"
+
+BAD EXAMPLE (uses external knowledge):
+"Encoder-decoder architectures are commonly used in machine learning. The document mentions components..."
+
+CRITICAL: Base every statement on the exact content provided in the chunks below."""
+            
+            user_prompt = f"""DOCUMENT CONTENT TO ANALYZE (USE ONLY THIS INFORMATION):
 {context}
 
-Question: {query}
+QUERY: {query}
 
-Please provide a comprehensive answer using the multimodal content above. Reference specific pages and content types (text, images, tables) when relevant.
-Instructions
-  - Answer the question directly and naturally, answer only relaved to the Question.
-  - Organize information in the most logical way for this specific query
-  - Use the document's natural flow when it makes sense
-  - Be conversational yet accurate
-  - Include relevant details without forcing completeness
-  - Only use information explicitly provided in the document
-  - Use the images when every it is necessary in adjest the size according to the flow so it looks good and not too big or too small.
-  - If the table is not well formated then generate the table and then show the same table with well strudture way, instead of unformated/unstructured table.
-  - Use [Page X] format for references and bullet points where appropriate.
-"""
+STRICT INSTRUCTIONS: 
+- Answer ONLY using the document content provided above
+- Do NOT add any external knowledge or general information
+- Quote exact text from the document chunks
+- Reference specific page numbers for all information
+- If the query asks for information not in the chunks, state: "This information is not available in the provided document content"
+- Use phrases like "According to the document..." or "The text states..."
+
+RESPOND USING ONLY THE DOCUMENT CONTENT ABOVE:"""
             
             response = self.openai_client.chat.completions.create(
                 model=self.chat_model,
@@ -683,24 +2962,182 @@ Instructions
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                max_tokens=1500,
-                temperature=0.3,
+                max_tokens=1200,
+                temperature=0.3,  # Lower temperature for more grounded responses
                 top_p=0.9
             )
             
-            return response.choices[0].message.content
+            generated_response = response.choices[0].message.content
+            
+            # Verify the response is grounded in document content
+            if self._verify_response_is_grounded(generated_response):
+                return generated_response
+            else:
+                logger.warning("Response failed grounding check, using fallback")
+                return f"According to the document content provided: {generated_response}"
             
         except Exception as e:
-            logger.error(f"Error generating AI response: {e}")
-            return f"Error generating response: {str(e)}"
+            logger.error(f"Error generating AI response for chunks: {e}")
+            return f"Based on the document content, I can provide information about your query. The relevant sections have been identified and associated images and tables are displayed below."
     
+    def _verify_response_is_grounded(self, response: str) -> bool:
+        """Verify that the response is properly grounded in document content."""
+        # Check for document-grounding phrases
+        grounding_phrases = [
+            "according to the document", "the document states", "the document shows",
+            "the text states", "on page", "the provided content", "the document explains",
+            "as mentioned in the document", "the document indicates", "based on the document",
+            "the document content shows", "the provided document", "the text mentions"
+        ]
+        
+        response_lower = response.lower()
+        has_grounding_phrases = any(phrase in response_lower for phrase in grounding_phrases)
+        
+        # Check for warning signs of external knowledge
+        warning_phrases = [
+            "generally", "typically", "usually", "commonly", "in general",
+            "it is known that", "research shows", "studies indicate", "experts believe",
+            "this is because", "the reason is", "fundamentally", "essentially",
+            "broadly speaking", "as we know", "it should be noted", "importantly"
+        ]
+        
+        has_warning_phrases = any(phrase in response_lower for phrase in warning_phrases)
+        
+        # Response should have grounding phrases and minimal warning phrases
+        is_grounded = has_grounding_phrases and not has_warning_phrases
+        
+        if not is_grounded:
+            logger.info(f"Grounding verification: grounded_phrases={has_grounding_phrases}, warning_phrases={has_warning_phrases}")
+        
+        return is_grounded
+    
+    # Intent analysis removed as we now use composite chunks with unified retrieval
+    
+    # _generate_multimodal_response method removed - replaced by composite chunk strategy
+    
+    # _generate_ai_response method moved to _generate_ai_response_for_chunks
+    def _identify_chunk_content_types(self, match) -> List[str]:
+        """Identify what types of content a chunk contains."""
+        content_types = []
+        
+        if not hasattr(match, 'metadata') or not match.metadata:
+            return ['text']  # Default to text
+        
+        metadata = match.metadata
+        
+        # Always has text content if there's any content
+        if metadata.get('text_content') or metadata.get('content'):
+            content_types.append('text')
+        
+        # Check for images
+        if metadata.get('contains_image') or metadata.get('image_url'):
+            content_types.append('images')
+        
+        # Check for tables
+        if metadata.get('contains_table') or metadata.get('table_content_json'):
+            content_types.append('tables')
+        
+        return content_types if content_types else ['text']
+    
+    def _calculate_content_type_boost(self, chunk_content_types: List[str], content_type_weights: Dict[str, float]) -> float:
+        """Calculate boost factor based on content type preferences."""
+        if not chunk_content_types:
+            return 1.0
+        
+        # Use the highest weight among the content types in this chunk
+        max_weight = max(content_type_weights.get(content_type, 1.0) for content_type in chunk_content_types)
+        return max_weight
+    
+    def _calculate_enhanced_relevance_score_advanced(self, match, query_keywords: set, strategy: str, 
+                                                   positive_keywords: List[str], negative_keywords: List[str],
+                                                   semantic_concepts: List[str], intent_keywords: List[str], 
+                                                   content_type_boost: float) -> float:
+        """Calculate advanced relevance score with multiple signals and content type preferences."""
+        if not hasattr(match, 'metadata') or not match.metadata:
+            return match.score
+        
+        base_score = match.score
+        content = match.metadata.get('content', '').lower()
+        
+        # Keyword matching signals
+        keyword_score = 0.0
+        if content:
+            # Original query keywords
+            query_matches = sum(1 for kw in query_keywords if kw in content)
+            keyword_score += (query_matches / max(len(query_keywords), 1)) * 0.3
+            
+            # Intent keywords
+            intent_matches = sum(1 for kw in intent_keywords if kw.lower() in content)
+            keyword_score += (intent_matches / max(len(intent_keywords), 1)) * 0.2
+            
+            # Semantic concepts
+            concept_matches = sum(1 for concept in semantic_concepts if concept.lower() in content)
+            keyword_score += (concept_matches / max(len(semantic_concepts), 1)) * 0.25
+            
+            # Positive keywords boost
+            positive_matches = sum(1 for kw in positive_keywords if kw.lower() in content)
+            keyword_score += (positive_matches / max(len(positive_keywords), 1)) * 0.15
+            
+            # Negative keywords penalty
+            negative_matches = sum(1 for kw in negative_keywords if kw.lower() in content)
+            keyword_score -= (negative_matches / max(len(negative_keywords), 1)) * 0.1
+        
+        # Content quality signals
+        quality_score = 0.0
+        if content:
+            # Content length (longer content often more informative, but not always)
+            content_length = len(content)
+            if 100 <= content_length <= 1000:
+                quality_score += 0.1
+            elif content_length > 1000:
+                quality_score += 0.05
+            
+            # Presence of structured information
+            if any(indicator in content for indicator in ['table', 'figure', 'chart', 'data', 'result']):
+                quality_score += 0.05
+        
+        # Strategy-specific adjustments
+        strategy_multiplier = 1.0
+        if strategy == 'precision':
+            strategy_multiplier = 1.2 if keyword_score > 0.3 else 0.8
+        elif strategy == 'recall':
+            strategy_multiplier = 1.1  # Slight boost for broader coverage
+        elif strategy == 'semantic':
+            # Boost for semantic concept matches
+            if concept_matches > 0:
+                strategy_multiplier = 1.15
+        
+        # Combine all signals with better balance
+        # Ensure base score dominates to prevent over-penalization
+        final_score = (
+            base_score * 0.8 +  # Higher base score weight for more lenient filtering
+            keyword_score * 0.15 +  # Reduced keyword weight
+            quality_score * 0.05   # Reduced quality weight
+        ) * content_type_boost * strategy_multiplier
+        
+        # Ensure minimum score is not too low - more lenient
+        final_score = max(final_score, base_score * 0.3)
+        
+        return min(final_score, 1.0)  # Cap at 1.0
+
     def display_multimodal_results(self, response_data: Dict[str, Any]):
         """Display intelligent inline multimodal results in Streamlit UI."""
         try:
             # Check if we have inline elements (new format)
             if 'inline_elements' in response_data:
+                # Debug logging
+                inline_elements = response_data['inline_elements']
+                logger.info(f"Displaying {len(inline_elements)} inline elements")
+                
+                # Count different types
+                text_count = sum(1 for elem in inline_elements if elem.get('type') == 'text')
+                image_count = sum(1 for elem in inline_elements if elem.get('type') == 'image')
+                table_count = sum(1 for elem in inline_elements if elem.get('type') == 'table')
+                
+                logger.info(f"Element breakdown: {text_count} text, {image_count} images, {table_count} tables")
+                
                 # New inline format
-                self.inline_generator.display_inline_response(response_data['inline_elements'])
+                self.inline_generator.display_inline_response(inline_elements)
             else:
                 # Fallback display
                 st.subheader("🤖 AI Response")
@@ -721,8 +3158,8 @@ Instructions
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                text_count = results.get('text', {}).get('processed_chunks', 0)
-                st.metric("Text Chunks", text_count)
+                chunk_count = results.get('composite', {}).get('processed_chunks', 0)
+                st.metric("Composite Chunks", chunk_count)
             
             with col2:
                 image_count = results.get('images', {}).get('saved_count', 0)
@@ -747,24 +3184,26 @@ Instructions
             use_s3 = hasattr(self.image_processor, 'use_s3') and self.image_processor.use_s3
             
             if use_s3:
+                from config import get_pdf_s3_prefix
                 import tempfile
                 import base64
                 import re
                 import requests
                 
                 # Use S3 storage
-                s3_prefix = self.config.get_pdf_s3_prefix(pdf_name)
+                s3_prefix = get_pdf_s3_prefix(pdf_name)
                 # Create temporary directory for processing
                 temp_dir = Path(tempfile.mkdtemp())
                 pdf_image_dir = temp_dir
                 logger.info(f"Using S3 storage with prefix: {s3_prefix}")
             else:
+                from config import get_pdf_image_dir
                 import base64
                 import re
                 import requests
                 
                 # Use local storage
-                pdf_image_dir = self.config.get_pdf_image_dir(pdf_name)
+                pdf_image_dir = get_pdf_image_dir(pdf_name)
                 logger.info(f"Using local storage: {pdf_image_dir}")
             
             extracted_count = 0
@@ -1032,15 +3471,16 @@ Instructions
         """Download images using the official LlamaParse API method based on documentation."""
         try:
             import requests
+            from config import IMAGES_DIR
             
             # Create PDF-specific image directory
-            pdf_image_dir = self.config.IMAGES_DIR / pdf_id
+            pdf_image_dir = IMAGES_DIR / pdf_id
             pdf_image_dir.mkdir(parents=True, exist_ok=True)
             
             # Get API key
             api_key = os.getenv('LLAMA_PARSE_API_KEY')
             if not api_key:
-                logger.error("LLAMA_PARSE_API_KEY not found")
+                logger.error("LLAMA PARSE_API_KEY not found")
                 return
             
             # Official LlamaParse API base URL

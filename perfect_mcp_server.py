@@ -3694,66 +3694,184 @@ The operation has been successfully cancelled and will stop as soon as possible.
                 text=f"❌ Q&A error: {str(e)}"
             )]
 
+    def _format_rich_multimodal_response(self, inline_elements: List[Dict], query: str, metadata: Dict = None) -> str:
+        """Convert inline elements to rich text format preserving intelligent structure and context."""
+        if not inline_elements:
+            return f"# 🔍 Search Results for: \"{query}\"\n\nNo relevant content found in the document."
+        
+        formatted_parts = []
+        
+        # Add search header with metadata
+        header_parts = [f"# 🔍 Multimodal Search Results: \"{query}\""]
+        if metadata:
+            total_elements = len(inline_elements)
+            search_time = metadata.get('timestamp', time.time())
+            header_parts.append(f"*Found {total_elements} relevant elements*")
+        header_parts.append("")  # Empty line
+        formatted_parts.append("\n".join(header_parts))
+        
+        # Process each element with enhanced formatting
+        text_count = 0
+        image_count = 0
+        table_count = 0
+        
+        for i, element in enumerate(inline_elements):
+            element_type = element.get('type', 'unknown')
+            
+            if element_type == 'text':
+                text_count += 1
+                content = element.get('content', '').strip()
+                if content:
+                    # Preserve the AI-generated narrative structure
+                    text_section = f"## 📝 Analysis {text_count}\n\n{content}"
+                    formatted_parts.append(text_section)
+                    
+            elif element_type == 'image':
+                image_count += 1
+                image_data = element.get('data', {})
+                context = element.get('context', {})
+                
+                # Rich image presentation with all available metadata
+                img_parts = [f"## 🖼️ Visual Content {image_count}"]
+                
+                # Add contextual information
+                page_num = image_data.get('page_number', 'N/A')
+                relevance = image_data.get('relevance_score', 0)
+                img_parts.append(f"**Location:** Page {page_num} | **Relevance:** {relevance:.3f}")
+                
+                # Add description from AI context or OCR
+                description = context.get('description') or image_data.get('image_summary') or image_data.get('ocr_text', 'Visual content')
+                if description and description.strip():
+                    img_parts.append(f"**Description:** {description.strip()}")
+                
+                # Add image URL with proper markdown
+                s3_url = image_data.get('s3_url') or image_data.get('storage_path', 'N/A')
+                if s3_url != 'N/A':
+                    img_parts.append(f"\n![Image Content]({s3_url})")
+                
+                # Add technical metadata if available
+                if image_data.get('keywords'):
+                    keywords = image_data['keywords'][:5]  # Limit to first 5 keywords
+                    img_parts.append(f"**Keywords:** {', '.join(keywords)}")
+                
+                formatted_parts.append("\n".join(img_parts))
+                
+            elif element_type == 'table':
+                table_count += 1
+                table_data = element.get('data', {})
+                context = element.get('context', {})
+                
+                # Rich table presentation with metadata
+                table_parts = [f"## 📊 Data Table {table_count}"]
+                
+                # Add contextual information
+                page_num = table_data.get('page_number', 'N/A')
+                relevance = table_data.get('relevance_score', 0)
+                table_parts.append(f"**Location:** Page {page_num} | **Relevance:** {relevance:.3f}")
+                
+                # Add table description
+                description = context.get('description') or table_data.get('summary', 'Structured data')
+                if description and description.strip():
+                    table_parts.append(f"**Description:** {description.strip()}")
+                
+                # Add table content with proper formatting
+                table_content = table_data.get('markdown_content') or table_data.get('table_content_json', 'No content available')
+                if table_content and table_content.strip():
+                    table_parts.append("\n```")
+                    table_parts.append(table_content.strip())
+                    table_parts.append("```")
+                
+                # Add structural metadata if available
+                if table_data.get('table_content_json'):
+                    try:
+                        import json
+                        table_json = json.loads(table_data['table_content_json'])
+                        if isinstance(table_json, dict) and '_metadata' in table_json:
+                            meta = table_json['_metadata']
+                            rows = meta.get('total_rows', 0)
+                            cols = meta.get('total_columns', 0)
+                            if rows > 0 or cols > 0:
+                                table_parts.append(f"**Structure:** {rows} rows × {cols} columns")
+                    except:
+                        pass
+                
+                formatted_parts.append("\n".join(table_parts))
+            
+            elif element_type == 'composite':
+                # Handle composite elements that might contain mixed content
+                composite_data = element.get('data', {})
+                content = element.get('content', '').strip()
+                if content:
+                    composite_section = f"## 🔗 Composite Content {i+1}\n\n{content}"
+                    formatted_parts.append(composite_section)
+        
+        # Add summary footer
+        if text_count > 0 or image_count > 0 or table_count > 0:
+            summary_parts = ["\n---", "## 📈 Content Summary"]
+            content_types = []
+            if text_count > 0:
+                content_types.append(f"{text_count} text analysis")
+            if image_count > 0:
+                content_types.append(f"{image_count} images")
+            if table_count > 0:
+                content_types.append(f"{table_count} tables")
+            
+            summary_parts.append(f"**Total Elements:** {', '.join(content_types)}")
+            formatted_parts.append("\n".join(summary_parts))
+        
+        return "\n\n".join(formatted_parts)
+
     async def _handle_multimodel_paper_search(self, query: str, user_id: str, 
                                     document_uuid: str, search_type: List[str], similarity_threshold: float, 
                                     max_images: int, max_tables: int, 
                                     max_text_chunks: int, focus_sections: List[str] = []):
-        """Handle multimodel paper search"""
-        print(f"🔍 Multimodel paper search: {query}")
+        """Handle multimodel paper search with rich multimodal response formatting."""
+        logger.debug(f"Multimodel paper search: {query}")
+        logger.debug(f"Target namespace: user_{user_id}_doc_{document_uuid}")
 
         namespace = f"user_{user_id}_doc_{document_uuid}"
         # namespace = "llms_survey_and_challenges"
 
         result = await self.paper_retriever.search_multimodal_content( 
-            query= query,
-            paper_id = namespace,
+            query=query,
+            paper_id=namespace,
             max_images=max_images,
             max_tables=max_tables,
-            max_text_chunks=max_text_chunks,
-
+            max_text_chunks=max_text_chunks
         )
-        # Format the result for display
+        
+        # Extract clean answer from the rich multimodal results
         if result['success']:
             multimodal_results = result['multimodal_results']
-            
-            # Extract the main response content from inline elements
             inline_elements = multimodal_results.get('inline_elements', [])
             
-            # Build the main response content from all elements
-            response_parts = []
-            
+            # Extract just the text content (the actual AI-generated answers)
+            answer_parts = []
             for element in inline_elements:
-                element_type = element.get('type', 'unknown')
-                
-                if element_type == 'text':
+                if element.get('type') == 'text':
                     content = element.get('content', '').strip()
                     if content:
-                        response_parts.append(content)
-                        response_parts.append("")  # Add spacing
-                        
-                elif element_type == 'image':
-                    image_data = element.get('data', {})
-                    response_parts.append(f"![Image]({image_data.get('s3_url', 'N/A')})")
-                    response_parts.append("")
-                    
-                elif element_type == 'table':
-                    table_data = element.get('data', {})
-                    response_parts.append("```")
-                    response_parts.append(table_data.get('markdown_content', 'No content available'))
-                    response_parts.append("```")
-                    response_parts.append("")
+                        answer_parts.append(content)
             
-            if response_parts:
-                response_text = "\n".join(response_parts).strip()
+            if answer_parts:
+                # Join all text responses into one clean answer
+                clean_answer = "\n\n".join(answer_parts)
             else:
-                response_text = f"# Search Results for: \"{query}\"\n\nNo relevant content found in the document."
+                clean_answer = "No relevant content found for your query."
+                
+            json_response = {
+                "answer": clean_answer
+            }
             
         else:
-            response_text = f"# Search Error\n\n❌ **Multimodal search failed:** {result.get('error', 'Unknown error')}"
+            json_response = {
+                "answer": f"Search failed: {result.get('error', 'Unknown error')}"
+            }
             
+        import json
         return [TextContent(
             type="text",
-            text=response_text
+            text=json.dumps(json_response, indent=2)
         )]
 
     

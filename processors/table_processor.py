@@ -42,7 +42,7 @@ class TableProcessor:
         
         # No local storage - tables stored only in Pinecone
         
-    def process_tables_from_llamaparse(self, json_objs: List[Dict], pdf_name: str, pdf_id: str) -> Dict[str, Any]:
+    def process_tables_from_llamaparse(self, json_objs: List[Dict], pdf_name: str, pdf_id: str, skip_pinecone: bool = False) -> Dict[str, Any]:
         """Process all tables from LlamaParse JSON output."""
         try:
             start_time = time.time()
@@ -76,8 +76,12 @@ class TableProcessor:
                     logger.error(f"Error processing table {i}: {e}")
                     continue
             
-            # Store in Pinecone
-            pinecone_stored = self._store_tables_in_pinecone(processed_tables, pdf_id)
+            # Store in Pinecone (skip if flag is set)
+            pinecone_stored = 0
+            if not skip_pinecone:
+                pinecone_stored = self._store_tables_in_pinecone(processed_tables, pdf_id)
+            else:
+                logger.info("Skipping individual table storage in Pinecone (composite chunks will be stored instead)")
             
             processing_time = time.time() - start_time
             
@@ -105,17 +109,40 @@ class TableProcessor:
         
         json_data = json_objs[0]
         
-        # Method 1: Direct table extraction from pages
-        all_tables.extend(self._extract_tables_from_pages(json_data, pdf_id))
+        # Primary method: Extract tables from pages -> items -> type:"table" structure
+        try:
+            primary_tables = self._extract_tables_from_items_json_structure(json_data, pdf_id)
+            all_tables.extend(primary_tables)
+            logger.info(f"Primary JSON structure extraction found {len(primary_tables)} tables")
+        except Exception as primary_error:
+            logger.error(f"Primary table extraction failed: {primary_error}")
         
-        # Method 2: Detect tables from structured items
-        all_tables.extend(self._extract_tables_from_items(json_data, pdf_id))
+        # Fallback method 1: Direct table extraction from pages (if primary failed)
+        try:
+            if len(all_tables) == 0:
+                fallback_tables = self._extract_tables_from_pages(json_data, pdf_id)
+                all_tables.extend(fallback_tables)
+                logger.info(f"Fallback pages extraction found {len(fallback_tables)} tables")
+        except Exception as fallback_error:
+            logger.warning(f"Fallback pages extraction failed: {fallback_error}")
         
-        # Method 3: Detect table patterns in text content
-        all_tables.extend(self._extract_tables_from_text_patterns(json_data, pdf_id))
+        # Fallback method 2: Pattern-based extraction (if both above failed)
+        try:
+            if len(all_tables) == 0:
+                pattern_tables = self._extract_tables_from_text_patterns(json_data, pdf_id)
+                all_tables.extend(pattern_tables)
+                logger.info(f"Pattern-based extraction found {len(pattern_tables)} tables")
+        except Exception as pattern_error:
+            logger.warning(f"Pattern-based extraction failed: {pattern_error}")
         
-        # Method 4: Detect tables from markdown content
-        all_tables.extend(self._extract_tables_from_markdown(json_data, pdf_id))
+        # Fallback method 3: Markdown extraction (last resort)
+        try:
+            if len(all_tables) == 0:
+                markdown_tables = self._extract_tables_from_markdown(json_data, pdf_id)
+                all_tables.extend(markdown_tables)
+                logger.info(f"Markdown extraction found {len(markdown_tables)} tables")
+        except Exception as markdown_error:
+            logger.warning(f"Markdown extraction failed: {markdown_error}")
         
         # Remove duplicates based on position and content similarity
         unique_tables = self._deduplicate_tables(all_tables)
@@ -144,47 +171,199 @@ class TableProcessor:
         
         return tables
     
-    def _extract_tables_from_items(self, json_data: Dict, pdf_id: str) -> List[Dict]:
-        """Extract tables from structured items with type='table'."""
+    def _extract_tables_from_items_json_structure(self, json_data: Dict, pdf_id: str) -> List[Dict]:
+        """Extract tables from pages->items->type:'table' JSON structure with comprehensive error handling."""
         tables = []
         
-        for page_data in json_data.get('pages', []):
-            page_num = page_data.get('page', 0)
-            items = page_data.get('items', [])
+        try:
+            logger.info("Extracting tables from LlamaParse JSON structure: pages->items->type:'table'")
             
-            table_count = 0
-            for item in items:
-                if item.get('type') == 'table':
-                    table_count += 1
+            pages = json_data.get('pages', [])
+            if not pages:
+                logger.warning("No pages found in JSON data")
+                return tables
+            
+            for page_idx, page_data in enumerate(pages):
+                try:
+                    page_num = page_data.get('page', page_idx + 1)  # Fallback to index+1
+                    items = page_data.get('items', [])
                     
-                    # Extract table rows and structure
-                    rows = item.get('rows', [])
-                    if rows and len(rows) >= self.min_table_rows:
-                        # Convert to different formats
-                        formats = self._convert_table_to_formats(rows)
+                    logger.debug(f"Processing page {page_num}: {len(items)} items found")
+                    
+                    table_count = 0
+                    for item_idx, item in enumerate(items):
+                        try:
+                            item_type = item.get('type', '')
+                            
+                            if item_type == 'table':
+                                table_count += 1
+                                logger.info(f"Found table {table_count} on page {page_num} (item {item_idx})")
+                                
+                                # Process the table with comprehensive error handling
+                                processed_table = self._process_table_from_llamaparse_item(
+                                    item, page_num, table_count, pdf_id, item_idx
+                                )
+                                
+                                if processed_table:
+                                    tables.append(processed_table)
+                                    logger.info(f"Successfully processed table {processed_table['table_id']}")
+                                else:
+                                    logger.warning(f"Failed to process table on page {page_num}, item {item_idx}")
+                                    
+                        except Exception as item_error:
+                            logger.error(f"Error processing item {item_idx} on page {page_num}: {item_error}")
+                            continue
+                            
+                except Exception as page_error:
+                    logger.error(f"Error processing page {page_idx}: {page_error}")
+                    continue
+            
+            logger.info(f"Total tables extracted from JSON structure: {len(tables)}")
+            return tables
+            
+        except Exception as e:
+            logger.error(f"Critical error in table extraction from JSON structure: {e}")
+            return tables  # Return whatever we managed to extract
+    
+    def _process_table_from_llamaparse_item(self, item: Dict, page_num: int, table_count: int, 
+                                           pdf_id: str, item_idx: int) -> Optional[Dict]:
+        """Process a single table item from LlamaParse JSON with extensive error handling."""
+        try:
+            table_id = f"{pdf_id}_p{page_num}_table{table_count}"
+            
+            # Initialize table content dictionary
+            table_content = {}
+            
+            # Method 1: Extract from 'rows' structure (primary method based on JSON analysis)
+            if 'rows' in item and item['rows']:
+                try:
+                    rows = item['rows']
+                    if isinstance(rows, list) and len(rows) >= self.min_table_rows:
+                        table_content['raw_rows'] = rows
                         
-                        enhanced_table = {
-                            'pdf_id': pdf_id,
-                            'page_number': page_num,
-                            'table_index': table_count,
-                            'detection_method': 'structured_items',
-                            'table_id': f"{pdf_id}_p{page_num}_si{table_count}",
-                            
-                            # Raw data
-                            'raw_rows': rows,
-                            'bounding_box': item.get('bBox', {}),
-                            
-                            # Formatted content
-                            **formats,
-                            
-                            # Metadata
-                            'row_count': len(rows),
-                            'column_count': len(rows[0]) if rows and isinstance(rows[0], list) else 0,
-                            'raw_item_data': item
-                        }
-                        tables.append(enhanced_table)
+                        # Convert to multiple formats with error handling
+                        try:
+                            formats = self._convert_table_to_formats(rows)
+                            table_content.update(formats)
+                            logger.debug(f"Converted table to {len(formats)} formats")
+                        except Exception as format_error:
+                            logger.warning(f"Error converting table formats: {format_error}")
+                            # Continue with raw_rows at least
+                        
+                    else:
+                        logger.warning(f"Table rows invalid or too few: {len(rows) if isinstance(rows, list) else 'not a list'}")
+                        
+                except Exception as rows_error:
+                    logger.warning(f"Error processing rows structure: {rows_error}")
+            
+            # Method 2: Extract from 'md' (markdown) field
+            if 'md' in item and item['md'] and not table_content:
+                try:
+                    markdown_content = item['md']
+                    if self._looks_like_table_markdown(markdown_content):
+                        table_content['markdown'] = markdown_content
+                        table_content['raw_text'] = markdown_content
+                        logger.debug("Extracted table from markdown field")
+                except Exception as md_error:
+                    logger.warning(f"Error processing markdown field: {md_error}")
+            
+            # Method 3: Extract from 'csv' field
+            if 'csv' in item and item['csv'] and not table_content:
+                try:
+                    csv_content = item['csv']
+                    table_content['csv'] = csv_content
+                    table_content['raw_text'] = csv_content
+                    logger.debug("Extracted table from CSV field")
+                except Exception as csv_error:
+                    logger.warning(f"Error processing CSV field: {csv_error}")
+            
+            # If no content found, skip this table
+            if not table_content:
+                logger.warning(f"No extractable content found in table item on page {page_num}")
+                logger.debug(f"Available item keys: {list(item.keys())}")
+                return None
+            
+            # Calculate dimensions with error handling
+            row_count = self._calculate_row_count(table_content, item)
+            column_count = self._calculate_column_count(table_content, item)
+            
+            # Create enhanced table structure
+            enhanced_table = {
+                'pdf_id': pdf_id,
+                'page_number': page_num,
+                'table_index': table_count,
+                'detection_method': 'llamaparse_json_items',
+                'table_id': table_id,
+                
+                # Content in various formats
+                **table_content,
+                
+                # Metadata from JSON item (with safe extraction)
+                'bounding_box': item.get('bBox', item.get('bbox', {})),
+                'is_perfect_table': item.get('isPerfectTable', False),
+                'confidence': item.get('confidence', 1.0),
+                
+                # Calculated dimensions
+                'row_count': row_count,
+                'column_count': column_count,
+                
+                # Store original item for debugging
+                'raw_item_data': item,
+                'extraction_metadata': {
+                    'source': 'llamaparse_json',
+                    'item_index': item_idx,
+                    'available_fields': list(item.keys()),
+                    'extraction_timestamp': datetime.now().isoformat()
+                }
+            }
+            
+            return enhanced_table
+            
+        except Exception as e:
+            logger.error(f"Critical error processing table from JSON item on page {page_num}: {e}")
+            return None
+    
+    def _looks_like_table_markdown(self, content: str) -> bool:
+        """Check if markdown content looks like a table."""
+        if not content or len(content.strip()) < 10:
+            return False
         
-        return tables
+        lines = content.split('\n')
+        table_lines = [line for line in lines if '|' in line]
+        return len(table_lines) >= 2  # At least header and one data row
+    
+    def _calculate_row_count(self, table_content: Dict, item: Dict) -> int:
+        """Calculate row count with fallbacks."""
+        try:
+            if 'raw_rows' in table_content:
+                return len(table_content['raw_rows'])
+            elif 'markdown' in table_content:
+                lines = [line for line in table_content['markdown'].split('\n') if '|' in line]
+                return max(1, len(lines) - 1)  # Subtract separator line
+            elif 'csv' in table_content:
+                lines = table_content['csv'].split('\n')
+                return len([line for line in lines if line.strip()])
+            return 1
+        except Exception as e:
+            logger.warning(f"Error calculating row count: {e}")
+            return 1
+    
+    def _calculate_column_count(self, table_content: Dict, item: Dict) -> int:
+        """Calculate column count with fallbacks."""
+        try:
+            if 'raw_rows' in table_content and table_content['raw_rows']:
+                first_row = table_content['raw_rows'][0]
+                return len(first_row) if isinstance(first_row, list) else 1
+            elif 'markdown' in table_content:
+                first_line = table_content['markdown'].split('\n')[0]
+                return max(1, first_line.count('|') - 1) if first_line.startswith('|') else first_line.count('|') + 1
+            elif 'csv' in table_content:
+                first_line = table_content['csv'].split('\n')[0]
+                return len(first_line.split(','))
+            return 1
+        except Exception as e:
+            logger.warning(f"Error calculating column count: {e}")
+            return 1
     
     def _extract_tables_from_text_patterns(self, json_data: Dict, pdf_id: str) -> List[Dict]:
         """Extract tables by detecting patterns in text content."""
@@ -259,7 +438,7 @@ class TableProcessor:
         return tables
     
     def _convert_table_to_formats(self, rows: List[List]) -> Dict[str, str]:
-        """Convert table rows to multiple formats."""
+        """Convert table rows to multiple formats optimized for LlamaParse structure."""
         formats = {}
         
         try:
@@ -301,26 +480,51 @@ class TableProcessor:
             html_parts.append('</table>')
             formats['html'] = '\n'.join(html_parts)
             
-            # Convert to JSON
-            if rows:
-                headers = [f"col_{i}" for i in range(len(rows[0]))] if rows[0] else []
+            # Convert to structured JSON (enhanced for LlamaParse compatibility)
+            if rows and len(rows) > 0:
+                # Extract headers from first row
+                headers = []
+                data_rows = []
+                
                 if len(rows) > 1:
                     # Use first row as headers if it looks like headers
-                    if all(isinstance(cell, str) for cell in rows[0]):
-                        headers = [str(cell).strip() for cell in rows[0]]
+                    first_row = rows[0]
+                    if all(isinstance(cell, str) and len(str(cell).strip()) > 0 for cell in first_row):
+                        headers = [str(cell).strip() for cell in first_row]
                         data_rows = rows[1:]
                     else:
+                        # Generate generic headers
+                        headers = [f"Column_{i+1}" for i in range(len(first_row))]
                         data_rows = rows
                 else:
+                    # Single row - generate headers
+                    headers = [f"Column_{i+1}" for i in range(len(rows[0]))]
                     data_rows = rows
                 
-                json_data = []
-                for row in data_rows:
-                    if isinstance(row, list) and len(row) == len(headers):
-                        row_dict = {headers[i]: row[i] for i in range(len(headers))}
-                        json_data.append(row_dict)
+                # Create structured table JSON (compatible with multimodal_integrator.py)
+                table_dict = {}
                 
-                formats['json'] = json.dumps(json_data, indent=2)
+                # Add each column as a key with its data
+                for i, header in enumerate(headers):
+                    if header:  # Skip empty headers
+                        column_data = []
+                        for row in data_rows:
+                            if i < len(row):
+                                cell_value = row[i] if row[i] else ""
+                                column_data.append(str(cell_value).strip())
+                            else:
+                                column_data.append("")
+                        table_dict[str(header).strip()] = column_data
+                
+                # Add metadata
+                table_dict["_metadata"] = {
+                    "total_rows": len(rows),
+                    "total_columns": len(headers),
+                    "has_headers": True,
+                    "source": "table_processor_enhanced"
+                }
+                
+                formats['json'] = json.dumps(table_dict, indent=2)
             
         except Exception as e:
             logger.warning(f"Error converting table formats: {e}")
@@ -817,70 +1021,7 @@ class TableProcessor:
     
     # Local table saving removed - tables stored only in Pinecone vectors
     
-    def _store_tables_in_pinecone(self, processed_tables: List[Dict], pdf_id: str) -> int:
-        """Store processed tables in Pinecone with comprehensive metadata."""
-        if not processed_tables:
-            return 0
-        
-        vectors = []
-        
-        for table_data in processed_tables:
-            try:
-                # Generate embedding
-                embedding_text = table_data['embedding_text']
-                embedding = self._get_embedding(embedding_text)
-                
-                # Create comprehensive metadata for Pinecone
-                metadata = {
-                    'content_type': 'table',
-                    'table_id': table_data['table_id'],
-                    'pdf_id': pdf_id,
-                    'pdf_name': table_data['pdf_name'],
-                    'page_number': table_data['page_number'],
-                    
-                    # Content and structure
-                    'summary': table_data['summary'],
-                    'keywords': table_data['keywords'][:10],  # Limit for Pinecone
-                    'row_count': table_data['row_count'],
-                    'column_count': table_data['column_count'],
-                    
-                    # Content formats (full content)
-                    'markdown_content': table_data['content_formats'].get('markdown', ''),
-                    'csv_content': table_data['content_formats'].get('csv', ''),
-                    
-                    # Quality and structure
-                    'detection_method': table_data['detection_method'],
-                    'structure_type': table_data['structure_analysis'].get('structure_type', 'unknown'),
-                    'has_header': table_data['structure_analysis'].get('has_header', False),
-                    'overall_quality': table_data['quality_metrics'].get('overall_quality', 0.0),
-                    
-                    # Processing metadata
-                    'processed_timestamp': table_data['processed_timestamp']
-                }
-                
-                vector = {
-                    'id': f"tbl_{table_data['table_id']}",
-                    'values': embedding,
-                    'metadata': metadata
-                }
-                
-                vectors.append(vector)
-                
-            except Exception as e:
-                logger.error(f"Error creating vector for table {table_data.get('table_id')}: {e}")
-                continue
-        
-        # Batch upsert to Pinecone
-        if vectors:
-            try:
-                self.index.upsert(vectors=vectors, namespace=pdf_id)
-                logger.info(f"Stored {len(vectors)} table vectors in Pinecone namespace: {pdf_id}")
-                return len(vectors)
-            except Exception as e:
-                logger.error(f"Error upserting table vectors to Pinecone: {e}")
-                return 0
-        
-        return 0
+
     
     def _get_embedding(self, text: str) -> List[float]:
         """Generate embedding using OpenAI API."""
@@ -899,48 +1040,6 @@ class TableProcessor:
             logger.error(f"Error generating embedding: {e}")
             return [0.0] * 3072
     
-    def retrieve_relevant_tables(self, query: str, pdf_id: str, top_k: int = 3) -> List[Dict]:
-        """Retrieve most relevant tables for a query using vector similarity."""
-        try:
-            # Generate query embedding
-            query_embedding = self._get_embedding(query)
-            
-            # Query Pinecone for relevant tables
-            results = self.index.query(
-                vector=query_embedding,
-                top_k=top_k,
-                namespace=pdf_id,
-                filter={"content_type": "table"},
-                include_metadata=True,
-                include_values=False
-            )
-            
-            relevant_tables = []
-            
-            for match in results.matches:
-                if match.score > 0.15:  # Minimum relevance threshold for tables
-                    table_data = {
-                        'table_id': match.metadata.get('table_id', ''),
-                        'relevance_score': match.score,
-                        'page_number': match.metadata.get('page_number', 0),
-                        'summary': match.metadata.get('summary', ''),
-                        'keywords': match.metadata.get('keywords', []),
-                        'row_count': match.metadata.get('row_count', 0),
-                        'column_count': match.metadata.get('column_count', 0),
-                        'markdown_content': match.metadata.get('markdown_content', ''),
-                        'csv_content': match.metadata.get('csv_content', ''),
-                        'structure_type': match.metadata.get('structure_type', 'unknown'),
-                        'has_header': match.metadata.get('has_header', False),
-                        'quality_score': match.metadata.get('overall_quality', 0.0),
-                        'detection_method': match.metadata.get('detection_method', 'unknown')
-                    }
-                    relevant_tables.append(table_data)
-            
-            logger.info(f"Retrieved {len(relevant_tables)} relevant tables for query")
-            return relevant_tables
-            
-        except Exception as e:
-            logger.error(f"Error retrieving relevant tables: {e}")
-            return []
+
 
 print("TableProcessor class created successfully")

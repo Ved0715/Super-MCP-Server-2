@@ -12,7 +12,14 @@ import mimetypes
 
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
-from config import AdvancedConfig
+from config import (
+    AWS_ACCESS_KEY_ID, 
+    AWS_SECRET_ACCESS_KEY, 
+    AWS_REGION, 
+    S3_BUCKET_NAME,
+    get_s3_url
+)
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -21,27 +28,26 @@ class S3Handler:
     
     def __init__(self):
         """Initialize S3 client with credentials."""
-        self.config = AdvancedConfig()
         try:
             # Validate configuration
-            if not all([self.config.AWS_ACCESS_KEY_ID, self.config.AWS_SECRET_ACCESS_KEY, self.config.AWS_REGION, self.config.S3_BUCKET_NAME]):
+            if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET_NAME]):
                 raise ValueError("Missing required S3 configuration. Check your .env file.")
             
             # Initialize boto3 S3 client
             self.s3_client = boto3.client(
                 's3',
-                aws_access_key_id=self.config.AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=self.config.AWS_SECRET_ACCESS_KEY,
-                region_name=self.config.AWS_REGION
+                aws_access_key_id=AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+                region_name=AWS_REGION
             )
             
-            self.bucket_name = self.config.S3_BUCKET_NAME
-            self.region = self.config.AWS_REGION
+            self.bucket_name = S3_BUCKET_NAME
+            self.region = AWS_REGION
             
             # Test connection
             self._test_connection()
             
-            logger.info(f"S3Handler initialized successfully for bucket: {self.config.S3_BUCKET_NAME}")
+            logger.info(f"S3Handler initialized successfully for bucket: {S3_BUCKET_NAME}")
             
         except Exception as e:
             logger.error(f"Failed to initialize S3Handler: {e}")
@@ -91,7 +97,7 @@ class S3Handler:
             )
             
             # Generate and return public URL
-            s3_url = self.config.get_s3_url(s3_key)
+            s3_url = get_s3_url(s3_key)
             
             logger.info(f"Successfully uploaded image to S3: {s3_key} ({len(image_data)} bytes)")
             return s3_url
@@ -226,7 +232,7 @@ class S3Handler:
                 'content_type': response.get('ContentType', ''),
                 'last_modified': response.get('LastModified'),
                 'etag': response.get('ETag', '').strip('"'),
-                's3_url': self.config.get_s3_url(s3_key)
+                's3_url': get_s3_url(s3_key)
             }
         except ClientError as e:
             error_code = e.response['Error']['Code']

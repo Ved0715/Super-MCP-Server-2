@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 
 # Import your existing project components
-from multimodal_integrator import MultimodalIntegrator
+from .multimodal_integrator import MultimodalIntegrator
 from config import *
 
 # Configure logging

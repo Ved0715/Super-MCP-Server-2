@@ -1,12 +1,17 @@
 import os
 import re
 import asyncio
+import logging
 from typing import List, Dict, Optional, Tuple, Any
 import numpy as np
 from dataclasses import dataclass
 import json
 import time
 from tqdm import tqdm
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s:%(message)s')
+logger = logging.getLogger(__name__)
 
 # Core imports
 from openai import OpenAI
@@ -119,7 +124,7 @@ Use [Page X] format and bullet points where necessary.
         self.pc = Pinecone(api_key=config.pinecone_api_key)
         
         # Research-specific configuration
-        self.index_name = "all-pdfs-index"  # Research papers index
+        self.index_name = os.getenv('PINECONE_INDEX_NAME_TEST', 'test')  # Use test index
         self.embedding_model = config.embedding_model
         self.response_model = config.response_model
         self.embedding_dimension = config.embedding_dimension
@@ -515,7 +520,7 @@ Use [Page X] format and bullet points where necessary.
             Dict containing multimodal search results with inline elements
         """
         try:
-            print(f"🔍 Searching multimodal content for query: '{query}' in paper: {paper_id}")
+            logger.debug(f"Searching multimodal content for query: '{query}' in paper: {paper_id}")
             
             # Call the multimodal integrator to get results
             results = self.multimodal_integrator.query_multimodal_content(
@@ -540,11 +545,11 @@ Use [Page X] format and bullet points where necessary.
                 "success": True
             }
             
-            print(f"✅ Found multimodal content with {len(results.get('inline_elements', []))} elements")
+            logger.debug(f"Found multimodal content with {len(results.get('inline_elements', []))} elements")
             return enhanced_results
             
         except Exception as e:
-            print(f"❌ Error in multimodal search: {str(e)}")
+            logger.error(f"Error in multimodal search: {str(e)}")
             return {
                 "search_metadata": {
                     "query": query,

@@ -247,6 +247,8 @@ Generate a comprehensive, explanatory response that thoroughly analyzes the docu
         parts = re.split(r'(\{(?:IMAGE|TABLE|TEXT_SECTION)_\d+\})', response_structure)
 
         
+
+        
         for i, part in enumerate(parts):
             if not part.strip():
                 continue

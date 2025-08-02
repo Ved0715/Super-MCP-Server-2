@@ -3842,8 +3842,8 @@ The operation has been successfully cancelled and will stop as soon as possible.
             )]
 
         # Use the namespace that has content (for testing)
-        namespace = "llms_survey_and_challenges"
-        # namespace = f"user_{user_id}_doc_{document_uuid}"
+        # namespace = "llms_survey_and_challenges"
+        namespace = f"user_{user_id}_doc_{document_uuid}"
 
         result = await self.paper_retriever.search_multimodal_content( 
             query=query,

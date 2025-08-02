@@ -21,34 +21,38 @@ class InlineMultimodalGenerator:
     def generate_inline_response(self, query: str, filtered_content: Dict, conditional_instructions: Dict = None) -> Dict[str, Any]:
         """Generate intelligent inline multimodal response."""
         try:
-            # Analyze content availability
-            has_text = len(filtered_content['text']) > 0
-            has_images = len(filtered_content['images']) > 0  
-            has_tables = len(filtered_content['tables']) > 0
-            
+            # Analyze content availability from filtered content
+            input_has_text = len(filtered_content['text']) > 0
+            input_has_images = len(filtered_content['images']) > 0  
+            input_has_tables = len(filtered_content['tables']) > 0
+        
             # If no content found, return helpful fallback response
-            if not (has_text or has_images or has_tables):
+            if not (input_has_text or input_has_images or input_has_tables):
                 return self._create_fallback_response(query)
-            
+
             # Create content map sorted by relevance
             content_map = self._create_content_map(filtered_content, query)
-            
+
             # Generate contextual response structure
-            response_structure = self._generate_response_structure(query, content_map, has_text, has_images, has_tables)
-            
-            # Create inline elements for Streamlit display
+            response_structure = self._generate_response_structure(query, content_map, input_has_text, input_has_images, input_has_tables)
+        
+            # Create inline elements for display
             inline_elements = self._create_inline_elements(response_structure, content_map)
-            
+        
+        # Analyze final inline elements for accurate content summary
+            final_has_text = any(elem.get('type') == 'text' for elem in inline_elements)
+            final_has_images = any(elem.get('type') == 'image' for elem in inline_elements)
+            final_has_tables = any(elem.get('type') == 'table' for elem in inline_elements)
+        
             return {
                 'inline_elements': inline_elements,
                 'content_summary': {
-                    'has_text': has_text,
-                    'has_images': has_images, 
-                    'has_tables': has_tables,
+                    'has_text': final_has_text,
+                    'has_images': final_has_images, 
+                    'has_tables': final_has_tables,
                     'total_elements': len(inline_elements)
-                }
             }
-            
+        }    
         except Exception as e:
             logger.error(f"Error generating inline response: {e}")
             return {
@@ -246,10 +250,10 @@ Generate a comprehensive, explanatory response that thoroughly analyzes the docu
         # Enhanced splitting that preserves context around placeholders
         parts = re.split(r'(\{(?:IMAGE|TABLE|TEXT_SECTION)_\d+\})', response_structure)
 
-        
+        # Merge consecutive text parts to avoid fragmentation
+        merged_parts = self._merge_consecutive_text_parts(parts)
 
-        
-        for i, part in enumerate(parts):
+        for i, part in enumerate(merged_parts):
             if not part.strip():
                 continue
                 
@@ -265,15 +269,8 @@ Generate a comprehensive, explanatory response that thoroughly analyzes the docu
                         if img_id not in used_image_ids:
                             used_image_ids.add(img_id)
                             
-                            # Add contextual transition if needed
-                            prev_part = parts[i-1] if i > 0 else ""
-                            if prev_part.strip() and not prev_part.strip().endswith((':','.','!','?')):
-                                # Add smooth transition
-                                inline_elements.append({
-                                    'type': 'text',
-                                    'content': " As illustrated below:"
-                                })
-                            
+                            # Skip transition text - already handled in merged text
+                            # Contextual transitions should be part of the main text flow
                             inline_elements.append({
                                 'type': 'image',
                                 'data': img_data,
@@ -300,16 +297,8 @@ Generate a comprehensive, explanatory response that thoroughly analyzes the docu
                         # Only add if not already used
                         if unique_key not in used_table_ids:
                             used_table_ids.add(unique_key)
-                            
-                            # Add contextual transition if needed
-                            prev_part = parts[i-1] if i > 0 else ""
-                            if prev_part.strip() and not prev_part.strip().endswith((':','.','!','?')):
-                                # Add smooth transition
-                                inline_elements.append({
-                                    'type': 'text',
-                                    'content': " The data is presented below:"
-                                })
-                            
+                            # Skip transition text - already handled in merged text
+                            # Contextual transitions should be part of the main text flow
                             inline_elements.append({
                                 'type': 'table',
                                 'data': table_data,
@@ -335,11 +324,32 @@ Generate a comprehensive, explanatory response that thoroughly analyzes the docu
                         'type': 'text',
                         'content': text_content
                     })
-        
         # Post-process elements for better flow
         inline_elements = self._optimize_element_flow(inline_elements)
         
         return inline_elements
+
+    def _merge_consecutive_text_parts(self, parts: List[str]) -> List[str]:
+        """Merge consecutive text parts to avoid fragmentation while preserving placeholders."""
+        merged_parts = []
+        current_text = ""
+    
+        for part in parts:
+            if part.startswith('{IMAGE_') or part.startswith('{TABLE_') or part.startswith('{TEXT_SECTION_'):
+            # This is a placeholder
+                if current_text.strip():
+                    merged_parts.append(current_text.strip())
+                    current_text = ""
+                merged_parts.append(part)
+            else:
+                # This is text content
+                current_text += part
+    
+        # Add any remaining text
+        if current_text.strip():
+            merged_parts.append(current_text.strip())
+    
+        return merged_parts
     
     def _extract_image_context(self, img_data: Dict, content_map: Dict) -> Dict:
         """Extract contextual information for image placement."""

@@ -3827,13 +3827,14 @@ The operation has been successfully cancelled and will stop as soon as possible.
                                     document_uuid: str, search_type: List[str], similarity_threshold: float, 
                                     max_chunks: int, focus_sections: List[str] = []):
         """Handle multimodel paper search with rich multimodal response formatting."""
+        import json
+        
         logger.debug(f"Multimodel paper search: {query}")
         logger.debug(f"Target namespace: user_{user_id}_doc_{document_uuid}")
 
         # Check if paper_retriever is available
         if self.paper_retriever is None:
             logger.error("❌ PaperRetriever is not initialized")
-            import json
             return [TextContent(
                 type="text",
                 text=json.dumps({
@@ -3851,65 +3852,104 @@ The operation has been successfully cancelled and will stop as soon as possible.
             max_chunks=max_chunks
         )
         
-        # Extract clean answer from the rich multimodal results
-        # if result['success']:
-        #     multimodal_results = result['multimodal_results']
-        #     inline_elements = multimodal_results.get('inline_elements', [])
+        # Convert multimodal elements to a seamless markdown response for UI
+        if result and 'inline_elements' in result:
+            inline_elements = result.get('inline_elements', [])
             
-        #     # Extract text content (the actual AI-generated answers)
-        #     answer_parts = []
-        #     images = []
-        #     tables = []
+            # Create a combined markdown response
+            response_parts = []
+            response_parts.append(f"# 🔍 Multimodal Search Results: \"{query}\"")
+            response_parts.append("")  # Empty line
             
-        #     for element in inline_elements:
-        #         if element.get('type') == 'text':
-        #             content = element.get('content', '').strip()
-        #             if content:
-        #                 answer_parts.append(content)
-        #         elif element.get('type') == 'image':
-        #             # Extract image data from the nested 'data' field
-        #             img_data = element.get('data', {})
-        #             image_data = {
-        #                 'url': img_data.get('image_url', ''),
-        #                 'description': img_data.get('image_summary', ''),
-        #                 'alt_text': img_data.get('ocr_text', ''),
-        #                 'page_number': img_data.get('page_number'),
-        #                 'image_id': img_data.get('image_id', '')
-        #             }
-        #             images.append(image_data)
-        #         elif element.get('type') == 'table':
-        #             # Extract table data from the nested 'data' field
-        #             table_data_element = element.get('data', {})
-        #             table_data = {
-        #                 'content': table_data_element.get('table_content', ''),
-        #                 'summary': table_data_element.get('table_summary', ''),
-        #                 'page_number': table_data_element.get('page_number'),
-        #                 'table_id': table_data_element.get('table_id', '')
-        #             }
-        #             tables.append(table_data)
+            for element in inline_elements:
+                if element.get('type') == 'text':
+                    content = element.get('content', '').strip()
+                    if content:
+                        response_parts.append(content)
+                        response_parts.append("")  # Add spacing
+                        
+                elif element.get('type') == 'image':
+                    # Add image reference with description
+                    img_data = element.get('data', {})
+                    page_num = img_data.get('page_number', 'N/A')
+                    image_url = img_data.get('s3_url') or img_data.get('display_url', '')
+                    description = img_data.get('image_summary', '')
+                    
+                    if image_url:
+                        response_parts.append(f"## 🖼️ Visual Content (Page {page_num})")
+                        response_parts.append(f"![Image from page {page_num}]({image_url})")
+                        if description:
+                            response_parts.append(f"**Description:** {description}")
+                        response_parts.append("")  # Add spacing
+                        
+                elif element.get('type') == 'table':
+                    # Add table reference with summary
+                    table_data = element.get('data', {})
+                    page_num = table_data.get('page_number', 'N/A')
+                    summary = table_data.get('summary', '')
+                    
+                    response_parts.append(f"## 📊 Data Table (Page {page_num})")
+                    if summary:
+                        response_parts.append(f"**Summary:** {summary}")
+                    
+                    # Try to display table content if available
+                    table_content = table_data.get('table_content_json', '')
+                    if table_content:
+                        try:
+                            import json
+                            table_json = json.loads(table_content)
+                            if isinstance(table_json, dict) and any(isinstance(v, list) for v in table_json.values()):
+                                # Convert to markdown table format
+                                headers = [k for k, v in table_json.items() if isinstance(v, list) and k != '_metadata']
+                                if headers:
+                                    response_parts.append("| " + " | ".join(headers) + " |")
+                                    response_parts.append("| " + " | ".join(["---"] * len(headers)) + " |")
+                                    
+                                    # Get max rows
+                                    max_rows = max(len(table_json[h]) for h in headers if isinstance(table_json[h], list))
+                                    for i in range(min(max_rows, 5)):  # Limit to 5 rows
+                                        row = []
+                                        for h in headers:
+                                            cell_value = table_json[h][i] if i < len(table_json[h]) else ""
+                                            row.append(str(cell_value))
+                                        response_parts.append("| " + " | ".join(row) + " |")
+                        except:
+                            pass
+                    response_parts.append("")  # Add spacing
             
-        #     if answer_parts:
-        #         # Join all text responses into one clean answer
-        #         clean_answer = "\n\n".join(answer_parts)
-        #     else:
-        #         clean_answer = "No relevant content found for your query."
-                
-        #     json_response = {
-        #         "answer": clean_answer,
-        #         "images": images,
-        #         "tables": tables
-        #     }
+            # Combine all parts into final response
+            final_response = "\n".join(response_parts).strip()
             
-        # else:
-        #     json_response = {
-        #         "answer": f"Search failed: {result.get('error', 'Unknown error')}"
-        #     }
-            
-        import json
-        return [TextContent(
-            type="text",
-            text=json.dumps(result, indent=2)
-        )]
+            # Return the combined response
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    'success': True,
+                    'query': query,
+                    'search_type': 'multimodal_paper_analysis',
+                    'user_id': user_id,
+                    'document_uuid': document_uuid,
+                    'response': final_response,
+                    'metadata': {
+                        'execution_time': result.get('performance_metrics', {}).get('query_time', 0),
+                        'results_count': result.get('performance_metrics', {}).get('total_results', 0),
+                        'namespace': namespace,
+                        'total_elements': len(inline_elements)
+                    }
+                }, indent=2)
+            )]
+        else:
+            # Fallback if no inline_elements found
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    'success': False,
+                    'query': query,
+                    'error': 'No relevant content found for your query.',
+                    'user_id': user_id,
+                    'document_uuid': document_uuid
+                }, indent=2)
+            )]
 
     
         

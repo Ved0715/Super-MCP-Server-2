@@ -135,7 +135,7 @@ Use [Page X] format and bullet points where necessary.
             raise
         
         # Research-specific configuration
-        self.index_name = os.getenv('PINECONE_INDEX_NAME_TEST', 'test')  # Use test index
+        self.index_name = os.getenv('PINECONE_INDEX_NAME')  # Use test index
         self.embedding_model = config.embedding_model
         self.response_model = config.response_model
         self.embedding_dimension = config.embedding_dimension
@@ -548,7 +548,7 @@ Use [Page X] format and bullet points where necessary.
             )
 
 
-            print(f" Results: {results}")
+            # print(f" Results: {results}")
             
 
             

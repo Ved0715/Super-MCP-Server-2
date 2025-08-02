@@ -388,11 +388,42 @@ class MCPHTTPTransport:
             
             # Convert MCP result to HTTP format
             if isinstance(result, list) and len(result) > 0:
-                # Extract content from MCP TextContent objects
-                content = result[0].text if hasattr(result[0], 'text') else str(result[0])
+                # Extract content from MCP TextContent objects properly
+                first_result = result[0]
+                if hasattr(first_result, 'text'):
+                    content = first_result.text
+                elif hasattr(first_result, 'content'):
+                    content = first_result.content
+                elif isinstance(first_result, dict):
+                    content = first_result.get('content', first_result.get('text', str(first_result)))
+                else:
+                    # Proper JSON serialization instead of str() 
+                    import json
+                    try:
+                        content = json.dumps(first_result, indent=2) if not isinstance(first_result, str) else first_result
+                    except (TypeError, ValueError):
+                        content = str(first_result)
+                
+                # Parse JSON string to native object if it's a JSON string
+                if isinstance(content, str) and content.strip().startswith('{'):
+                    import json
+                    try:
+                        content = json.loads(content)
+                    except (json.JSONDecodeError, ValueError):
+                        pass  # Keep as string if not valid JSON
+                        
                 return {"content": content, "type": "text"}
             else:
-                return {"content": str(result), "type": "text"}
+                # Handle non-list results
+                import json
+                if isinstance(result, str) and result.strip().startswith('{'):
+                    try:
+                        content = json.loads(result)
+                    except (json.JSONDecodeError, ValueError):
+                        content = result
+                else:
+                    content = result
+                return {"content": content, "type": "text"}
                 
         except Exception as e:
             logger.error(f"Error executing tool {tool_name}: {e}")

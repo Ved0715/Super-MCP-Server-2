@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 Multimodal Integrator for LlamaParse Data
@@ -28,12 +27,9 @@ from llama_cloud_services import LlamaParse
 
 # Local imports
 from config import *
-from .image_processor import ImageProcessor
-from .table_processor import TableProcessor
-from .inline_multimodal_generator import InlineMultimodalGenerator
-
-# Constants
-DEFAULT_TIMEOUT = 60000  # 60 seconds timeout for LlamaParse
+from processors.image_processor import ImageProcessor
+from processors.table_processor import TableProcessor
+from processors.inline_multimodal_generator import InlineMultimodalGenerator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -77,29 +73,35 @@ class MultimodalIntegrator:
             pinecone_api_key = os.getenv('PINECONE_API_KEY')
             if not pinecone_api_key:
                 raise ValueError("PINECONE_API_KEY not found")
+
+            self.DEFAULT_TIMEOUT = 60000
             
             self.pinecone_client = Pinecone(api_key=pinecone_api_key)
             
-            index_name = os.getenv('PINECONE_INDEX_NAME_TEST') or os.getenv('PINECONE_INDEX_NAME')
+            index_name = os.getenv('PINECONE_INDEX_NAME_TEST')
             if not index_name:
-                raise ValueError("PINECONE_INDEX_NAME_TEST or PINECONE_INDEX_NAME not found")
+                raise ValueError("PINECONE_INDEX_NAME_TEST not found")
             
             self.index = self.pinecone_client.Index(index_name)
-            logger.info(f"✅ Connected to Pinecone index: {index_name}")
             
-            # LlamaParse initialization (optional - only needed for new document processing)
+            # LlamaParse initialization (optional)
             llamaparse_api_key = os.getenv('LLAMA_PARSE_API_KEY')
             if llamaparse_api_key:
-                self.llamaparse_parser = LlamaParse(
-                    api_key=llamaparse_api_key,
-                    result_type="markdown",
-                    system_prompt="Extract all text content, images, and tables with complete metadata. Preserve document structure and formatting.",
-                    max_timeout=DEFAULT_TIMEOUT,
-                    split_by_page=True,
-                    verbose=True
-                )
-                logger.info("✅ LlamaParse initialized successfully")
+                try:
+                    self.llamaparse_parser = LlamaParse(
+                        api_key=llamaparse_api_key,
+                        result_type="markdown",
+                        system_prompt="Extract all text content, images, and tables with complete metadata. Preserve document structure and formatting.",
+                        max_timeout=self.DEFAULT_TIMEOUT,
+                        split_by_page=True,
+                        verbose=True
+                    )
+                    logger.info("✅ LlamaParse initialized successfully")
+                except Exception as e:
+                    logger.warning(f"⚠️ LlamaParse initialization failed: {e}")
+                    self.llamaparse_parser = None
             else:
+                logger.warning("⚠️ LLAMA_PARSE_API_KEY not found - LlamaParse will not be available")
                 self.llamaparse_parser = None
                 logger.warning("⚠️  LLAMA PARSE_API_KEY not found - document processing disabled, queries on existing documents will still work")
             
@@ -157,11 +159,11 @@ class MultimodalIntegrator:
             
             st.info(f"🚀 Starting complete multimodal processing: {pdf_name}")
             
-            if not self.llamaparse_parser:
-                raise ValueError("LlamaParse not available - LLAMAPARSE_API_KEY not configured. Document processing is disabled.")
-            
             with st.spinner("Parsing PDF with LlamaParse..."):
                 # Parse PDF with LlamaParse and capture job ID
+                if self.llamaparse_parser is None:
+                    raise ValueError("LlamaParse is not available. Please set LLAMAPARSE_API_KEY environment variable.")
+                
                 json_objs = self.llamaparse_parser.get_json_result(pdf_path)
                 
                 if not json_objs:
@@ -1036,17 +1038,13 @@ Summary (2-3 sentences, focus on main content and purpose):"""
                         logger.warning(f"Failed to generate embedding for chunk {chunk.get('chunk_id')}")
                         continue
                     
-                    # Create metadata with actual content
+                    # Create lightweight metadata (content is in vector embeddings)
                     metadata = {
                         'content_type': 'composite_chunk',
                         'chunk_id': chunk.get('chunk_id', ''),
                         'pdf_id': pdf_id,
                         'source_document': chunk.get('source_document', '')[:100],
                         'page_number': chunk.get('page_number', 0),
-                        
-                        # Store actual text content
-                        'text_content': composite_text[:8000],  # Store the actual text content
-                        'composite_text': composite_text[:8000],  # Also store as composite_text for compatibility
                         
                         # Lightweight flags and IDs
                         'contains_image': chunk.get('contains_image', False),
@@ -1212,28 +1210,6 @@ Summary (2-3 sentences, focus on main content and purpose):"""
             # Enhanced vector search with adaptive parameters
             search_params = self._get_adaptive_search_params(query)
             
-            # Check if namespace exists first
-            try:
-                index_stats = self.index.describe_index_stats()
-                available_namespaces = list(index_stats.namespaces.keys()) if index_stats.namespaces else []
-                
-                if pdf_id not in available_namespaces:
-                    logger.warning(f"Namespace '{pdf_id}' not found. Available namespaces: {available_namespaces[:5]}...")
-                    return {
-                        'inline_elements': [{
-                            'type': 'text', 
-                            'content': f"Document not found. The document '{pdf_id}' has not been processed yet or doesn't exist in the database."
-                        }],
-                        'performance_metrics': {
-                            'query_time': time.time() - start_time,
-                            'total_results': 0,
-                            'relevant_chunks': 0,
-                            'search_strategy': 'namespace_not_found'
-                        }
-                    }
-            except Exception as e:
-                logger.warning(f"Could not check namespace existence: {e}")
-            
             chunk_results = self.index.query(
                 vector=query_embedding,
                 top_k=search_params['top_k'],
@@ -1291,25 +1267,25 @@ Summary (2-3 sentences, focus on main content and purpose):"""
         top_k_multiplier = search_params.get('top_k_multiplier', 1.0)
         min_score_adjustment = search_params.get('min_score_adjustment', 0.0)
         
-        # Dynamic parameter adjustment based on enhanced intent analysis - FIXED: Lower thresholds
+        # Dynamic parameter adjustment based on enhanced intent analysis
         if query_intent['scope'] == 'comprehensive':
             top_k = int(base_top_k * max(top_k_multiplier, 1.5))
-            min_score = max(0.01, 0.02 + min_score_adjustment)  # Very low threshold for comprehensive queries
+            min_score = max(0.01, 0.03 + min_score_adjustment)  # Very low threshold for comprehensive queries
         elif query_intent['scope'] == 'specific':
             top_k = int(base_top_k * max(top_k_multiplier, 0.8))
-            min_score = max(0.01, 0.04 + min_score_adjustment)  # Lowered from 0.08
+            min_score = max(0.03, 0.08 + min_score_adjustment)
         else:  # focused
             top_k = int(base_top_k * max(top_k_multiplier, 0.6))
-            min_score = max(0.02, 0.06 + min_score_adjustment)  # Lowered from 0.12
+            min_score = max(0.05, 0.12 + min_score_adjustment)
         
-        # Adjust based on search strategy - FIXED: Less aggressive precision penalty
+        # Adjust based on search strategy
         strategy = query_intent.get('search_strategy', 'balanced')
         if strategy == 'recall':
             top_k = int(top_k * 1.3)
-            min_score *= 0.6  # More aggressive recall
+            min_score *= 0.7
         elif strategy == 'precision':
             top_k = int(top_k * 0.7)
-            min_score *= 1.2  # Less aggressive precision (was 1.4)
+            min_score *= 1.4
         elif strategy == 'hybrid':
             # Use multiple search passes with different parameters
             top_k = int(top_k * 1.1)
@@ -1393,85 +1369,25 @@ Summary (2-3 sentences, focus on main content and purpose):"""
                 intent_keywords, content_type_boost
             )
             
-            if enhanced_score > 0.01:  # Much lower minimum enhanced score threshold for better recall
-                # Extract text content with multiple field name fallbacks
-                text_content = (match.metadata.get('text_content') or 
-                              match.metadata.get('content') or 
-                              match.metadata.get('text') or 
-                              match.metadata.get('composite_text') or 
-                              match.metadata.get('_node_content') or '')  # Added _node_content fallback
-                
-                # Extract image information with fallbacks
-                contains_image = (match.metadata.get('contains_image', False) or 
-                                bool(match.metadata.get('image_url')) or
-                                bool(match.metadata.get('s3_url')) or
-                                match.metadata.get('content_type') == 'image')
-                
-                image_url = (match.metadata.get('image_url') or 
-                           match.metadata.get('s3_url') or 
-                           match.metadata.get('storage_path', ''))
-                
-                # Extract table information with fallbacks  
-                contains_table = (match.metadata.get('contains_table', False) or
-                                bool(match.metadata.get('table_content_json')) or
-                                bool(match.metadata.get('table_content')) or
-                                match.metadata.get('content_type') == 'table')
-                
-                table_content = (match.metadata.get('table_content_json') or
-                               match.metadata.get('table_content') or
-                               match.metadata.get('markdown_content', ''))
-                
-                # If no text content found, try to reconstruct from available metadata
-                if not text_content:
-                    # Try to reconstruct content from available metadata
-                    reconstructed_content = []
-                    
-                    # Add image summary if available
-                    image_summary = match.metadata.get('image_summary', '')
-                    if image_summary:
-                        reconstructed_content.append(f"Image content: {image_summary}")
-                    
-                    # Add table summary if available
-                    table_summary = match.metadata.get('table_summary', '')
-                    if table_summary:
-                        reconstructed_content.append(f"Table content: {table_summary}")
-                    
-                    # Add any other available text
-                    other_content = match.metadata.get('content', '') or match.metadata.get('text', '')
-                    if other_content:
-                        reconstructed_content.append(other_content)
-                    
-                    # If we have reconstructed content, use it
-                    if reconstructed_content:
-                        text_content = ' '.join(reconstructed_content)
-                    else:
-                        # Last resort: create a generic description
-                        text_content = f"Content from page {match.metadata.get('page_number', 0)} of document {match.metadata.get('source_document', 'unknown')}"
-                
-                # Debug log for content extraction
-                logger.info(f"Extracted text content for chunk {match.metadata.get('chunk_id', match.id)}: {len(text_content)} chars")
-                if len(text_content) < 100:  # Show short content for debugging
-                    logger.info(f"Short content: '{text_content[:100]}...'")
-                
+            if enhanced_score > 0.05:  # Lowered minimum enhanced score threshold
                 chunk_data = {
-                    'chunk_id': match.metadata.get('chunk_id', match.id),
+                    'chunk_id': match.metadata.get('chunk_id', ''),
                     'relevance_score': enhanced_score,
                     'original_score': match.score,
                     'page_number': match.metadata.get('page_number', 0),
-                    'text_content': text_content,
+                    'text_content': match.metadata.get('text_content', ''),
                     
                     # Image information
-                    'contains_image': contains_image,
-                    'image_url': image_url,
+                    'contains_image': match.metadata.get('contains_image', False),
+                    'image_url': match.metadata.get('image_url', ''),
                     'image_summary': match.metadata.get('image_summary', ''),
                     
                     # Table information
-                    'contains_table': contains_table,
-                    'table_content_json': table_content,
+                    'contains_table': match.metadata.get('contains_table', False),
+                    'table_content_json': match.metadata.get('table_content_json', ''),
                     'table_summary': match.metadata.get('table_summary', ''),
                     
-                    'source_document': match.metadata.get('source_document', ''),
-                    'content_type': match.metadata.get('content_type', 'text')
+                    'source_document': match.metadata.get('source_document', '')
                 }
                 potential_chunks.append(chunk_data)
         
@@ -1487,54 +1403,19 @@ Summary (2-3 sentences, focus on main content and purpose):"""
             fallback_chunks = []
             for match in matches[:10]:  # Take top 10 by original score
                 if match.score >= search_params['min_score']:
-                    # Extract content with multiple fallbacks
-                    text_content = (match.metadata.get('text_content') or 
-                                  match.metadata.get('content') or 
-                                  match.metadata.get('text') or 
-                                  match.metadata.get('composite_text') or 
-                                  match.metadata.get('_node_content') or '')
-                    
-                    # If no text content found, try to reconstruct from available metadata
-                    if not text_content:
-                        # Try to reconstruct content from available metadata
-                        reconstructed_content = []
-                        
-                        # Add image summary if available
-                        image_summary = match.metadata.get('image_summary', '')
-                        if image_summary:
-                            reconstructed_content.append(f"Image content: {image_summary}")
-                        
-                        # Add table summary if available
-                        table_summary = match.metadata.get('table_summary', '')
-                        if table_summary:
-                            reconstructed_content.append(f"Table content: {table_summary}")
-                        
-                        # Add any other available text
-                        other_content = match.metadata.get('content', '') or match.metadata.get('text', '')
-                        if other_content:
-                            reconstructed_content.append(other_content)
-                        
-                        # If we have reconstructed content, use it
-                        if reconstructed_content:
-                            text_content = ' '.join(reconstructed_content)
-                        else:
-                            # Last resort: create a generic description
-                            text_content = f"Content from page {match.metadata.get('page_number', 0)} of document {match.metadata.get('source_document', 'unknown')}"
-                    
                     chunk_data = {
-                        'chunk_id': match.metadata.get('chunk_id', match.id),
+                        'chunk_id': match.metadata.get('chunk_id', ''),
                         'relevance_score': match.score,
                         'original_score': match.score,
                         'page_number': match.metadata.get('page_number', 0),
-                        'text_content': text_content,
+                        'text_content': match.metadata.get('text_content', ''),
                         'contains_image': match.metadata.get('contains_image', False),
                         'image_url': match.metadata.get('image_url', ''),
                         'image_summary': match.metadata.get('image_summary', ''),
                         'contains_table': match.metadata.get('contains_table', False),
                         'table_content_json': match.metadata.get('table_content_json', ''),
                         'table_summary': match.metadata.get('table_summary', ''),
-                        'source_document': match.metadata.get('source_document', ''),
-                        'content_type': match.metadata.get('content_type', 'text')
+                        'source_document': match.metadata.get('source_document', '')
                     }
                     fallback_chunks.append(chunk_data)
             relevant_chunks = fallback_chunks
@@ -1767,7 +1648,7 @@ Respond with ONLY this JSON format:
                 model='gpt-4o-mini',
                 messages=[{"role": "user", "content": organization_prompt}],
                 max_tokens=300,
-                temperature=0.3
+                temperature=0.1
             )
             
             import json
@@ -1806,7 +1687,7 @@ Respond with ONLY this JSON format:
                 else:
                     relevance_threshold = float(text_criteria[0])
             except (ValueError, TypeError):
-                relevance_threshold = 0.1  # Much more lenient default threshold
+                relevance_threshold = 0.3
             
             quality_focus = text_criteria[1] if isinstance(text_criteria[1], str) else "balanced"
             
@@ -1817,15 +1698,15 @@ Respond with ONLY this JSON format:
             
             # Apply quality focus
             if quality_focus == "high_quality":
-                return chunk_score > 0.3
+                return chunk_score > 0.6
             elif quality_focus == "balanced":
                 return True
             else:  # minimal
-                return chunk_score > 0.2
+                return chunk_score > 0.4
             
         except Exception as e:
             logger.error(f"Error in text content inclusion check: {e}")
-            return float(chunk.get('relevance_score', 0)) > 0.1  # Much more lenient threshold
+            return float(chunk.get('relevance_score', 0)) > 0.3
     
     def _should_include_image_content(self, chunk: Dict, content_strategy: Dict, used_image_ids: set) -> bool:
         """Determine if image content should be included based on AI strategy."""
@@ -1873,11 +1754,11 @@ Respond with ONLY this JSON format:
             
             # Apply quality focus
             if quality_focus == "high_quality":
-                return chunk_score > 0.3
+                return chunk_score > 0.6
             elif quality_focus == "balanced":
                 return True
             else:  # minimal
-                return chunk_score > 0.2
+                return chunk_score > 0.4
             
         except Exception as e:
             logger.error(f"Error in image content inclusion check: {e}")
@@ -2490,14 +2371,8 @@ Think step-by-step about what the user really wants and how to optimally retriev
                 return {
                     'inline_elements': [{
                         'type': 'text', 
-                        'content': f"No relevant content found for your query: '{query}'. This could mean:\n\n• The document doesn't contain information about this topic\n• Try using different or more specific keywords\n• The content might be in a different section of the document\n• Consider broadening your search terms"
-                    }],
-                    'content_summary': {
-                        'has_text': False,
-                        'has_images': False,
-                        'has_tables': False,
-                        'total_elements': 1
-                    }
+                        'content': f"No relevant content found for '{query}'. Try rephrasing your question or using different keywords."
+                    }]
                 }
             
             # Extract and organize multimodal content from chunks with conditional filtering
@@ -2544,9 +2419,6 @@ Think step-by-step about what the user really wants and how to optimally retriev
         
         # Apply AI-determined content organization
         for i, chunk in enumerate(chunks):
-            # Debug: log available fields in chunk
-            available_fields = [k for k, v in chunk.items() if v and k not in ['relevance_score', 'original_score', 'page_number']]
-            logger.info(f"Processing chunk {i}: available_fields={available_fields}")
             logger.info(f"Processing chunk {i}: has_text={bool(chunk.get('text_content'))}, has_image={chunk.get('contains_image')}, has_image_url={bool(chunk.get('image_url'))}, has_table={chunk.get('contains_table')}, table_content={bool(chunk.get('table_content_json'))}")
             
             # Apply conditional filtering
@@ -2604,33 +2476,6 @@ Think step-by-step about what the user really wants and how to optimally retriev
                     })
         
         logger.info(f"Extracted multimodal content with AI selection: {len(content['text'])} text sections, {len(content['images'])} images, {len(content['tables'])} tables")
-        
-        # If no content was extracted, create a fallback response
-        if not any([content['text'], content['images'], content['tables']]):
-            logger.warning("No content extracted - creating fallback response")
-            # Create a basic text response from available chunks
-            for i, chunk in enumerate(chunks[:3]):  # Use first 3 chunks
-                if chunk.get('text_content'):
-                    content['text'].append({
-                        'content': chunk['text_content'],
-                        'page_number': chunk.get('page_number', 0),
-                        'relevance_score': chunk.get('relevance_score', 0),
-                        'chunk_type': 'fallback',
-                        'source': 'fallback_extraction'
-                    })
-                    break  # Just use the first one with content
-            
-            # If still no content, create a generic response
-            if not any([content['text'], content['images'], content['tables']]):
-                logger.warning("Still no content - creating generic response")
-                content['text'].append({
-                    'content': f"I couldn't find specific content matching '{query}' in the document. This might be because:\n\n• The content doesn't contain those specific terms\n• The similarity threshold is too high\n• The document hasn't been fully processed yet\n\nTry using broader search terms or check if the document was processed successfully.",
-                    'page_number': 0,
-                    'relevance_score': 0.1,
-                    'chunk_type': 'generic',
-                    'source': 'generic_fallback'
-                })
-        
         return content
     
     def _extract_multimodal_content_from_chunks(self, chunks: List[Dict], query: str) -> Dict[str, List]:
@@ -2963,7 +2808,7 @@ RESPOND USING ONLY THE DOCUMENT CONTENT ABOVE:"""
                     {"role": "user", "content": user_prompt}
                 ],
                 max_tokens=1200,
-                temperature=0.3,  # Lower temperature for more grounded responses
+                temperature=0.1,  # Lower temperature for more grounded responses
                 top_p=0.9
             )
             
@@ -3110,13 +2955,13 @@ RESPOND USING ONLY THE DOCUMENT CONTENT ABOVE:"""
         # Combine all signals with better balance
         # Ensure base score dominates to prevent over-penalization
         final_score = (
-            base_score * 0.8 +  # Higher base score weight for more lenient filtering
-            keyword_score * 0.15 +  # Reduced keyword weight
-            quality_score * 0.05   # Reduced quality weight
+            base_score * 0.7 +  # Increased base score weight
+            keyword_score * 0.2 +  # Reduced keyword weight
+            quality_score * 0.1   # Reduced quality weight
         ) * content_type_boost * strategy_multiplier
         
-        # Ensure minimum score is not too low - more lenient
-        final_score = max(final_score, base_score * 0.3)
+        # Ensure minimum score is not too low
+        final_score = max(final_score, base_score * 0.5)
         
         return min(final_score, 1.0)  # Cap at 1.0
 
@@ -3480,7 +3325,7 @@ RESPOND USING ONLY THE DOCUMENT CONTENT ABOVE:"""
             # Get API key
             api_key = os.getenv('LLAMA_PARSE_API_KEY')
             if not api_key:
-                logger.error("LLAMA PARSE_API_KEY not found")
+                logger.error("LLAMA_PARSE_API_KEY not found")
                 return
             
             # Official LlamaParse API base URL

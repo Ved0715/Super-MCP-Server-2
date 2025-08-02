@@ -123,10 +123,14 @@ class PerfectMCPServer:
 
          # Initialize Research Paper Retriever
         try:
+            logger.info("🔧 Initializing Research Paper Retriever...")
             self.paper_retriever = PaperRetriever()
             logger.info("✅ Research Paper Retriever initialized successfully")
         except Exception as e:
             logger.error(f"❌ Failed to initialize Research Paper Retriever: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             self.paper_retriever = None
 
 
@@ -292,9 +296,7 @@ class PerfectMCPServer:
                             "document_uuid": {"type": "string", "description": "Document UUID for specific paper"},
                             "search_type": {"type": "array", "items": {"type": "string"}, "enum": ["general", "methodology", "results", "discussion", "conclusion", "statistical", "citations"], "default": ["general"]},
                             "similarity_threshold": {"type": "number", "default": 0.7, "minimum": 0.0, "maximum": 1.0},
-                            "max_images": {"type": "integer", "default": 3, "minimum": 1, "maximum": 10, "description": "Maximum number of images to return"},
-                            "max_tables": {"type": "integer", "default": 3, "minimum": 1, "maximum": 10, "description": "Maximum number of tables to return"},
-                            "max_text_chunks": {"type": "integer", "default": 10, "minimum": 0, "maximum": 50, "description": "Maximum number of text chunks to return"}
+                            "max_chunks": {"type": "integer", "default": 15, "minimum": 1, "maximum": 50, "description": "Maximum number of chunks to return"}
                         },
                         "required": ["query", "user_id", "document_uuid"]
                     }
@@ -3823,55 +3825,90 @@ The operation has been successfully cancelled and will stop as soon as possible.
 
     async def _handle_multimodel_paper_search(self, query: str, user_id: str, 
                                     document_uuid: str, search_type: List[str], similarity_threshold: float, 
-                                    max_images: int, max_tables: int, 
-                                    max_text_chunks: int, focus_sections: List[str] = []):
+                                    max_chunks: int, focus_sections: List[str] = []):
         """Handle multimodel paper search with rich multimodal response formatting."""
         logger.debug(f"Multimodel paper search: {query}")
         logger.debug(f"Target namespace: user_{user_id}_doc_{document_uuid}")
 
-        namespace = f"user_{user_id}_doc_{document_uuid}"
-        # namespace = "llms_survey_and_challenges"
+        # Check if paper_retriever is available
+        if self.paper_retriever is None:
+            logger.error("❌ PaperRetriever is not initialized")
+            import json
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "answer": "PaperRetriever is not available. Please check the server initialization logs for errors."
+                }, indent=2)
+            )]
+
+        # Use the namespace that has content (for testing)
+        namespace = "llms_survey_and_challenges"
+        # namespace = f"user_{user_id}_doc_{document_uuid}"
 
         result = await self.paper_retriever.search_multimodal_content( 
             query=query,
             paper_id=namespace,
-            max_images=max_images,
-            max_tables=max_tables,
-            max_text_chunks=max_text_chunks
+            max_chunks=max_chunks
         )
         
         # Extract clean answer from the rich multimodal results
-        if result['success']:
-            multimodal_results = result['multimodal_results']
-            inline_elements = multimodal_results.get('inline_elements', [])
+        # if result['success']:
+        #     multimodal_results = result['multimodal_results']
+        #     inline_elements = multimodal_results.get('inline_elements', [])
             
-            # Extract just the text content (the actual AI-generated answers)
-            answer_parts = []
-            for element in inline_elements:
-                if element.get('type') == 'text':
-                    content = element.get('content', '').strip()
-                    if content:
-                        answer_parts.append(content)
+        #     # Extract text content (the actual AI-generated answers)
+        #     answer_parts = []
+        #     images = []
+        #     tables = []
             
-            if answer_parts:
-                # Join all text responses into one clean answer
-                clean_answer = "\n\n".join(answer_parts)
-            else:
-                clean_answer = "No relevant content found for your query."
+        #     for element in inline_elements:
+        #         if element.get('type') == 'text':
+        #             content = element.get('content', '').strip()
+        #             if content:
+        #                 answer_parts.append(content)
+        #         elif element.get('type') == 'image':
+        #             # Extract image data from the nested 'data' field
+        #             img_data = element.get('data', {})
+        #             image_data = {
+        #                 'url': img_data.get('image_url', ''),
+        #                 'description': img_data.get('image_summary', ''),
+        #                 'alt_text': img_data.get('ocr_text', ''),
+        #                 'page_number': img_data.get('page_number'),
+        #                 'image_id': img_data.get('image_id', '')
+        #             }
+        #             images.append(image_data)
+        #         elif element.get('type') == 'table':
+        #             # Extract table data from the nested 'data' field
+        #             table_data_element = element.get('data', {})
+        #             table_data = {
+        #                 'content': table_data_element.get('table_content', ''),
+        #                 'summary': table_data_element.get('table_summary', ''),
+        #                 'page_number': table_data_element.get('page_number'),
+        #                 'table_id': table_data_element.get('table_id', '')
+        #             }
+        #             tables.append(table_data)
+            
+        #     if answer_parts:
+        #         # Join all text responses into one clean answer
+        #         clean_answer = "\n\n".join(answer_parts)
+        #     else:
+        #         clean_answer = "No relevant content found for your query."
                 
-            json_response = {
-                "answer": clean_answer
-            }
+        #     json_response = {
+        #         "answer": clean_answer,
+        #         "images": images,
+        #         "tables": tables
+        #     }
             
-        else:
-            json_response = {
-                "answer": f"Search failed: {result.get('error', 'Unknown error')}"
-            }
+        # else:
+        #     json_response = {
+        #         "answer": f"Search failed: {result.get('error', 'Unknown error')}"
+        #     }
             
         import json
         return [TextContent(
             type="text",
-            text=json.dumps(json_response, indent=2)
+            text=json.dumps(result, indent=2)
         )]
 
     

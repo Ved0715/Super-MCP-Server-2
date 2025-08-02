@@ -379,9 +379,7 @@ class MCPHTTPTransport:
                 arguments.setdefault("search_type", ["general"])
                 arguments.setdefault("similarity_threshold", 0.7)
                 arguments.setdefault("focus_sections", [])
-                arguments.setdefault("max_images", 3)
-                arguments.setdefault("max_tables", 3)
-                arguments.setdefault("max_text_chunks", 10)
+                arguments.setdefault("max_chunks", 15)
                 result = await self.mcp_server._handle_multimodel_paper_search(**arguments)
             elif tool_name == "document_qa":
                 result = await self.mcp_server._handle_document_qa(**arguments)

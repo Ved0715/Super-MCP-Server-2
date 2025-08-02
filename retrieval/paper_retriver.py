@@ -120,8 +120,19 @@ Use [Page X] format and bullet points where necessary.
         """Initialize the research paper retriever"""
         print("📚 Initializing Research Paper Retrieval System...")
         
-        self.openai_client = OpenAI(api_key=config.openai_api_key)
-        self.pc = Pinecone(api_key=config.pinecone_api_key)
+        try:
+            self.openai_client = OpenAI(api_key=config.openai_api_key)
+            print("✅ OpenAI client initialized")
+        except Exception as e:
+            print(f"❌ OpenAI client initialization failed: {e}")
+            raise
+        
+        try:
+            self.pc = Pinecone(api_key=config.pinecone_api_key)
+            print("✅ Pinecone client initialized")
+        except Exception as e:
+            print(f"❌ Pinecone client initialization failed: {e}")
+            raise
         
         # Research-specific configuration
         self.index_name = os.getenv('PINECONE_INDEX_NAME_TEST', 'test')  # Use test index
@@ -136,7 +147,16 @@ Use [Page X] format and bullet points where necessary.
         # Research paper specific prompts - now handled dynamically
         
         # Initialize multimodal integrator
-        self.multimodal_integrator = MultimodalIntegrator()
+        try:
+            print("🔧 Initializing MultimodalIntegrator...")
+            self.multimodal_integrator = MultimodalIntegrator()
+            print("✅ MultimodalIntegrator initialized successfully")
+        except Exception as e:
+            print(f"❌ MultimodalIntegrator initialization failed: {e}")
+            print(f"Error details: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise
         
         self.setup_models()
         self.setup_pinecone()
@@ -503,9 +523,7 @@ Use [Page X] format and bullet points where necessary.
     async def search_multimodal_content(self, 
                                       query: str, 
                                       paper_id: str,
-                                      max_images: int = 3,
-                                      max_tables: int = 3, 
-                                      max_text_chunks: int = 8) -> Dict[str, Any]:
+                                      max_chunks: int = 15) -> Dict[str, Any]:
         """
         Search for multimodal content (images, tables, text) in a processed paper.
         
@@ -526,27 +544,19 @@ Use [Page X] format and bullet points where necessary.
             results = self.multimodal_integrator.query_multimodal_content(
                 query=query,
                 pdf_id=paper_id,
-                max_images=max_images,
-                max_tables=max_tables,
-                max_text_chunks=max_text_chunks
+                max_chunks= max_chunks
             )
+
+
+            print(f" Results: {results}")
+            
+
             
             # Add metadata about the search
-            enhanced_results = {
-                "search_metadata": {
-                    "query": query,
-                    "paper_id": paper_id,
-                    "max_images": max_images,
-                    "max_tables": max_tables,
-                    "max_text_chunks": max_text_chunks,
-                    "timestamp": time.time()
-                },
-                "multimodal_results": results,
-                "success": True
-            }
+
             
             logger.debug(f"Found multimodal content with {len(results.get('inline_elements', []))} elements")
-            return enhanced_results
+            return results
             
         except Exception as e:
             logger.error(f"Error in multimodal search: {str(e)}")

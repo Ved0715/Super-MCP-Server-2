@@ -3007,10 +3007,12 @@ def estimate_character_capacity(box_width, box_height):
     return int(total_capacity * 0.85)
 
 def create_multi_box_grid_layout(slide, boxes_data, boxes_plan):
-    """Create a multi-box grid layout with dynamic height calculation and template-safe positioning"""
+    """Create a multi-box grid layout using proper auto-shapes to avoid compatibility errors"""
     from pptx.util import Inches, Pt
+    from pptx.enum.shapes import MSO_SHAPE
     from pptx.enum.text import PP_ALIGN
     from pptx.dml.color import RGBColor
+    from pptx.enum.dml import MSO_SHADOW_STYLE
     
     print(f"   Creating multi-box grid layout with {len(boxes_data)} boxes")
     
@@ -3018,153 +3020,133 @@ def create_multi_box_grid_layout(slide, boxes_data, boxes_plan):
     if num_boxes == 0:
         return
     
-    # STEP 0: Preserve existing template elements (prevent line corruption)
-    preserved_elements = preserve_template_elements(slide)
-    if preserved_elements:
-        print(f"   WARNING: Preserving {len(preserved_elements)} existing template elements")
-    
-    # STEP 1: Calculate optimal content height for all boxes (ensures equal heights)
-    max_content_height = calculate_optimal_box_height(boxes_data)
-    print(f"   DIMENSION: Calculated optimal box height: {max_content_height.inches:.1f} inches")
-    
-    # STEP 2: Determine grid layout with content-adaptive heights
+    # Calculate layout
     if num_boxes <= 2:
         rows, cols = 1, 2
         box_width = Inches(4)
-        box_height = max_content_height
+        box_height = Inches(2.5)
     elif num_boxes == 3:
         rows, cols = 1, 3
         box_width = Inches(3.1)
-        box_height = max_content_height
+        box_height = Inches(2.5)
     elif num_boxes == 4:
         rows, cols = 2, 2
         box_width = Inches(3.8)
-        box_height = max_content_height
+        box_height = Inches(2.2)
     else:
         rows, cols = 2, 3
         box_width = Inches(3.2)
-        box_height = max_content_height
+        box_height = Inches(2.0)
     
-    # Calculate starting positions (fixed unit consistency)
-    spacing_inches = 0.2  # Spacing between boxes in inches
+    # Calculate starting positions
+    spacing_inches = 0.2
     total_width = cols * box_width.inches + (cols - 1) * spacing_inches
-    total_height = rows * box_height.inches + (rows - 1) * spacing_inches
+    slide_width = 10.0
+    start_x = (slide_width - total_width) / 2
+    start_y = 1.8
     
-    # Use standard slide width (10 inches for 4:3, adjust if needed)
-    slide_width = 10.0  # Standard PowerPoint slide width in inches
-    start_x = (slide_width - total_width) / 2  # Center horizontally
-    start_y = 1.8  # Start below title
-    
-    # Create boxes in grid pattern
+    # Create boxes using proper auto-shapes
     for i, box_data in enumerate(boxes_data[:rows * cols]):
         row = i // cols
         col = i % cols
         
-        # Calculate position for this box (fixed math - keep units consistent)
+        # Calculate position
         box_x_inches = start_x + col * (box_width.inches + spacing_inches)
         box_y_inches = start_y + row * (box_height.inches + spacing_inches)
         box_x = Inches(box_x_inches)
         box_y = Inches(box_y_inches)
         
-        # Create the text box with error handling
         try:
-            text_box = slide.shapes.add_textbox(box_x, box_y, box_width, box_height)
-            if not hasattr(text_box, 'text_frame') or not text_box.text_frame:
-                print(f"   ERROR: Text box {i} does not have text_frame")
-                continue
-            text_frame = text_box.text_frame
+            # ✅ Create proper auto-shape that supports advanced features
+            box = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, box_x, box_y, box_width, box_height)
+            
+            # ✅ Safe auto-shape adjustments
+            if hasattr(box, 'adjustments') and len(box.adjustments) > 0:
+                box.adjustments[0] = 0.1  # Rounded corners
+            
+            # ✅ Advanced styling
+            box.fill.solid()
+            colors = [
+                RGBColor(240, 248, 255),  # Light blue
+                RGBColor(240, 255, 240),  # Light green  
+                RGBColor(255, 240, 240),  # Light red
+                RGBColor(255, 255, 240),  # Light yellow
+                RGBColor(248, 240, 255),  # Light purple
+                RGBColor(240, 255, 255),  # Light cyan
+            ]
+            box.fill.fore_color.rgb = colors[i % len(colors)]
+            
+            # ✅ Professional border
+            box.line.color.rgb = RGBColor(70, 130, 180)
+            box.line.width = Pt(2)
+            
+            # ✅ Add subtle shadow
+            try:
+                box.shadow.inherit = False
+                box.shadow.style = MSO_SHADOW_STYLE.OUTER
+                box.shadow.blur_radius = Pt(3)
+                box.shadow.distance = Pt(2)
+                box.shadow.direction = 315  # Bottom-right shadow
+            except:
+                pass  # Shadow might not be supported in all versions
+            
+            # ✅ Add text content
+            text_frame = box.text_frame
+            text_frame.clear()
+            text_frame.margin_left = Inches(0.1)
+            text_frame.margin_right = Inches(0.1)
+            text_frame.margin_top = Inches(0.1)
+            text_frame.margin_bottom = Inches(0.1)
             text_frame.word_wrap = True
-            text_frame.margin_left = Pt(12)
-            text_frame.margin_right = Pt(12)
-            text_frame.margin_top = Pt(12)
-            text_frame.margin_bottom = Pt(12)
-        except Exception as e:
-            print(f"   ERROR: Error creating text box {i}: {e}")
-            continue  # Skip this box if it can't be created
-        
-        # Get box content
-        box_title = box_data.get('title', f'Item {i+1}')
-        box_content = box_data.get('content', 'No content available')
-        box_details = box_data.get('details', '')
-        
-        # Enhanced content formatting with improved space estimation
-        content_length = len(box_content)
-        details_length = len(box_details) if box_details else 0
-        total_content_length = content_length + details_length
-        
-        # Calculate available character space based on box dimensions and font size
-        # This provides much better content-to-space estimation
-        available_chars = estimate_character_capacity(box_width, box_height)
-        
-        # Smart content adaptation based on available space
-        if total_content_length <= available_chars:
-            # Content fits - show everything
+            
+            # Get box content
+            box_title = box_data.get('title', f'Item {i+1}')
+            box_content = box_data.get('content', 'No content available')
+            box_details = box_data.get('details', '')
+            
+            # Smart content formatting
             if box_details and box_details != box_content and "not specified" not in box_details.lower():
                 full_text = f"{box_title}\n\n{box_content}\n\n{box_details}"
             else:
                 full_text = f"{box_title}\n\n{box_content}"
-        else:
-            # Content needs adaptation - fit to available space
-            title_space = len(box_title) + 4  # Title + spacing
-            remaining_space = available_chars - title_space
             
-            if box_details and len(box_details) > 50:
-                # Split space between content and details
-                content_space = int(remaining_space * 0.7)
-                details_space = int(remaining_space * 0.3)
+            # Adapt content to fit in box
+            if len(full_text) > 250:  # If content is too long
+                available_space = 200  # Character limit for box
+                title_space = len(box_title) + 4
+                content_space = available_space - title_space
                 adapted_content = smart_content_adaptation(box_content, content_space)
-                adapted_details = smart_content_adaptation(box_details, details_space)
-                full_text = f"{box_title}\n\n{adapted_content}\n\n{adapted_details}"
-            else:
-                # Use all space for main content
-                adapted_content = smart_content_adaptation(box_content, remaining_space)
                 full_text = f"{box_title}\n\n{adapted_content}"
-        
-        text_frame.text = full_text
-        
-        # Enhanced text styling with dynamic font sizing based on content density
-        if text_frame.paragraphs:
-            # Dynamic title font sizing based on box size and content amount
-            if box_height.inches > 3:
-                title_size = Pt(16)  # Larger title for larger boxes
-                content_size = Pt(13)  # Readable content size
-            elif box_height.inches > 2.5:
-                title_size = Pt(14)  # Medium title size
-                content_size = Pt(11)  # Slightly smaller content
-            else:
-                title_size = Pt(12)  # Compact title for smaller boxes
-                content_size = Pt(10)  # Compact content size
             
-            # Apply title formatting
-            text_frame.paragraphs[0].font.size = title_size
-            text_frame.paragraphs[0].font.bold = True
-            text_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+            text_frame.text = full_text
             
-            # Apply content formatting with improved readability
-            for j in range(1, len(text_frame.paragraphs)):
-                text_frame.paragraphs[j].font.size = content_size
-                text_frame.paragraphs[j].alignment = PP_ALIGN.LEFT
+            # Format text with proper sizing
+            if text_frame.paragraphs:
+                # Title formatting
+                text_frame.paragraphs[0].font.size = Pt(14)
+                text_frame.paragraphs[0].font.bold = True
+                text_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
                 
-                # Add better line spacing for content-rich boxes
-                if total_content_length > 300:
-                    text_frame.paragraphs[j].space_after = Pt(6)  # More spacing for dense content
-        
-        # Add alternating background colors first (proper styling order)
-        colors = [
-            RGBColor(245, 245, 255),  # Light blue
-            RGBColor(245, 255, 245),  # Light green
-            RGBColor(255, 245, 245),  # Light red
-            RGBColor(255, 255, 245),  # Light yellow
-            RGBColor(250, 245, 255),  # Light purple
-            RGBColor(245, 250, 255),  # Light cyan
-        ]
-        
-        text_box.fill.solid()
-        text_box.fill.fore_color.rgb = colors[i % len(colors)]
-        
-        # Add border with CORRECT initialization for python-pptx
-        text_box.line.color.rgb = RGBColor(80, 80, 80)  # Dark gray border - this makes line visible
-        text_box.line.width = Pt(1.5)
+                # Content formatting
+                for j in range(1, len(text_frame.paragraphs)):
+                    text_frame.paragraphs[j].font.size = Pt(11)
+                    text_frame.paragraphs[j].alignment = PP_ALIGN.LEFT
+                    
+        except Exception as e:
+            print(f"   ERROR: Error creating auto-shape box {i}: {e}")
+            # Fallback to simple text box if auto-shape fails
+            try:
+                text_box = slide.shapes.add_textbox(box_x, box_y, box_width, box_height)
+                text_frame = text_box.text_frame
+                text_frame.text = f"{box_data.get('title', f'Item {i+1}')}\n\n{box_data.get('content', 'No content available')}"
+                text_box.fill.solid()
+                text_box.fill.fore_color.rgb = RGBColor(240, 248, 255)
+                text_box.line.color.rgb = RGBColor(80, 80, 80)
+                text_box.line.width = Pt(1)
+            except Exception as e2:
+                print(f"   ERROR: Fallback text box also failed for box {i}: {e2}")
+                continue
+
 
 def create_bullet_slide(prs, question, content, slide_num):
     """Create a bullet point slide"""

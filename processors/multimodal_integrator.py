@@ -2872,7 +2872,7 @@ Create a high-quality, informative response that provides real value to the user
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                max_tokens=2000,  # Increased for more comprehensive responses
+                max_tokens=3000,  # Increased for more comprehensive responses
                 temperature=0.3,  # Slightly higher for more creative and natural responses
                 top_p=0.9
             )

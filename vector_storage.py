@@ -636,7 +636,7 @@ class AdvancedVectorStorage:
                 scores.append(match.score)
                 if match.score >= similarity_threshold:
                     filtered_results.append({
-                        'content': match.metadata.get('content', ''),
+                        'content': match.metadata.get('text', ''),
                         'metadata': match.metadata,
                         'score': match.score,
                         'chunk_id': match.id

@@ -371,13 +371,13 @@ class TableProcessor:
         
         for page_data in json_data.get('pages', []):
             page_num = page_data.get('page', 0)
-            text_content = page_data.get('text', '') or page_data.get('md', '')
+            text = page_data.get('text', '') or page_data.get('md', '')
             
-            if not text_content:
+            if not text:
                 continue
             
             # Look for table-like patterns
-            table_patterns = self._find_table_patterns_in_text(text_content)
+            table_patterns = self._find_table_patterns_in_text(text)
             
             for pattern_idx, pattern in enumerate(table_patterns):
                 enhanced_table = {
@@ -970,10 +970,10 @@ class TableProcessor:
             
             # Content clarity based on text quality
             if content_formats:
-                text_content = ' '.join(content_formats.values())
-                if text_content:
+                text = ' '.join(content_formats.values())
+                if text:
                     # Simple heuristic: longer content with varied words = higher clarity
-                    words = text_content.split()
+                    words = text.split()
                     unique_words = set(words)
                     clarity = min(1.0, len(unique_words) / max(len(words), 1) * 2)
                     metrics['content_clarity'] = clarity

@@ -44,6 +44,8 @@ class ImageProcessor:
         # Initialize S3 handler
         try:
             from s3_handler import S3Handler
+            from config import config  # Import config instance
+            self.config = config  # Store config reference
             self.s3_handler = S3Handler()
             self.use_s3 = True
             logger.info("S3 storage enabled for image processing")
@@ -51,6 +53,7 @@ class ImageProcessor:
             logger.warning(f"S3 initialization failed: {e}. Using local storage.")
             self.s3_handler = None
             self.use_s3 = False
+            self.config = None
         
         # Image processing settings
         self.supported_formats = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'}
@@ -64,8 +67,7 @@ class ImageProcessor:
             
             # Setup storage location (S3 or local)
             if self.use_s3:
-                from config import get_pdf_s3_prefix
-                storage_prefix = get_pdf_s3_prefix(pdf_name)
+                storage_prefix = self.config.get_pdf_s3_prefix(pdf_name)
                 logger.info(f"Using S3 storage: {storage_prefix}")
             else:
                 # Use temporary directory for local storage
@@ -735,7 +737,7 @@ class ImageProcessor:
         # Process OCR data from different possible sources
         ocr_sources = [
             img_data.get('ocr', []),
-            img_data.get('text_content', []),
+            img_data.get('text', []),
             img_data.get('extracted_text', [])
         ]
         

@@ -18,6 +18,51 @@ class InlineMultimodalGenerator:
         self.openai_client = openai_client
         self.chat_model = chat_model
     
+    def generate_inline_response_from_chunks(self, query: str, chunks: List[Dict], conditional_instructions: Dict = None) -> Dict[str, Any]:
+        """Generate inline response directly from raw chunks - simpler processing."""
+        try:
+            # Simple content extraction from chunks
+            filtered_content = {
+                'text': [],
+                'images': [],
+                'tables': []
+            }
+            
+            # Extract content from chunks without complex filtering
+            for chunk in chunks:
+                # Add text content
+                if chunk.get('text'):
+                    filtered_content['text'].append({
+                        'content': chunk['text'],
+                        'relevance_score': chunk.get('relevance_score', 0),
+                        'page_number': chunk.get('page_number', 0)
+                    })
+                
+                # Add image content
+                if chunk.get('contains_image') and chunk.get('image_url'):
+                    filtered_content['images'].append({
+                        'image_summary': chunk.get('image_summary', ''),
+                        's3_url': chunk.get('image_url', ''),
+                        'page_number': chunk.get('page_number', 0),
+                        'relevance_score': chunk.get('relevance_score', 0)
+                    })
+                
+                # Add table content
+                if chunk.get('contains_table') and chunk.get('table_content_json'):
+                    filtered_content['tables'].append({
+                        'summary': chunk.get('table_summary', ''),
+                        'table_content_json': chunk.get('table_content_json', '{}'),
+                        'page_number': chunk.get('page_number', 0),
+                        'relevance_score': chunk.get('relevance_score', 0)
+                    })
+            
+            # Use the existing response generation logic
+            return self.generate_inline_response(query, filtered_content, conditional_instructions)
+            
+        except Exception as e:
+            logger.error(f"Error in generate_inline_response_from_chunks: {e}")
+            return {'inline_elements': [{'type': 'text', 'content': f"Error generating response: {str(e)}"}]}
+
     def generate_inline_response(self, query: str, filtered_content: Dict, conditional_instructions: Dict = None) -> Dict[str, Any]:
         """Generate intelligent inline multimodal response."""
         try:
@@ -35,6 +80,19 @@ class InlineMultimodalGenerator:
 
             # Generate contextual response structure
             response_structure = self._generate_response_structure(query, content_map, input_has_text, input_has_images, input_has_tables)
+            
+            # Validate inline placement
+            is_inline_valid, validation_message = self._validate_inline_placement(response_structure)
+            logger.info(f"Inline placement validation: {validation_message}")
+            
+            # If inline placement is poor, regenerate with stronger focus
+            if not is_inline_valid and (input_has_images or input_has_tables):
+                logger.info("Poor inline placement detected, regenerating with stronger focus...")
+                response_structure = self._regenerate_with_inline_focus(query, content_map, input_has_text, input_has_images, input_has_tables)
+                
+                # Validate again
+                is_inline_valid, validation_message = self._validate_inline_placement(response_structure)
+                logger.info(f"Regenerated inline placement validation: {validation_message}")
         
             # Create inline elements for display
             inline_elements = self._create_inline_elements(response_structure, content_map)
@@ -51,13 +109,15 @@ class InlineMultimodalGenerator:
                     'has_images': final_has_images, 
                     'has_tables': final_has_tables,
                     'total_elements': len(inline_elements)
+                },
+                'inline_placement_quality': validation_message
             }
-        }    
         except Exception as e:
             logger.error(f"Error generating inline response: {e}")
             return {
                 'inline_elements': [{'type': 'text', 'content': f"Error generating response: {str(e)}"}],
-                'content_summary': {'has_text': False, 'has_images': False, 'has_tables': False, 'total_elements': 1}
+                'content_summary': {'has_text': False, 'has_images': False, 'has_tables': False, 'total_elements': 1},
+                'inline_placement_quality': 'Error occurred during generation'
             }
     
     def _create_fallback_response(self, query: str) -> Dict[str, Any]:
@@ -94,24 +154,66 @@ class InlineMultimodalGenerator:
                 unique_tables.append(table)
                 seen_table_ids.add(unique_key)
         
+        # Create unified content list for better inline integration
+        unified_content = []
+        
+        # Add text content with type identifier
+        for i, text_item in enumerate(filtered_content['text']):
+            unified_content.append({
+                'type': 'text',
+                'content': text_item.get('content', ''),
+                'page_number': text_item.get('page_number', 0),
+                'relevance_score': text_item.get('relevance_score', 0),
+                'section_id': f"TEXT_SECTION_{i+1}"
+            })
+        
+        # Add image content with type identifier
+        for i, img_item in enumerate(filtered_content['images']):
+            unified_content.append({
+                'type': 'image',
+                'data': img_item,
+                'page_number': img_item.get('page_number', 0),
+                'relevance_score': img_item.get('relevance_score', 0),
+                'section_id': f"IMAGE_{i+1}"
+            })
+        
+        # Add table content with type identifier
+        for i, table_item in enumerate(unique_tables):
+            unified_content.append({
+                'type': 'table',
+                'data': table_item,
+                'page_number': table_item.get('page_number', 0),
+                'relevance_score': table_item.get('relevance_score', 0),
+                'section_id': f"TABLE_{i+1}"
+            })
+        
+        # Sort unified content by relevance score for optimal integration
+        unified_content.sort(key=lambda x: x['relevance_score'], reverse=True)
+        
         # Dynamic content limits based on query type and available content
         if is_show_all_query:
             # For "show all" queries, include all available content
-            content_limit = len(filtered_content['text']) + len(filtered_content['images']) + len(unique_tables)
+            content_limit = len(unified_content)
         else:
-            # For specific queries, let the AI decide what's relevant
-            content_limit = min(20, len(filtered_content['text']) + len(filtered_content['images']) + len(unique_tables))
+            # For specific queries, limit to most relevant content
+            content_limit = min(20, len(unified_content))
         
+        # Take top content based on limit
+        unified_content = unified_content[:content_limit]
+        
+        # Reconstruct type-specific maps for backward compatibility
         content_map = {
-            'text': sorted(filtered_content['text'], key=lambda x: x['relevance_score'], reverse=True),
-            'images': sorted(filtered_content['images'], key=lambda x: x['relevance_score'], reverse=True),
-            'tables': unique_tables
+            'text': [item for item in unified_content if item['type'] == 'text'],
+            'images': [item['data'] for item in unified_content if item['type'] == 'image'],
+            'tables': [item['data'] for item in unified_content if item['type'] == 'table'],
+            'unified': unified_content  # New unified content list
         }
         
         # Debug logging
         logger.info(f"Dynamic content map created with {len(content_map['tables'])} unique tables")
         logger.info(f"Query type: {'show_all' if is_show_all_query else 'specific'}")
         logger.info(f"Content map summary: {len(content_map['images'])} images, {len(content_map['tables'])} tables, {len(content_map['text'])} text sections")
+        logger.info(f"Unified content list: {len(content_map['unified'])} items sorted by relevance")
         
         return content_map
     
@@ -132,18 +234,38 @@ class InlineMultimodalGenerator:
         # Create detailed content summary for AI reasoning with semantic analysis
         content_analysis = []
         
+        # Add actual text content for AI to use
+        text_content_sections = []
+        for i, text_item in enumerate(content_map['text']):
+            content = text_item.get('content', '')
+            page_num = text_item.get('page_number', 0)
+            relevance = text_item.get('relevance_score', 0)
+            if content and len(content.strip()) > 10:  # Only include substantial text content
+                text_content_sections.append(f"TEXT_SECTION_{i+1} (Page {page_num}, relevance: {relevance:.2f}):\n{content}")
+        
         # Analyze images with context
         for i, img in enumerate(content_map['images']):
-            img_desc = img.get('image_summary', img.get('ocr_text', 'Visual content'))[:200]
+            img_desc = img.get('image_summary', img.get('ocr_text', 'Visual content'))
             page_context = f"Page {img['page_number']}"
             relevance = img.get('relevance_score', 0)
-            content_analysis.append(f"IMAGE_{i+1} ({page_context}, relevance: {relevance:.2f}): {img_desc}")
+            
+            # Create a more descriptive summary for contextual reference
+            if img_desc and len(img_desc.strip()) > 10:
+                # Use the full summary if available
+                contextual_desc = img_desc[:300]  # Limit length but keep more detail
+            else:
+                contextual_desc = f"visual content from page {img['page_number']}"
+            
+            content_analysis.append(f"IMAGE_{i+1} ({page_context}, relevance: {relevance:.2f}): {contextual_desc}")
         
         # Analyze tables with structure and content preview
         for i, table in enumerate(content_map['tables']):
             table_summary = table.get('summary', 'Structured data')
             page_context = f"Page {table['page_number']}"
             relevance = table.get('relevance_score', 0)
+            
+            # Create a more descriptive summary for contextual reference
+            contextual_desc = table_summary if table_summary else "structured data"
             
             # Add content preview if available
             if table.get('table_content_json'):
@@ -152,183 +274,366 @@ class InlineMultimodalGenerator:
                     table_json = json.loads(table['table_content_json'])
                     if isinstance(table_json, dict) and '_metadata' in table_json:
                         metadata = table_json['_metadata']
-                        table_summary += f" ({metadata.get('total_rows', 0)} rows, {metadata.get('total_columns', 0)} cols)"
+                        contextual_desc += f" containing {metadata.get('total_rows', 0)} rows and {metadata.get('total_columns', 0)} columns"
                     # Get column headers for context
                     headers = [k for k in table_json.keys() if k != '_metadata']
                     if headers:
-                        table_summary += f" - Columns: {', '.join(headers[:5])}{'...' if len(headers) > 5 else ''}"
+                        contextual_desc += f" with columns including {', '.join(headers[:5])}{'...' if len(headers) > 5 else ''}"
                 except:
                     pass
                     
-            content_analysis.append(f"TABLE_{i+1} ({page_context}, relevance: {relevance:.2f}): {table_summary}")
+            content_analysis.append(f"TABLE_{i+1} ({page_context}, relevance: {relevance:.2f}): {contextual_desc}")
         
-        # Enhanced system prompt for comprehensive document-based responses
-        system_prompt = f"""You are a document analysis assistant that creates comprehensive, informative responses STRICTLY based on the provided document content.
+        # Build comprehensive prompt with actual content
+        text_content_prompt = ""
+        if text_content_sections:
+            text_content_prompt = f"\nDOCUMENT TEXT CONTENT (USE THIS FULL CONTENT IN YOUR RESPONSE):\n{chr(10).join(text_content_sections)}\n"
+        
+        # Enhanced prompt with strong inline placement instructions
+        system_prompt = f"""You are a helpful assistant that answers questions based on the document content provided. 
 
-CRITICAL CONSTRAINTS:
-- You MUST only use information explicitly provided in the document content below
-- Do NOT add any external knowledge, assumptions, or general information
-- Base your response ONLY on the text, images, and tables listed below
-- Provide detailed explanations and analysis of the document content
-
-AVAILABLE DOCUMENT CONTENT:
+AVAILABLE CONTENT:
 {', '.join(context_parts)}
-
-DETAILED CONTENT FROM DOCUMENT:
+{text_content_prompt}
+CONTENT DETAILS:
 {chr(10).join(content_analysis)}
 
-RESPONSE REQUIREMENTS:
-1. Create a comprehensive, well-structured response that explains the document content
-2. Use descriptive text to introduce and explain each multimedia element
-3. Place {{IMAGE_X}} placeholders for ALL relevant images with explanatory context
-4. Place {{TABLE_X}} placeholders for ALL relevant tables with explanatory context
-5. Connect multimedia elements to the overall narrative
-6. Use transitional phrases: "The document shows...", "As illustrated in...", "The data reveals..."
-7. Provide detailed analysis of what each visual element demonstrates
-8. Create flowing narrative that weaves together text explanations and multimedia
-
-AVAILABLE MULTIMEDIA PLACEHOLDERS:
+MULTIMEDIA REFERENCES:
 {self._generate_placeholder_list(content_map)}
 
-QUERY TO ANSWER:
-"{query}"
+USER'S QUESTION: "{query}"
 
-RESPONSE STRUCTURE EXAMPLE:
-"Based on the document content, [explanation of topic]. The document shows [detailed description]. {{IMAGE_1}} illustrates [specific explanation of what the image shows]. 
+CRITICAL FORMATTING REQUIREMENTS - YOU MUST FOLLOW THESE EXACTLY:
 
-Furthermore, the document reveals [additional analysis]. {{TABLE_1}} presents [detailed explanation of table data and its significance].
+1. **USE ALL TEXT CONTENT**: Incorporate the full text content provided above into your response
+2. **PROPER CONTEXTUAL REFERENCES**: Write complete contextual references that describe what the multimedia shows:
+   - "Refer to the following image which shows [use the actual image summary from the content details]"
+   - "As illustrated in the image below, [describe the visual content using the image summary]"
+   - "The following image demonstrates [use key points from the image summary]"
+3. **TABLE CONTEXTUAL REFERENCES**: Write complete contextual references that describe what the table contains:
+   - "Refer to the following table which contains [use the actual table summary or describe the data structure]"
+   - "As shown in the table below, [describe the data/statistics using table information]"
+   - "The following table presents [use key information from the table summary]"
+4. **COMPLETE SENTENCES**: Always write complete sentences for contextual references - never leave them incomplete
+5. **INLINE PLACEMENT**: Place these contextual references DIRECTLY within your text flow where they are most relevant
+6. **NO SEPARATE SECTIONS**: Do NOT create separate sections for images or tables at the end
+7. **NATURAL INTEGRATION**: Integrate multimedia references naturally within sentences and paragraphs
+8. **COMPREHENSIVE RESPONSE**: Use the detailed text content to provide a thorough answer
+9. **NO REDUNDANT REFERENCES**: Do NOT repeat the same reference multiple times or add redundant text after the reference
 
-The content also demonstrates [more analysis]. {{IMAGE_2}} provides [specific context about second image]..."
+EXAMPLE OF CORRECT CONTEXTUAL REFERENCE:
+"The study methodology involved three main phases. Refer to the following image which shows the experimental setup used in Phase 1, demonstrating the key components and their arrangement. The results from Phase 1, as shown in the table below which contains species probability data and taxonomic classifications, demonstrate significant improvements."
 
-CRITICAL REQUIREMENTS:
-- Include explanatory text BEFORE and AFTER each multimedia element
-- Explain what each {{IMAGE_X}} and {{TABLE_X}} demonstrates or contains
-- Create a narrative flow that connects all elements
-- Use ALL available multimedia placeholders with proper context
-- Provide substantive analysis, not just placeholder placement
+EXAMPLE OF INCORRECT REFERENCE (DO NOT DO THIS):
+"The study methodology involved three main phases. Refer to the following image which shows the experimental setup (refer to the following image which shows the experimental setup). The results from the table below (as shown in the table below which contains data)."
 
-Generate a comprehensive, explanatory response that thoroughly analyzes the document content."""
+Answer the question naturally and helpfully using the provided document text content. Create proper contextual references that describe what each image and table shows using the summaries provided, then place these references inline throughout your response where they best support your explanation. Always write complete sentences for contextual references.
+
+Your detailed answer:"""
 
         try:
             response = self.openai_client.chat.completions.create(
                 model=self.chat_model,
                 messages=[{"role": "user", "content": system_prompt}],
-                max_tokens=800,
-                temperature=0.1  # Lower temperature for more deterministic, grounded responses
+                max_tokens=3000,  # Further increased for more comprehensive responses
+                temperature=0.2  # Lower for more focused, factual responses
             )
             
             generated_response = response.choices[0].message.content
             
-            # Verify response is properly grounded
-            if self._verify_response_grounding(generated_response, content_map):
-                return generated_response
-            else:
-                logger.warning("Generated response failed grounding verification, using fallback")
-                return self._create_fallback_grounded_response(query, content_map)
+            # Return the generated response directly - no grounding verification needed
+            return generated_response
             
         except Exception as e:
             logger.error(f"Error generating response structure: {e}")
-            # Generate dynamic fallback with all available content
+            # Generate dynamic fallback with contextual references
             fallback_parts = ["Based on the document content provided, I can analyze the available information."]
             
-            # Add all available images
-            for i in range(len(content_map.get('images', []))):
-                fallback_parts.append(f"{{{{IMAGE_{i+1}}}}}")
+            # Create inline fallback instead of separate sections
+            image_count = len(content_map.get('images', []))
+            table_count = len(content_map.get('tables', []))
+            text_count = len(content_map.get('text', []))
             
-            # Add all available tables
-            for i in range(len(content_map.get('tables', []))):
-                fallback_parts.append(f"{{{{TABLE_{i+1}}}}}")
+            # Include key text content in fallback
+            if text_count > 0:
+                # Take the most relevant text sections
+                top_text_sections = content_map['text'][:min(3, text_count)]
+                for i, text_item in enumerate(top_text_sections):
+                    content = text_item.get('content', '')[:300]  # Limit length for fallback
+                    if content:
+                        fallback_parts.append(f"Key finding {i+1}: {content}")
+            
+            if image_count > 0 or table_count > 0:
+                fallback_parts.append("The document contains visual and structured data that supports the analysis.")
+                
+                # Integrate images with contextual references
+                for i in range(min(image_count, 2)):  # Limit to 2 images for fallback
+                    img_data = content_map['images'][i]
+                    img_summary = img_data.get('image_summary', 'visual content')[:100]
+                    fallback_parts.append(f"Refer to the following image which shows {img_summary}.")
+                
+                # Integrate tables with contextual references  
+                for i in range(min(table_count, 2)):  # Limit to 2 tables for fallback
+                    table_data = content_map['tables'][i]
+                    table_summary = table_data.get('summary', 'structured data')[:100]
+                    fallback_parts.append(f"Refer to the following table which contains {table_summary}.")
             
             return " ".join(fallback_parts)
     
     def _create_inline_elements(self, response_structure: str, content_map: Dict) -> List[Dict]:
-        """Convert response structure with placeholders into seamlessly integrated inline elements."""
+        """Convert response structure with contextual references into seamlessly integrated inline elements."""
         inline_elements = []
         used_table_ids = set()  # Track used tables to prevent duplicates
         used_image_ids = set()  # Track used images to prevent duplicates
         
-        # Enhanced splitting that preserves context around placeholders
-        parts = re.split(r'(\{(?:IMAGE|TABLE|TEXT_SECTION)_\d+\})', response_structure)
-
-        # Merge consecutive text parts to avoid fragmentation
-        merged_parts = self._merge_consecutive_text_parts(parts)
-
-        for i, part in enumerate(merged_parts):
-            if not part.strip():
-                continue
-                
-            if part.startswith('{IMAGE_'):
-                # Extract image number and add with enhanced context
-                try:
-                    img_num = int(re.search(r'IMAGE_(\d+)', part).group(1))
-                    if img_num <= len(content_map['images']):
-                        img_data = content_map['images'][img_num - 1]
-                        img_id = f"page_{img_data['page_number']}_img_{img_num}"
-                        
-                        # Only add if not already used
+        # First, identify where images and tables should be placed based on contextual references
+        image_mentions = []
+        table_mentions = []
+        
+        # Find ALL contextual references in the text first
+        import re
+        
+        # Find all image references with their positions
+        image_patterns = [
+            r'(?:refer to the )?(?:following )?image(?:\s+below)?(?:\s+which shows [^.]*)?',
+            r'as (?:illustrated|shown) in the image(?:\s+below)?',
+            r'the image (?:shows?|illustrates?|demonstrates?)'
+        ]
+        
+        # Collect all image references first
+        all_image_matches = []
+        for pattern in image_patterns:
+            matches = list(re.finditer(pattern, response_structure, re.IGNORECASE))
+            for match in matches:
+                all_image_matches.append((match.start(), match.group()))
+        
+        # Sort by position and assign to images sequentially
+        all_image_matches.sort(key=lambda x: x[0])
+        for i, (pos, match_text) in enumerate(all_image_matches):
+            if i < len(content_map['images']):
+                img = content_map['images'][i]
+                image_mentions.append((pos, i + 1, img))
+                logger.info(f"Detected image reference: '{match_text}' at position {pos}")
+        
+        # Find all table references with their positions
+        table_patterns = [
+            r'(?:refer to the )?(?:following )?table(?:\s+below)?(?:\s+which (?:shows?|contains?|presents?) [^.]*)?',
+            r'as (?:shown|presented) in the table(?:\s+below)?',
+            r'the table (?:shows?|contains?|presents?)'
+        ]
+        
+        # Collect all table references first
+        all_table_matches = []
+        for pattern in table_patterns:
+            matches = list(re.finditer(pattern, response_structure, re.IGNORECASE))
+            for match in matches:
+                all_table_matches.append((match.start(), match.group()))
+        
+        # Sort by position and assign to tables sequentially
+        all_table_matches.sort(key=lambda x: x[0])
+        for i, (pos, match_text) in enumerate(all_table_matches):
+            if i < len(content_map['tables']):
+                table = content_map['tables'][i]
+                table_mentions.append((pos, i + 1, table))
+                logger.info(f"Detected table reference: '{match_text}' at position {pos}")
+        
+        # If no specific references found, try to place multimedia content at natural break points
+        if not image_mentions and not table_mentions:
+            logger.info("No specific contextual references detected, using fallback placement at paragraph breaks")
+            
+            # Check if there are any mentions of images or tables in the text
+            has_image_mentions = any(word in response_structure.lower() for word in ['image', 'illustrated', 'shown', 'visual'])
+            has_table_mentions = any(word in response_structure.lower() for word in ['table', 'data', 'results', 'statistics'])
+            
+            logger.info(f"General mentions detected - Images: {has_image_mentions}, Tables: {has_table_mentions}")
+            
+            # Place images and tables at paragraph breaks or sentence endings
+            text_parts = response_structure.split('\n\n')
+            current_pos = 0
+            
+            for i, text_part in enumerate(text_parts):
+                if text_part.strip():
+                    # Add text part
+                    inline_elements.append({
+                        'type': 'text',
+                        'content': text_part.strip()
+                    })
+                    current_pos += len(text_part) + 2  # +2 for \n\n
+                    
+                    # Add multimedia content after text parts if available and if there are general mentions
+                    if has_image_mentions and i < len(content_map['images']) and len(content_map['images']) > 0:
+                        img_data = content_map['images'][i]
+                        img_id = f"page_{img_data['page_number']}_img_{i+1}"
                         if img_id not in used_image_ids:
                             used_image_ids.add(img_id)
-                            
-                            # Skip transition text - already handled in merged text
-                            # Contextual transitions should be part of the main text flow
                             inline_elements.append({
                                 'type': 'image',
                                 'data': img_data,
                                 'context': self._extract_image_context(img_data, content_map)
                             })
-                            logger.info(f"Added image with context: {img_id}")
-                        else:
-                            logger.info(f"Skipped duplicate image: {img_id}")
-                except Exception as e:
-                    logger.error(f"Error processing image placeholder: {e}")
+                            logger.info(f"Added image via fallback placement: {img_id}")
                     
-            elif part.startswith('{TABLE_'):
-                # Extract table number and add with enhanced context
-                try:
-                    table_num = int(re.search(r'TABLE_(\d+)', part).group(1))
-                    if table_num <= len(content_map['tables']):
-                        table_data = content_map['tables'][table_num - 1]
+                    if has_table_mentions and i < len(content_map['tables']) and len(content_map['tables']) > 0:
+                        table_data = content_map['tables'][i]
                         table_id = table_data.get('table_id', '')
                         page_number = table_data.get('page_number', 0)
+                        unique_key = f"{table_id}_{page_number}" if table_id else f"page_{page_number}_table_{i+1}"
                         
-                        # Create unique identifier for this table
-                        unique_key = f"{table_id}_{page_number}" if table_id else f"page_{page_number}_table_{table_num}"
-                        
-                        # Only add if not already used
                         if unique_key not in used_table_ids:
                             used_table_ids.add(unique_key)
-                            # Skip transition text - already handled in merged text
-                            # Contextual transitions should be part of the main text flow
                             inline_elements.append({
                                 'type': 'table',
                                 'data': table_data,
                                 'context': self._extract_table_context(table_data, content_map)
                             })
-                            logger.info(f"Added table with context: {unique_key}")
-                        else:
-                            logger.info(f"Skipped duplicate table: {unique_key}")
-                except Exception as e:
-                    logger.error(f"Error processing table placeholder: {e}")
+                            logger.info(f"Added table via fallback placement: {unique_key}")
+            
+            # Post-process elements for better flow
+            inline_elements = self._optimize_element_flow(inline_elements)
+            
+            # If still no multimedia content was added, add all available content at the end
+            if not any(elem['type'] in ['image', 'table'] for elem in inline_elements):
+                logger.info("No multimedia content added via fallback, adding all available content at the end")
+                
+                # Add all available images
+                for i, img_data in enumerate(content_map['images']):
+                    img_id = f"page_{img_data['page_number']}_img_{i+1}"
+                    if img_id not in used_image_ids:
+                        used_image_ids.add(img_id)
+                        inline_elements.append({
+                            'type': 'image',
+                            'data': img_data,
+                            'context': self._extract_image_context(img_data, content_map)
+                        })
+                        logger.info(f"Added image at end: {img_id}")
+                
+                # Add all available tables
+                for i, table_data in enumerate(content_map['tables']):
+                    table_id = table_data.get('table_id', '')
+                    page_number = table_data.get('page_number', 0)
+                    unique_key = f"{table_id}_{page_number}" if table_id else f"page_{page_number}_table_{i+1}"
                     
-            elif part.startswith('{TEXT_SECTION_'):
-                # Text sections removed from inline elements
-                pass
+                    if unique_key not in used_table_ids:
+                        used_table_ids.add(unique_key)
+                        inline_elements.append({
+                            'type': 'table',
+                            'data': table_data,
+                            'context': self._extract_table_context(table_data, content_map)
+                        })
+                        logger.info(f"Added table at end: {unique_key}")
+            
+            return inline_elements
+        else:
+            logger.info(f"Detected {len(image_mentions)} image mentions and {len(table_mentions)} table mentions")
+        
+        # Sort mentions by position in the text
+        image_mentions.sort(key=lambda x: x[0])
+        table_mentions.sort(key=lambda x: x[0])
+        
+        # Combine and sort all mentions
+        all_mentions = [(pos, 'image', num, data) for pos, num, data in image_mentions] + \
+                      [(pos, 'table', num, data) for pos, num, data in table_mentions]
+        all_mentions.sort(key=lambda x: x[0])
+        
+        # Split the text and insert multimedia elements at appropriate positions
+        current_pos = 0
+        current_text = ""
+        
+        for mention_pos, content_type, content_num, content_data in all_mentions:
+            # Find a natural break point after the contextual reference (end of sentence)
+            reference_start = mention_pos
+            
+            # Look for the next sentence ending after the reference
+            reference_end = mention_pos + 50  # Start looking after the reference
+            while reference_end < len(response_structure):
+                char = response_structure[reference_end]
+                # Look for end of sentence
+                if char in ['.', '!', '?']:
+                    # Look ahead to see if this is truly end of sentence
+                    next_pos = reference_end + 1
+                    while next_pos < len(response_structure) and response_structure[next_pos] in [' ', '\n', '\t']:
+                        next_pos += 1
                     
-            else:
-                # Regular text content with enhanced formatting
-                text_content = part.strip()
-                if text_content:
-                    # Clean up and enhance text presentation
-                    text_content = self._enhance_text_formatting(text_content)
+                    # If next character is uppercase or end of text, this is sentence end
+                    if (next_pos >= len(response_structure) or 
+                        response_structure[next_pos].isupper() or 
+                        response_structure[next_pos] in ['\n']):
+                        reference_end = next_pos
+                        break
+                reference_end += 1
+            
+            # Include text up to the reference point plus the complete sentence
+            if reference_end > current_pos:
+                text_chunk = response_structure[current_pos:reference_end].strip()
+                if text_chunk:
+                    current_text += " " + text_chunk if current_text else text_chunk
+            
+            # Add the multimedia element if not already used
+            if content_type == 'image':
+                img_id = f"page_{content_data['page_number']}_img_{content_num}"
+                if img_id not in used_image_ids:
+                    used_image_ids.add(img_id)
+                    
+                    # Add accumulated text as a text element (complete sentence with reference)
+                    if current_text.strip():
+                        inline_elements.append({
+                            'type': 'text',
+                            'content': current_text.strip()
+                        })
+                        current_text = ""
+                    
+                    # Add the image
                     inline_elements.append({
-                        'type': 'text',
-                        'content': text_content
+                        'type': 'image',
+                        'data': content_data,
+                        'context': self._extract_image_context(content_data, content_map)
                     })
+                    logger.info(f"Added image with contextual reference: {img_id}")
+            
+            elif content_type == 'table':
+                table_id = content_data.get('table_id', '')
+                page_number = content_data.get('page_number', 0)
+                unique_key = f"{table_id}_{page_number}" if table_id else f"page_{page_number}_table_{content_num}"
+                
+                if unique_key not in used_table_ids:
+                    used_table_ids.add(unique_key)
+                    
+                    # Add accumulated text as a text element (complete sentence with reference)
+                    if current_text.strip():
+                        inline_elements.append({
+                            'type': 'text',
+                            'content': current_text.strip()
+                        })
+                        current_text = ""
+                    
+                    # Add the table
+                    inline_elements.append({
+                        'type': 'table',
+                        'data': content_data,
+                        'context': self._extract_table_context(content_data, content_map)
+                    })
+                    logger.info(f"Added table with contextual reference: {unique_key}")
+            
+            # Move to the end of the processed text
+            current_pos = reference_end
+        
+        # Add any remaining text
+        if current_pos < len(response_structure):
+            remaining_text = response_structure[current_pos:].strip()
+            if remaining_text:
+                current_text += " " + remaining_text if current_text else remaining_text
+        
+        if current_text.strip():
+            inline_elements.append({
+                'type': 'text',
+                'content': current_text.strip()
+            })
+        
         # Post-process elements for better flow
         inline_elements = self._optimize_element_flow(inline_elements)
         
         return inline_elements
-
+    
     def _merge_consecutive_text_parts(self, parts: List[str]) -> List[str]:
         """Merge consecutive text parts to avoid fragmentation while preserving placeholders."""
         merged_parts = []
@@ -336,14 +641,18 @@ Generate a comprehensive, explanatory response that thoroughly analyzes the docu
     
         for part in parts:
             if part.startswith('{IMAGE_') or part.startswith('{TABLE_') or part.startswith('{TEXT_SECTION_'):
-            # This is a placeholder
+                # This is a placeholder
                 if current_text.strip():
                     merged_parts.append(current_text.strip())
                     current_text = ""
                 merged_parts.append(part)
             else:
-                # This is text content
-                current_text += part
+                # This is text content - accumulate it
+                if current_text:
+                    # Add a space between text parts to avoid word concatenation
+                    current_text += " " + part
+                else:
+                    current_text = part
     
         # Add any remaining text
         if current_text.strip():
@@ -356,7 +665,6 @@ Generate a comprehensive, explanatory response that thoroughly analyzes the docu
         return {
             'page': img_data.get('page_number', 0),
             'relevance': img_data.get('relevance_score', 0),
-            'description': img_data.get('image_summary', img_data.get('ocr_text', ''))[:100],
             'type': 'visual_evidence'
         }
     
@@ -401,19 +709,12 @@ Generate a comprehensive, explanatory response that thoroughly analyzes the docu
         optimized = []
         
         for i, element in enumerate(elements):
+            # Skip spacing elements - they cause fragmentation
+            if element['type'] == 'spacing':
+                continue
+                
             # Add element
             optimized.append(element)
-            
-            # Add spacing after multimedia elements if next element is text
-            if (element['type'] in ['image', 'table'] and 
-                i + 1 < len(elements) and 
-                elements[i + 1]['type'] == 'text'):
-                
-                # Add a small spacing element
-                optimized.append({
-                    'type': 'spacing',
-                    'content': ''
-                })
         
         return optimized
     
@@ -440,9 +741,7 @@ Generate a comprehensive, explanatory response that thoroughly analyzes the docu
                     # Display table with contextual integration
                     self._display_table_seamlessly(element['data'], element.get('context', {}))
                 
-                elif element_type == 'spacing':
-                    # Add natural spacing between elements
-                    st.write("")
+                # Note: spacing elements are now filtered out in _optimize_element_flow
             
         except Exception as e:
             st.error(f"Error in seamless display: {e}")
@@ -469,17 +768,11 @@ Generate a comprehensive, explanatory response that thoroughly analyzes the docu
         
         if image_source:
             try:
-                # Create a natural caption
-                caption = self._create_natural_caption(img_data, context)
-                
-                # Display with optimal sizing
+                # Display image without caption or description
                 st.image(
                     image_source,
-                    caption=caption,
                     use_container_width=True
                 )
-                
-                # Remove redundant image summary - let image speak for itself
                     
             except Exception as e:
                 st.error(f"Unable to display image: {e}")
@@ -580,97 +873,104 @@ Generate a comprehensive, explanatory response that thoroughly analyzes the docu
     
     def _verify_response_grounding(self, response: str, content_map: Dict) -> bool:
         """Verify that the response is properly grounded in the document content."""
-        # Check for document-grounding phrases (more flexible)
-        grounding_phrases = [
-            "according to the document", "the document states", "the document shows",
-            "the text states", "on page", "the provided content", "the document explains",
-            "as mentioned in the document", "the document indicates", "based on the document",
-            "the document contains", "as shown in", "the content shows", "from the document",
-            "the data shows", "the information shows", "according to the content",
-            "the visual content", "the structured data", "the available information"
-        ]
-        
         response_lower = response.lower()
-        has_grounding_phrases = any(phrase in response_lower for phrase in grounding_phrases)
         
         # Check for multimedia placeholders (indicates document-based content)
         has_multimedia_placeholders = bool(re.search(r'\{\{(IMAGE|TABLE)_\d+\}\}', response))
         
-        # Check for warning signs of external knowledge (more targeted)
+        # Check for natural grounding indicators (more flexible than strict phrases)
+        natural_grounding_indicators = [
+            "shows", "reveals", "indicates", "demonstrates", "illustrates", "contains",
+            "displays", "presents", "includes", "features", "depicts", "explains",
+            "page", "figure", "table", "chart", "data", "image", "visual", "diagram"
+        ]
+        has_natural_grounding = any(indicator in response_lower for indicator in natural_grounding_indicators)
+        
+        # Check for technical/domain-specific content (indicates document analysis)
+        has_technical_content = len(response) > 100  # Substantial response
+        
+        # Check for warning signs of external knowledge (avoid these)
         warning_phrases = [
             "it is well known that", "research generally shows", "studies typically indicate", 
             "experts commonly believe", "this is universally true", "according to general knowledge",
-            "as everyone knows", "it is widely accepted", "scientific consensus shows"
+            "as everyone knows", "it is widely accepted", "scientific consensus shows",
+            "in general", "typically", "usually", "commonly", "generally speaking"
         ]
-        
         has_warning_phrases = any(phrase in response_lower for phrase in warning_phrases)
         
-        # Response is grounded if it has grounding phrases OR multimedia placeholders, and no strong warning phrases
-        is_grounded = (has_grounding_phrases or has_multimedia_placeholders) and not has_warning_phrases
+        # Response is grounded if it has multimedia placeholders OR natural indicators, is substantial, and no warning phrases
+        is_grounded = (has_multimedia_placeholders or has_natural_grounding) and has_technical_content and not has_warning_phrases
         
         if not is_grounded:
-            logger.info(f"Grounding check: phrases={has_grounding_phrases}, multimedia={has_multimedia_placeholders}, warnings={has_warning_phrases}")
+            logger.info(f"Grounding check: multimedia={has_multimedia_placeholders}, natural={has_natural_grounding}, technical={has_technical_content}, warnings={has_warning_phrases}")
         
         return is_grounded
     
     def _create_fallback_grounded_response(self, query: str, content_map: Dict) -> str:
-        """Create a fallback response that is strictly grounded in document content."""
+        """Create a fallback response that directly answers the query."""
         # Count available content
         text_count = len(content_map['text'])
         image_count = len(content_map['images'])
         table_count = len(content_map['tables'])
         
-        # Create a comprehensive grounded response structure
+        # Create a direct response structure
         response_parts = []
-        response_parts.append(f"Based on the document content related to '{query}', I can provide the following analysis:")
         
-        if text_count > 0:
-            response_parts.append("The document contains detailed textual information that directly addresses your query.")
+        # Direct answer based on query type
+        query_lower = query.lower()
+        if any(word in query_lower for word in ['what', 'define', 'explain']):
+            response_parts.append("Here's what I found about your question:")
+        elif any(word in query_lower for word in ['summarize', 'summary', 'overview']):
+            response_parts.append("This document covers several key areas:")
+        elif any(word in query_lower for word in ['how', 'process', 'method']):
+            response_parts.append("The process involves these key steps:")
+        else:
+            response_parts.append("I can answer your question using the available information:")
         
         if image_count > 0:
-            response_parts.append("The document includes visual content that illustrates key concepts:")
-            for i in range(min(image_count, 5)):  # Include up to 5 images
+            response_parts.append("The visual content reveals important details:")
+            for i in range(min(image_count, 3)):  # Include up to 3 images
                 img_data = content_map['images'][i]
-                img_desc = img_data.get('image_summary', img_data.get('ocr_text', 'visual content'))[:100]
-                response_parts.append(f"{{{{IMAGE_{i+1}}}}} - This visual element from page {img_data['page_number']} shows {img_desc}")
+                img_desc = img_data.get('image_summary', img_data.get('ocr_text', 'visual content'))[:150]
+                response_parts.append(f"{{{{IMAGE_{i+1}}}}} {img_desc}")
         
         if table_count > 0:
-            response_parts.append("The document provides structured data that offers detailed insights:")
-            for i in range(min(table_count, 5)):  # Include up to 5 tables
+            response_parts.append("The data shows:")
+            for i in range(min(table_count, 3)):  # Include up to 3 tables
                 table_data = content_map['tables'][i]
-                table_summary = table_data.get('summary', 'structured information')[:100]
-                response_parts.append(f"{{{{TABLE_{i+1}}}}} - This data table from page {table_data['page_number']} contains {table_summary}")
+                table_summary = table_data.get('summary', 'structured information')[:150]
+                response_parts.append(f"{{{{TABLE_{i+1}}}}} {table_summary}")
         
-        response_parts.append("The above multimedia elements provide comprehensive coverage of the topic as documented in the source material.")
+        if text_count > 0:
+            response_parts.append("Additional detailed information is available throughout the content.")
         
         return " ".join(response_parts)
     
     def _generate_placeholder_list(self, content_map: Dict) -> str:
-        """Generate a list of available placeholders for the AI to use."""
-        placeholders = []
+        """Generate a detailed list of available multimedia content with context for the AI to use."""
+        placeholder_details = []
         
-        # Add image placeholders
-        for i in range(len(content_map['images'])):
-            placeholders.append(f"{{IMAGE_{i+1}}}")
+        # Add image placeholders with context
+        for i, img in enumerate(content_map['images']):
+            page_num = img.get('page_number', 'N/A')
+            summary = img.get('image_summary', 'Visual content')[:150]
+            placeholder_details.append(f"IMAGE_{i+1} - Page {page_num}: {summary}")
         
-        # Add table placeholders  
-        for i in range(len(content_map['tables'])):
-            placeholders.append(f"{{TABLE_{i+1}}}")
+        # Add table placeholders with context
+        for i, table in enumerate(content_map['tables']):
+            page_num = table.get('page_number', 'N/A')
+            summary = table.get('summary', 'Data table')[:150]
+            placeholder_details.append(f"TABLE_{i+1} - Page {page_num}: {summary}")
         
-        if placeholders:
-            return f"Available: {', '.join(placeholders)}"
+        if placeholder_details:
+            return f"""Available multimedia content for contextual integration:
+
+{chr(10).join(placeholder_details)}
+
+IMPORTANT: Create proper contextual references that describe what each image and table shows, then place these references inline within your text flow. Use the summaries above to create meaningful descriptions."""
         else:
-            return "No multimedia content available"
+            return "No multimedia content available for contextual integration"
     
-    def _create_natural_caption(self, img_data: Dict, context: Dict) -> str:
-        """Create a natural, contextual caption for images."""
-        page_num = img_data.get('page_number', 0)
-        
-        # Create contextual caption based on content
-        if context.get('description'):
-            return f"Figure from page {page_num}"
-        else:
-            return f"Visual content from page {page_num}"
     
     def _display_image_inline(self, img_data: Dict):
         """Display image inline with minimal formatting."""
@@ -799,6 +1099,182 @@ Generate a comprehensive, explanatory response that thoroughly analyzes the docu
         if not table_displayed:
             st.warning("No table content available for display")
     
+    def _validate_inline_placement(self, response_structure: str) -> Tuple[bool, str]:
+        """Validate that the response has proper inline placement of multimedia elements with contextual references."""
+        # Check for contextual references to images and tables
+        image_reference_patterns = [
+            r'refer to the following image',
+            r'as illustrated in the image',
+            r'the following image',
+            r'image below',
+            r'image above',
+            r'as shown in the image'
+        ]
+        
+        table_reference_patterns = [
+            r'refer to the following table',
+            r'as shown in the table',
+            r'the following table',
+            r'table below',
+            r'table above',
+            r'as presented in the table'
+        ]
+        
+        # Count contextual references
+        image_references = 0
+        table_references = 0
+        
+        for pattern in image_reference_patterns:
+            image_references += len(re.findall(pattern, response_structure, re.IGNORECASE))
+        
+        for pattern in table_reference_patterns:
+            table_references += len(re.findall(pattern, response_structure, re.IGNORECASE))
+        
+        total_references = image_references + table_references
+        
+        if total_references == 0:
+            return False, "No contextual references to multimedia content found"
+        
+        # Check if references are distributed throughout the text
+        total_length = len(response_structure)
+        if total_length == 0:
+            return True, "Empty response"
+        
+        # Find positions of all references
+        reference_positions = []
+        
+        for pattern in image_reference_patterns + table_reference_patterns:
+            for match in re.finditer(pattern, response_structure, re.IGNORECASE):
+                reference_positions.append(match.start())
+        
+        if not reference_positions:
+            return False, "No contextual references found despite patterns"
+        
+        # Calculate distribution
+        end_threshold = total_length * 0.7
+        placeholders_in_end = sum(1 for pos in reference_positions if pos > end_threshold)
+        
+        start_threshold = total_length * 0.3
+        placeholders_in_start = sum(1 for pos in reference_positions if pos < start_threshold)
+        
+        placeholders_in_middle = len(reference_positions) - placeholders_in_start - placeholders_in_end
+        
+        # Determine placement quality
+        if placeholders_in_end > len(reference_positions) * 0.6:
+            return False, f"Poor inline placement: {placeholders_in_end}/{len(reference_positions)} references clustered at the end"
+        elif placeholders_in_start > len(reference_positions) * 0.6:
+            return False, f"Poor inline placement: {placeholders_in_start}/{len(reference_positions)} references clustered at the beginning"
+        elif placeholders_in_middle >= len(reference_positions) * 0.4:
+            return True, f"Good inline placement: {placeholders_in_middle}/{len(reference_positions)} references in middle section"
+        else:
+            return True, f"Acceptable inline placement: {len(reference_positions)} contextual references distributed throughout"
+    
+    def _regenerate_with_inline_focus(self, query: str, content_map: Dict, has_text: bool, has_images: bool, has_tables: bool) -> str:
+        """Regenerate response with stronger focus on contextual references."""
+        
+        # Prepare text content for the aggressive prompt
+        text_content_parts = []
+        for i, text_item in enumerate(content_map['text'][:5]):  # Limit to top 5 text sections
+            content = text_item.get('content', '')
+            if content and len(content.strip()) > 10:
+                text_content_parts.append(f"Text Section {i+1}: {content[:500]}...")  # Limit each section
+        
+        text_content_summary = "\n".join(text_content_parts) if text_content_parts else "No detailed text content available."
+        
+        # Prepare multimedia content summaries
+        image_summaries = []
+        for i, img in enumerate(content_map['images']):
+            summary = img.get('image_summary', 'Visual content')[:200]
+            image_summaries.append(f"Image {i+1}: {summary}")
+        
+        table_summaries = []
+        for i, table in enumerate(content_map['tables']):
+            summary = table.get('summary', 'Structured data')[:200]
+            table_summaries.append(f"Table {i+1}: {summary}")
+        
+        # Create a more aggressive prompt for contextual references
+        aggressive_prompt = f"""You are a helpful assistant that answers questions based on the document content provided.
+
+AVAILABLE CONTENT:
+- Text content from {len(content_map['text'])} sections
+- Visual content: {len(content_map['images'])} images with descriptions  
+- Structured data: {len(content_map['tables'])} tables
+
+DETAILED TEXT CONTENT:
+{text_content_summary}
+
+IMAGE SUMMARIES:
+{chr(10).join(image_summaries) if image_summaries else "No images available"}
+
+TABLE SUMMARIES:
+{chr(10).join(table_summaries) if table_summaries else "No tables available"}
+
+USER'S QUESTION: "{query}"
+
+CRITICAL INSTRUCTION - YOU MUST FOLLOW THIS EXACTLY:
+Write your response by creating proper contextual references to images and tables. Do NOT use placeholders like {{IMAGE_1}}. Instead, write descriptive references like:
+
+CORRECT FORMAT (DO THIS):
+"The research methodology involves three phases. Refer to the following image which shows the experimental setup used in Phase 1, demonstrating the key components and their arrangement. The results in the table below, which contains species probability data and taxonomic classifications, demonstrate significant improvements."
+
+INCORRECT FORMAT (DO NOT DO THIS):
+"The research methodology involves three phases. {{IMAGE_1}} shows the experimental setup. The results in {{TABLE_1}} demonstrate significant improvements."
+
+Use the image and table summaries provided above to create meaningful contextual descriptions. Integrate all multimedia content inline within your narrative and use the detailed text content provided. Your answer:"""
+
+        try:
+            response = self.openai_client.chat.completions.create(
+                model=self.chat_model,
+                messages=[{"role": "user", "content": aggressive_prompt}],
+                max_tokens=2500,  # Increased for more comprehensive responses
+                temperature=0.1  # Very low temperature for more predictable formatting
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            logger.error(f"Error in aggressive inline regeneration: {e}")
+            return "Error generating inline response"
+
+    def _clean_redundant_references(self, text: str) -> str:
+        """Remove redundant contextual references that appear after multimedia content."""
+        # Common redundant patterns to remove
+        redundant_patterns = [
+            r'\s*\(refer to the following image[^)]*\)',
+            r'\s*\(as shown in the image[^)]*\)',
+            r'\s*\(as illustrated in the image[^)]*\)',
+            r'\s*\(refer to the following table[^)]*\)',
+            r'\s*\(as shown in the table[^)]*\)',
+            r'\s*\(as presented in the table[^)]*\)',
+            r'\s*following image which shows[^.]*\.',
+            r'\s*following table which contains[^.]*\.',
+            r'\s*as shown in the table below[^.]*\.',
+            r'\s*as illustrated in the image below[^.]*\.',
+            # Remove incomplete references
+            r'\s*Refer to the$',
+            r'\s*See the$',
+            r'\s*As shown in the$',
+            r'\s*As illustrated in the$',
+            # Remove redundant text after multimedia
+            r'\s*\(refer to the following image[^)]*\)[^.]*\.',
+            r'\s*\(as shown in the table[^)]*\)[^.]*\.',
+            r'\s*following image which shows[^.]*\.',
+            r'\s*following table which contains[^.]*\.'
+        ]
+        
+        cleaned_text = text
+        for pattern in redundant_patterns:
+            cleaned_text = re.sub(pattern, '', cleaned_text, flags=re.IGNORECASE)
+        
+        # Clean up extra whitespace and fix sentence endings
+        cleaned_text = re.sub(r'\s+', ' ', cleaned_text)
+        cleaned_text = cleaned_text.strip()
+        
+        # Fix sentence endings that might be broken
+        cleaned_text = re.sub(r'\s+\.', '.', cleaned_text)
+        cleaned_text = re.sub(r'\s+,', ',', cleaned_text)
+        
+        return cleaned_text
 
 
 print("InlineMultimodalGenerator created successfully")

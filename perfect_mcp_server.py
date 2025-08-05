@@ -3699,18 +3699,9 @@ The operation has been successfully cancelled and will stop as soon as possible.
     def _format_rich_multimodal_response(self, inline_elements: List[Dict], query: str, metadata: Dict = None) -> str:
         """Convert inline elements to rich text format preserving intelligent structure and context."""
         if not inline_elements:
-            return f"# 🔍 Search Results for: \"{query}\"\n\nNo relevant content found in the document."
+            return f"No relevant content found in the document."
         
         formatted_parts = []
-        
-        # Add search header with metadata
-        header_parts = [f"# 🔍 Multimodal Search Results: \"{query}\""]
-        if metadata:
-            total_elements = len(inline_elements)
-            search_time = metadata.get('timestamp', time.time())
-            header_parts.append(f"*Found {total_elements} relevant elements*")
-        header_parts.append("")  # Empty line
-        formatted_parts.append("\n".join(header_parts))
         
         # Process each element with enhanced formatting
         text_count = 0
@@ -3741,10 +3732,7 @@ The operation has been successfully cancelled and will stop as soon as possible.
                 relevance = image_data.get('relevance_score', 0)
                 img_parts.append(f"**Location:** Page {page_num} | **Relevance:** {relevance:.3f}")
                 
-                # Add description from AI context or OCR
-                description = context.get('description') or image_data.get('image_summary') or image_data.get('ocr_text', 'Visual content')
-                if description and description.strip():
-                    img_parts.append(f"**Description:** {description.strip()}")
+                # Skip description - images speak for themselves
                 
                 # Add image URL with proper markdown
                 s3_url = image_data.get('s3_url') or image_data.get('storage_path', 'N/A')
@@ -3858,8 +3846,6 @@ The operation has been successfully cancelled and will stop as soon as possible.
             
             # Create a combined markdown response
             response_parts = []
-            response_parts.append(f"# 🔍 Multimodal Search Results: \"{query}\"")
-            response_parts.append("")  # Empty line
             
             for element in inline_elements:
                 if element.get('type') == 'text':
@@ -3873,13 +3859,9 @@ The operation has been successfully cancelled and will stop as soon as possible.
                     img_data = element.get('data', {})
                     page_num = img_data.get('page_number', 'N/A')
                     image_url = img_data.get('s3_url') or img_data.get('display_url', '')
-                    description = img_data.get('image_summary', '')
-                    
                     if image_url:
                         response_parts.append(f"## 🖼️ Visual Content (Page {page_num})")
                         response_parts.append(f"![Image from page {page_num}]({image_url})")
-                        if description:
-                            response_parts.append(f"**Description:** {description}")
                         response_parts.append("")  # Add spacing
                         
                 elif element.get('type') == 'table':

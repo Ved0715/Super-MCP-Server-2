@@ -547,16 +547,17 @@ Use [Page X] format and bullet points where necessary.
                 max_chunks= max_chunks
             )
 
-
-            # print(f" Results: {results}")
+            logger.debug(f"Multimodal integrator returned: {type(results)}")
+            logger.debug(f"Results keys: {list(results.keys()) if isinstance(results, dict) else 'Not a dict'}")
             
-
-            
-            # Add metadata about the search
-
-            
-            logger.debug(f"Found multimodal content with {len(results.get('inline_elements', []))} elements")
-            return results
+            if isinstance(results, dict):
+                logger.debug(f"Results content: {results}")
+                inline_elements = results.get('inline_elements', [])
+                logger.debug(f"Found multimodal content with {len(inline_elements)} elements")
+                return results
+            else:
+                logger.error(f"Unexpected result type: {type(results)}")
+                raise ValueError(f"Expected dict result, got {type(results)}")
             
         except Exception as e:
             logger.error(f"Error in multimodal search: {str(e)}")

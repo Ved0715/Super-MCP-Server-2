@@ -28,7 +28,7 @@ class DocumentSummarizer:
         logging.basicConfig(level=logging.INFO)
         self.openai = OpenAI(api_key=config.openai_api_key)
         self.pc     = Pinecone(api_key=config.pinecone_api_key)
-        self.index  = self.pc.Index(config.index_name or "all-pdfs-index")
+        self.index  = self.pc.Index("test")
         self.model  = config.response_model
 
     def _list_namespaces(self, user_id: str) -> List[str]:

@@ -279,11 +279,7 @@ def preview_prompt_breakdown(content, topic, user_prompt, num_slides):
                 # Extract relevant content for this question
                 relevant_content = extract_relevant_content(content, question, topic)
                 
-                # Analyze content format with flow and template assignment
-                # from .extract_metadata import analyze_template_inventory
-                # template_path = "templates/test_slide.pptx"
-                # template_inventory = analyze_template_inventory(template_path)
-                
+                # Analyze content format with flow (no template needed for method 3)
                 format_analysis = content_analyzer.analyze_content_format_with_flow(
                     question, relevant_content, [], i + 1, num_slides, topic, template_inventory=None
                 )
@@ -446,11 +442,7 @@ def generate_presentation_with_preview_api(content, topic, user_prompt, num_slid
             # Extract relevant content for this question
             relevant_content = extract_relevant_content(content, question, topic)
             
-            # Analyze content format with flow and template assignment
-            # from .extract_metadata import analyze_template_inventory
-            # template_path = "templates/test_slide.pptx"
-            # template_inventory = analyze_template_inventory(template_path)
-            
+            # Analyze content format with flow (no template needed for method 3)
             format_analysis = content_analyzer.analyze_content_format_with_flow(
                 question, relevant_content, [], i + 1, num_slides, topic, template_inventory=None
             )
@@ -486,9 +478,9 @@ def generate_presentation_with_preview_api(content, topic, user_prompt, num_slid
         # Step 2: Generate PowerPoint presentation
         output_path = generate_output_filename(topic)
         
-        # Create PowerPoint from scratch with format-specific layouts
-        from .replace_content import create_ppt_from_scratch
-        create_ppt_from_scratch(content_analysis_results, output_path)
+        # Create PowerPoint with title slide, content slides, and thank you slide
+        from .replace_content import create_ppt_with_title_and_thanks
+        create_ppt_with_title_and_thanks(content_analysis_results, output_path, topic, user_prompt)
         
         # Return combined result
         return {
@@ -578,8 +570,8 @@ def main():
         
         try:
             num_slides = int(input("Enter number of slides: ").strip())
-            if num_slides <= 0:
-                print("❌ Number of slides must be positive.")
+            if num_slides < 3:
+                print("❌ Number of slides must be at least 3 (1 title + 1 content + 1 thank you).")
                 return
         except ValueError:
             print("❌ Please enter a valid number of slides.")
@@ -642,8 +634,8 @@ def main():
         
         try:
             num_slides = int(input("Enter number of slides: ").strip())
-            if num_slides <= 0:
-                print("❌ Number of slides must be positive.")
+            if num_slides < 3:
+                print("❌ Number of slides must be at least 3 (1 title + 1 content + 1 thank you).")
                 return
         except ValueError:
             print("❌ Please enter a valid number of slides.")
@@ -688,12 +680,12 @@ def main():
                     }
                     content_analysis_results.append(slide_data)
                 
-                # Create PowerPoint from scratch
-                from .replace_content import create_ppt_from_scratch
+                # Create PowerPoint with title slide, content slides, and thank you slide
+                from .replace_content import create_ppt_with_title_and_thanks
                 from tqdm import tqdm
                 
                 with tqdm(total=1, desc="💾 Creating presentation", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}") as pbar:
-                    create_ppt_from_scratch(content_analysis_results, output_path)
+                    create_ppt_with_title_and_thanks(content_analysis_results, output_path, user_topic, user_prompt)
                     pbar.update(1)
                 
                 print(f"\n🎉 POWERPOINT CREATION COMPLETED! 🎉")

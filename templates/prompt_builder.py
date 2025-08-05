@@ -5,9 +5,170 @@ import os
 from dotenv import load_dotenv
 from .content_format_analyzer import content_analyzer
 
+def generate_slide_title(question, content, format_type, topic=""):
+    """
+    Generate professional slide title using AI based on question, content, and format type
+    
+    Args:
+        question (str): The slide question
+        content (str): The slide content
+        format_type (str): The detected format (timeline, boxes, table, etc.)
+        topic (str): Overall presentation topic
+    
+    Returns:
+        str: Professional slide title
+    """
+    try:
+        load_dotenv()
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            # Fallback if no API key
+            return extract_title_fallback(question, topic)
+        
+        client = openai.OpenAI(api_key=api_key)
+        
+        # Truncate content if too long
+        truncated_content = content[:500] if len(content) > 500 else content
+        
+        title_prompt = f"""
+        Create a professional, concise slide title based on the following information:
+        
+        QUESTION: {question}
+        CONTENT PREVIEW: {truncated_content}
+        FORMAT TYPE: {format_type}
+        PRESENTATION TOPIC: {topic}
+        
+        REQUIREMENTS:
+        - Create a clear, professional slide title (3-8 words)
+        - Focus on the main topic/concept, not the question format
+        - Make it presentation-ready and engaging
+        - Avoid question words like "What", "How", "Why"
+        - Match the content format style:
+          * Timeline/Process: Use "Process", "Steps", "Journey", "Evolution"
+          * Comparison/Boxes: Use "Comparison", "Analysis", "Overview"  
+          * Table/Data: Use "Analysis", "Metrics", "Data", "Statistics"
+          * Bullet Points: Use "Key Points", "Overview", "Highlights"
+          * Paragraph: Use descriptive topic names
+        
+        EXAMPLES:
+        - Question: "What is the process of PGP key generation?" → Title: "PGP Key Generation Process"
+        - Question: "How do algorithms compare?" → Title: "Algorithm Comparison Analysis"
+        - Question: "What are the benefits?" → Title: "Key Benefits Overview"
+        
+        RESPONSE: Return ONLY the title, no explanations or quotes.
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": title_prompt}],
+            max_tokens=50,
+            temperature=0.3
+        )
+        
+        generated_title = response.choices[0].message.content.strip()
+        
+        # Clean up the title (remove quotes if AI added them)
+        generated_title = generated_title.strip('"\'')
+        
+        # Validate title length (fallback if too long/short)
+        if len(generated_title) < 3 or len(generated_title) > 80:
+            return extract_title_fallback(question, topic)
+        
+        return generated_title
+        
+    except Exception as e:
+        print(f"   ⚠️ Title generation failed: {e}, using fallback")
+        return extract_title_fallback(question, topic)
+
+def extract_title_fallback(question, topic=""):
+    """
+    Fallback title extraction using rule-based approach
+    """
+    import re
+    
+    # Remove common question starters
+    question_clean = re.sub(r'^(what|how|why|when|where|which|who)\s+(is|are|do|does|can|will|would|should)\s+', '', question.lower())
+    question_clean = re.sub(r'^(what|how|why|when|where|which|who)\s+', '', question_clean)
+    
+    # Clean up and capitalize
+    title = question_clean.strip()
+    if title:
+        # Capitalize first letter of each word
+        title = ' '.join(word.capitalize() for word in title.split())
+        # Limit length
+        if len(title) > 50:
+            title = title[:47] + "..."
+        return title
+    
+    # Ultimate fallback
+    return f"{topic} Overview" if topic else "Slide Overview"
+
+def generate_presentation_subtitle(topic, user_prompt):
+    """
+    Generate professional presentation subtitle using AI based on topic and user prompt
+    
+    Args:
+        topic (str): Main presentation topic
+        user_prompt (str): User's presentation instructions/prompt
+    
+    Returns:
+        str: Professional subtitle
+    """
+    try:
+        load_dotenv()
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            # Fallback if no API key
+            return f"A Comprehensive Overview"
+        
+        client = openai.OpenAI(api_key=api_key)
+        
+        subtitle_prompt = f"""
+        Create a professional, engaging subtitle for a presentation based on:
+        
+        MAIN TOPIC: {topic}
+        USER INSTRUCTIONS: {user_prompt}
+        
+        REQUIREMENTS:
+        - Create a clear, professional subtitle (4-8 words)
+        - Should complement the main topic, not repeat it
+        - Make it engaging and informative
+        - Focus on the presentation's purpose/scope
+        - Examples:
+          * Topic: "Machine Learning", Prompt: "explain basics to advanced" → "From Fundamentals to Advanced Applications"
+          * Topic: "Marketing Strategy", Prompt: "cover digital trends" → "Digital Trends and Modern Approaches"
+          * Topic: "Data Science", Prompt: "practical applications" → "Real-World Applications and Case Studies"
+        
+        RESPONSE: Return ONLY the subtitle, no explanations or quotes.
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": subtitle_prompt}],
+            max_tokens=30,
+            temperature=0.3
+        )
+        
+        generated_subtitle = response.choices[0].message.content.strip()
+        
+        # Clean up the subtitle (remove quotes if AI added them)
+        generated_subtitle = generated_subtitle.strip('"\'')
+        
+        # Validate subtitle length (fallback if too long/short)
+        if len(generated_subtitle) < 5 or len(generated_subtitle) > 100:
+            return f"A Comprehensive Overview"
+        
+        return generated_subtitle
+        
+    except Exception as e:
+        print(f"   ⚠️ Subtitle generation failed: {e}, using fallback")
+        return f"A Comprehensive Overview"
+
 def decompose_user_prompt(user_prompt, num_slides, user_topic=""):
     """
     Break down user prompt into slide-specific questions using AI
+    Note: num_slides should be the total requested slides. Function will generate (num_slides-2) content questions
+    to account for title slide and thank you slide.
     """
     load_dotenv()
     api_key = os.getenv('OPENAI_API_KEY')
@@ -16,14 +177,20 @@ def decompose_user_prompt(user_prompt, num_slides, user_topic=""):
     
     client = openai.OpenAI(api_key=api_key)
     
+    # Calculate content slides (total - title slide - thank you slide)
+    content_slides = max(1, num_slides - 2)  # Ensure at least 1 content slide
+    
     decomposition_prompt = f"""
-    You are an expert presentation planner. Break down this presentation prompt into {num_slides} specific questions.
+    You are an expert presentation planner. Break down this presentation prompt into {content_slides} specific questions.
+    
+    NOTE: This is for content slides only. A title slide and thank you slide will be added separately.
 
     PRESENTATION TOPIC: {user_topic}
     USER PROMPT: {user_prompt}
-    NUMBER OF SLIDES: {num_slides}
+    TOTAL SLIDES REQUESTED: {num_slides}
+    CONTENT SLIDES TO GENERATE: {content_slides}
 
-    TASK: Create {num_slides} specific questions that will guide content for each slide.
+    TASK: Create {content_slides} specific questions that will guide content for each content slide.
     
     REQUIREMENTS:
     - Each question should be specific and focused
@@ -41,7 +208,7 @@ def decompose_user_prompt(user_prompt, num_slides, user_topic=""):
     RESPONSE FORMAT: Return ONLY a JSON array of strings, no explanations.
     Example: ["What is the main concept?", "How do different approaches compare?", "What data shows the effectiveness?", "How has the field evolved?", "Why is this important?"]
 
-    Generate {num_slides} questions with varied formats:
+    Generate {content_slides} questions with varied formats:
     """
     
     try:
@@ -69,25 +236,25 @@ def decompose_user_prompt(user_prompt, num_slides, user_topic=""):
         else:
             raise ValueError("Unexpected response format")
         
-        # Ensure we have the right number of questions
-        if len(questions) != num_slides:
-            # Pad or truncate to match num_slides
-            if len(questions) < num_slides:
-                for i in range(len(questions), num_slides):
+        # Ensure we have the right number of content questions
+        if len(questions) != content_slides:
+            # Pad or truncate to match content_slides
+            if len(questions) < content_slides:
+                for i in range(len(questions), content_slides):
                     questions.append(f"Additional aspect of {user_topic}")
             else:
-                questions = questions[:num_slides]
+                questions = questions[:content_slides]
         
         return questions
         
     except Exception as e:
         print(f"Error decomposing prompt: {e}")
-        # Fallback: generate generic questions
+        # Fallback: generate generic content questions (no title/thank you)
         fallback_questions = []
-        for i in range(num_slides):
+        for i in range(content_slides):
             if i == 0:
                 fallback_questions.append(f"What is {user_topic}?")
-            elif i == num_slides - 1:
+            elif i == content_slides - 1:
                 fallback_questions.append(f"What are the key takeaways about {user_topic}?")
             else:
                 fallback_questions.append(f"What is aspect {i+1} of {user_topic}?")

@@ -1907,13 +1907,20 @@ def create_timeline_slide(prs, question, content, slide_num):
     slide_layout = get_safe_slide_layout(prs)  # Safe layout selection
     slide = prs.slides.add_slide(slide_layout)
     
-    # Add title
+    # Add title with AI-generated heading
     title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9), Inches(1))
     title_frame = title_box.text_frame
-    title_frame.text = f"Slide {slide_num}: {question}"
+    
+    # Generate professional title using AI
+    from .prompt_builder import generate_slide_title
+    # Extract topic from question or use a default
+    topic = question.split()[-1] if question else ""
+    professional_title = generate_slide_title(question, content, "timeline", topic)
+    title_frame.text = professional_title
+    
     title_frame.paragraphs[0].font.size = Pt(24)
     title_frame.paragraphs[0].font.bold = True
-    title_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+    title_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
     
     # STEP 1: Plan timeline structure based on question intent
     timeline_plan = plan_timeline_structure(question, content)
@@ -2506,13 +2513,20 @@ def create_table_slide(prs, question, content, slide_num):
     slide_layout = get_safe_slide_layout(prs)  # Safe layout selection
     slide = prs.slides.add_slide(slide_layout)
     
-    # Add title
+    # Add title with AI-generated heading
     title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9), Inches(1))
     title_frame = title_box.text_frame
-    title_frame.text = f"Slide {slide_num}: {question}"
+    
+    # Generate professional title using AI
+    from .prompt_builder import generate_slide_title
+    # Extract topic from question or use a default
+    topic = question.split()[-1] if question else ""
+    professional_title = generate_slide_title(question, content, "table", topic)
+    title_frame.text = professional_title
+    
     title_frame.paragraphs[0].font.size = Pt(24)
     title_frame.paragraphs[0].font.bold = True
-    title_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+    title_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
     
     # STEP 1: Plan table structure based on question intent
     table_plan = plan_table_structure(question, content)
@@ -2663,13 +2677,23 @@ def create_comparison_slide(prs, question, content, slide_num):
     slide_layout = get_safe_slide_layout(prs)  # Safe layout selection
     slide = prs.slides.add_slide(slide_layout)
     
-    # Add title
+    # Add title with AI-generated heading
     title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9), Inches(1))
+    if not hasattr(title_box, 'text_frame') or not title_box.text_frame:
+        print(f"   ERROR: Title box does not have text_frame")
+        return
     title_frame = title_box.text_frame
-    title_frame.text = f"Slide {slide_num}: {question}"
+    
+    # Generate professional title using AI
+    from .prompt_builder import generate_slide_title
+    # Extract topic from question or use a default  
+    topic = question.split()[-1] if question else ""
+    professional_title = generate_slide_title(question, content, "boxes", topic)
+    title_frame.text = professional_title
+    
     title_frame.paragraphs[0].font.size = Pt(24)
     title_frame.paragraphs[0].font.bold = True
-    title_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+    title_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
     
     # STEP 1: Plan boxes structure based on question intent
     boxes_plan = plan_boxes_structure(question, content)
@@ -3045,6 +3069,9 @@ def create_multi_box_grid_layout(slide, boxes_data, boxes_plan):
         # Create the text box with error handling
         try:
             text_box = slide.shapes.add_textbox(box_x, box_y, box_width, box_height)
+            if not hasattr(text_box, 'text_frame') or not text_box.text_frame:
+                print(f"   ERROR: Text box {i} does not have text_frame")
+                continue
             text_frame = text_box.text_frame
             text_frame.word_wrap = True
             text_frame.margin_left = Pt(12)
@@ -3148,13 +3175,20 @@ def create_bullet_slide(prs, question, content, slide_num):
     slide_layout = get_safe_slide_layout(prs)  # Safe layout selection
     slide = prs.slides.add_slide(slide_layout)
     
-    # Add title
+    # Add title with AI-generated heading
     title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9), Inches(1))
     title_frame = title_box.text_frame
-    title_frame.text = f"Slide {slide_num}: {question}"
+    
+    # Generate professional title using AI
+    from .prompt_builder import generate_slide_title
+    # Extract topic from question or use a default
+    topic = question.split()[-1] if question else ""
+    professional_title = generate_slide_title(question, content, "bullet_points", topic)
+    title_frame.text = professional_title
+    
     title_frame.paragraphs[0].font.size = Pt(24)
     title_frame.paragraphs[0].font.bold = True
-    title_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+    title_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
     
     # Reformat content to fit slide
     reformatted_content = reformat_content_for_slide(content, "bullet_points")
@@ -3385,7 +3419,7 @@ def create_multi_column_layout(slide, content, question):
         text_frame = text_box.text_frame
         text_frame.text = section
         text_frame.paragraphs[0].font.size = Pt(14)  # Slightly smaller for columns
-        text_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
+        text_frame.paragraphs[0].alignment = PP_ALIGN.JUSTIFY
         
         # Configure text frame
         text_frame.word_wrap = True
@@ -3950,13 +3984,20 @@ def create_paragraph_slide(prs, question, content, slide_num):
     slide_layout = get_safe_slide_layout(prs)  # Safe layout selection
     slide = prs.slides.add_slide(slide_layout)
     
-    # Add title
+    # Add title with AI-generated heading
     title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9), Inches(1))
     title_frame = title_box.text_frame
-    title_frame.text = f"Slide {slide_num}: {question}"
+    
+    # Generate professional title using AI
+    from .prompt_builder import generate_slide_title
+    # Extract topic from question or use a default
+    topic = question.split()[-1] if question else ""
+    professional_title = generate_slide_title(question, content, "paragraph", topic)
+    title_frame.text = professional_title
+    
     title_frame.paragraphs[0].font.size = Pt(24)
     title_frame.paragraphs[0].font.bold = True
-    title_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+    title_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
     
     # Intelligent content reformatting
     reformatted_content = reformat_content_for_slide(content, "paragraph")
@@ -3974,7 +4015,7 @@ def create_paragraph_slide(prs, question, content, slide_num):
         final_content = fit_text_with_ai_reformatting(content_box, reformatted_content, "body", question)
         content_frame.text = final_content
         content_frame.paragraphs[0].font.size = Pt(16)
-        content_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
+        content_frame.paragraphs[0].alignment = PP_ALIGN.JUSTIFY
         
         # Configure text frame for proper wrapping
         content_frame.word_wrap = True
@@ -5027,7 +5068,7 @@ def create_fallback_slide(prs, slide_data):
     title_frame.text = f"Slide {slide_data['slide_num']}: {slide_data['question']}"
     title_frame.paragraphs[0].font.size = Pt(24)
     title_frame.paragraphs[0].font.bold = True
-    title_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+    title_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
     
     # Add content
     content_box = slide.shapes.add_textbox(Inches(1), Inches(2), Inches(8), Inches(5))
@@ -5048,6 +5089,120 @@ def create_fallback_slide(prs, slide_data):
     content_frame.margin_right = Pt(12)
     content_frame.margin_top = Pt(6)
     content_frame.margin_bottom = Pt(6)
+
+def create_title_slide(prs, topic, user_prompt):
+    """Create professional title slide"""
+    from pptx.util import Inches, Pt
+    from pptx.enum.text import PP_ALIGN
+    from .prompt_builder import generate_presentation_subtitle
+    
+    # Add slide with blank layout
+    slide_layout = get_safe_slide_layout(prs)
+    slide = prs.slides.add_slide(slide_layout)
+    
+    # Main title
+    title_box = slide.shapes.add_textbox(Inches(1), Inches(2), Inches(8), Inches(1.5))
+    title_frame = title_box.text_frame
+    title_frame.text = topic
+    title_frame.paragraphs[0].font.size = Pt(36)
+    title_frame.paragraphs[0].font.bold = True
+    title_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+    
+    # Generate and add subtitle
+    subtitle = generate_presentation_subtitle(topic, user_prompt)
+    subtitle_box = slide.shapes.add_textbox(Inches(1), Inches(4), Inches(8), Inches(1))
+    subtitle_frame = subtitle_box.text_frame
+    subtitle_frame.text = subtitle
+    subtitle_frame.paragraphs[0].font.size = Pt(20)
+    subtitle_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+    
+    # Optional: Add decorative line or spacing
+    line_box = slide.shapes.add_textbox(Inches(3), Inches(5.5), Inches(4), Inches(0.2))
+    line_frame = line_box.text_frame
+    line_frame.text = "─" * 20
+    line_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+
+def create_thank_you_slide(prs, topic):
+    """Create professional thank you slide"""
+    from pptx.util import Inches, Pt
+    from pptx.enum.text import PP_ALIGN
+    
+    # Add slide with blank layout
+    slide_layout = get_safe_slide_layout(prs)
+    slide = prs.slides.add_slide(slide_layout)
+    
+    # Main "Thank You" text
+    thank_you_box = slide.shapes.add_textbox(Inches(1), Inches(2.5), Inches(8), Inches(1.5))
+    thank_you_frame = thank_you_box.text_frame
+    thank_you_frame.text = "Thank You"
+    thank_you_frame.paragraphs[0].font.size = Pt(42)
+    thank_you_frame.paragraphs[0].font.bold = True
+    thank_you_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+    
+    # Optional: Add topic reference
+    if topic:
+        topic_box = slide.shapes.add_textbox(Inches(1), Inches(4.5), Inches(8), Inches(0.8))
+        topic_frame = topic_box.text_frame
+        topic_frame.text = f"Questions about {topic}?"
+        topic_frame.paragraphs[0].font.size = Pt(16)
+        topic_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+
+def create_ppt_with_title_and_thanks(content_analysis_results, output_path, topic, user_prompt):
+    """Create PowerPoint presentation with title slide, content slides, and thank you slide"""
+    from pptx import Presentation
+    
+    print(f"🎨 Creating PowerPoint with title + {len(content_analysis_results)} content slides + thank you slide...")
+    
+    # Create a new presentation
+    prs = Presentation()
+    
+    # Step 1: Create title slide
+    print(f"   📝 Creating title slide: {topic}")
+    create_title_slide(prs, topic, user_prompt)
+    
+    # Step 2: Create content slides
+    for i, slide_data in enumerate(content_analysis_results):
+        content_slide_num = i + 2  # +2 because slide 1 is title
+        format_type = slide_data.get('format_type', 'paragraph')
+        content = slide_data.get('content', '')
+        question = slide_data.get('question', f'Content Slide {i+1}')
+        
+        print(f"   📝 Creating content slide {content_slide_num}: {format_type} format")
+        
+        # Create slide data structure for the slide creation functions
+        slide_data_for_creation = {
+            'question': question,
+            'content': content,
+            'format_type': format_type,
+            'slide_num': content_slide_num,
+            'confidence': slide_data.get('confidence', 0.0),
+            'recommended_slide_type': slide_data.get('recommended_slide_type', 'content_slide'),
+            'template_match': slide_data.get('template_match', {}),
+            'slide_role': slide_data.get('slide_role', ''),
+            'flow_adjustment': slide_data.get('flow_adjustment', 0.0)
+        }
+        
+        # Create slide with overflow checking and AI reformatting
+        try:
+            create_slide_with_overflow_check(prs, slide_data_for_creation)
+        except Exception as e:
+            print(f"   ⚠️  Error creating slide {content_slide_num}: {e}")
+            # Fallback: create simple text slide
+            create_fallback_slide(prs, slide_data_for_creation)
+    
+    # Step 3: Create thank you slide
+    total_slides = len(content_analysis_results) + 2  # +2 for title and thank you
+    print(f"   📝 Creating thank you slide (slide {total_slides})")
+    create_thank_you_slide(prs, topic)
+    
+    # Save the presentation
+    try:
+        prs.save(output_path)
+        print(f"✅ PowerPoint saved: {output_path}")
+        print(f"📊 Total slides created: {total_slides} (1 title + {len(content_analysis_results)} content + 1 thank you)")
+    except Exception as e:
+        print(f"❌ Error saving PowerPoint: {e}")
+        raise
 
 if __name__ == "__main__":
     import sys, json

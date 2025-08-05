@@ -490,7 +490,7 @@ class ContentFormatAnalyzer:
         # Use enhanced table question analysis
         if question_text:
             try:
-                from replace_content import analyze_table_question_intent
+                from .replace_content import analyze_table_question_intent
                 detected_type, template = analyze_table_question_intent(question_text)
                 if detected_type != "generic":
                     # Strong table signal from enhanced analysis
@@ -609,7 +609,13 @@ class ContentFormatAnalyzer:
                 return "table_slide"
         
         elif format_type == "timeline":
-            if content_analysis["sequence_words"] >= 3:
+            # Check for specific timeline subtype first
+            timeline_subtype = content_analysis.get("timeline_subtype")
+            if timeline_subtype == "process":
+                return "process_slide"
+            elif timeline_subtype == "historical":
+                return "timeline_slide"
+            elif content_analysis["sequence_words"] >= 3:
                 return "process_slide"
             else:
                 return "timeline_slide"

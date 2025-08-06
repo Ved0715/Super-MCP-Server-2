@@ -246,7 +246,11 @@ class InlineMultimodalGenerator:
         # Analyze images with context
         for i, img in enumerate(content_map['images']):
             img_desc = img.get('image_summary', img.get('ocr_text', 'Visual content'))
-            page_context = f"Page {img['page_number']}"
+            page_num = img['page_number']
+            # Convert page number to integer if it's a number
+            if isinstance(page_num, (int, float)):
+                page_num = int(page_num)
+            page_context = f"Page {page_num}"
             relevance = img.get('relevance_score', 0)
             
             # Create a more descriptive summary for contextual reference
@@ -261,7 +265,11 @@ class InlineMultimodalGenerator:
         # Analyze tables with structure and content preview
         for i, table in enumerate(content_map['tables']):
             table_summary = table.get('summary', 'Structured data')
-            page_context = f"Page {table['page_number']}"
+            page_num = table['page_number']
+            # Convert page number to integer if it's a number
+            if isinstance(page_num, (int, float)):
+                page_num = int(page_num)
+            page_context = f"Page {page_num}"
             relevance = table.get('relevance_score', 0)
             
             # Create a more descriptive summary for contextual reference
@@ -778,11 +786,19 @@ Your detailed answer:"""
                 st.error(f"Unable to display image: {e}")
                 logger.error(f"Image display error: {e}")
         else:
-            st.warning(f"Image from page {img_data['page_number']} is not available")
+            page_num = img_data['page_number']
+            # Convert page number to integer if it's a number
+            if isinstance(page_num, (int, float)):
+                page_num = int(page_num)
+            st.warning(f"Image from page {page_num} is not available")
     
     def _display_table_seamlessly(self, table_data: Dict, context: Dict):
         """Display table with seamless integration and enhanced presentation."""
-        logger.info(f"Seamlessly displaying table from page {table_data.get('page_number', 'unknown')}")
+        page_num = table_data.get('page_number', 'unknown')
+        # Convert page number to integer if it's a number
+        if isinstance(page_num, (int, float)):
+            page_num = int(page_num)
+        logger.info(f"Seamlessly displaying table from page {page_num}")
         
         # Remove redundant table summary - let data speak for itself
         
@@ -953,12 +969,18 @@ Your detailed answer:"""
         # Add image placeholders with context
         for i, img in enumerate(content_map['images']):
             page_num = img.get('page_number', 'N/A')
+            # Convert page number to integer if it's a number
+            if isinstance(page_num, (int, float)):
+                page_num = int(page_num)
             summary = img.get('image_summary', 'Visual content')[:150]
             placeholder_details.append(f"IMAGE_{i+1} - Page {page_num}: {summary}")
         
         # Add table placeholders with context
         for i, table in enumerate(content_map['tables']):
             page_num = table.get('page_number', 'N/A')
+            # Convert page number to integer if it's a number
+            if isinstance(page_num, (int, float)):
+                page_num = int(page_num)
             summary = table.get('summary', 'Data table')[:150]
             placeholder_details.append(f"TABLE_{i+1} - Page {page_num}: {summary}")
         
@@ -983,20 +1005,32 @@ IMPORTANT: Create proper contextual references that describe what each image and
         
         if image_source:
             try:
+                page_num = img_data['page_number']
+                # Convert page number to integer if it's a number
+                if isinstance(page_num, (int, float)):
+                    page_num = int(page_num)
                 st.image(
                     image_source,
-                    caption=f"Page {img_data['page_number']}",
+                    caption=f"Page {page_num}",
                     use_container_width=True
                 )
             except Exception as e:
                 st.error(f"Failed to load image: {e}")
                 st.info(f"Image URL: {image_source}")
         else:
-            st.warning(f"No image source found for page {img_data['page_number']}")
+            page_num = img_data['page_number']
+            # Convert page number to integer if it's a number
+            if isinstance(page_num, (int, float)):
+                page_num = int(page_num)
+            st.warning(f"No image source found for page {page_num}")
     
     def _display_table_inline(self, table_data: Dict):
         """Display table inline with minimal formatting."""
-        logger.info(f"Displaying table from page {table_data.get('page_number', 'NO_PAGE')}")
+        page_num = table_data.get('page_number', 'NO_PAGE')
+        # Convert page number to integer if it's a number
+        if isinstance(page_num, (int, float)):
+            page_num = int(page_num)
+        logger.info(f"Displaying table from page {page_num}")
         
         # Display table content with multiple formats
         table_displayed = False

@@ -694,6 +694,9 @@ Summary (2-3 sentences, focus on main insights):"""
             # Add image metadata
             img_type = img_data.get('type', 'image')
             page_num = img_data.get('page_number', 0)
+            # Convert page number to integer if it's a number
+            if isinstance(page_num, (int, float)):
+                page_num = int(page_num)
             content_parts.append(f"Image Type: {img_type}")
             content_parts.append(f"Page: {page_num}")
             
@@ -1304,7 +1307,11 @@ Summary (2-3 sentences, focus on main content and purpose):"""
             best_match = candidate_tables[0]
             chunk = best_match['chunk']
             
-            logger.info(f"Found Table {table_number} on page {best_match['page_number']}")
+            page_num = best_match['page_number']
+            # Convert page number to integer if it's a number
+            if isinstance(page_num, (int, float)):
+                page_num = int(page_num)
+            logger.info(f"Found Table {table_number} on page {page_num}")
             
             # Create response with ONLY the specific table (no images)
             chunk_data = {
@@ -1312,7 +1319,7 @@ Summary (2-3 sentences, focus on main content and purpose):"""
                 'relevance_score': 1.0,  # Perfect match for specific request
                 'original_score': chunk.score,
                 'page_number': chunk.metadata.get('page_number', 0),
-                'text': f"Here is Table {table_number} from page {best_match['page_number']}:",  # Minimal text
+                'text': f"Here is Table {table_number} from page {page_num}:",  # Minimal text
                 'contains_image': False,  # Force no images
                 'image_url': '',
                 'image_summary': '',
@@ -1401,7 +1408,11 @@ Summary (2-3 sentences, focus on main content and purpose):"""
             best_match = candidate_images[0]
             chunk = best_match['chunk']
             
-            logger.info(f"Found Image {image_number} on page {best_match['page_number']}")
+            page_num = best_match['page_number']
+            # Convert page number to integer if it's a number
+            if isinstance(page_num, (int, float)):
+                page_num = int(page_num)
+            logger.info(f"Found Image {image_number} on page {page_num}")
             
             # Create chunk data with ONLY the specific image (no tables)
             chunk_data = {
@@ -1409,7 +1420,7 @@ Summary (2-3 sentences, focus on main content and purpose):"""
                 'relevance_score': 1.0,
                 'original_score': chunk.score,
                 'page_number': chunk.metadata.get('page_number', 0),
-                'text': f"Here is Image {image_number} from page {best_match['page_number']}:",  # Minimal text
+                'text': f"Here is Image {image_number} from page {page_num}:",  # Minimal text
                 'contains_image': True,
                 'image_url': chunk.metadata.get('image_url', ''),
                 'image_summary': chunk.metadata.get('image_summary', ''),
@@ -2687,11 +2698,19 @@ Think step-by-step about what the user really wants and how to optimally retriev
                         }
                     })
                     added_images.add(image_url)
-                    logger.info(f"Added image to response: {image_url} from page {chunk['page_number']}")
+                    page_num = chunk['page_number']
+                    # Convert page number to integer if it's a number
+                    if isinstance(page_num, (int, float)):
+                        page_num = int(page_num)
+                    logger.info(f"Added image to response: {image_url} from page {page_num}")
                 elif image_url in added_images:
                     logger.info(f"Skipped duplicate image: {image_url}")
                 else:
-                    logger.warning(f"Chunk contains image but no URL found for page {chunk['page_number']}")
+                    page_num = chunk['page_number']
+                    # Convert page number to integer if it's a number
+                    if isinstance(page_num, (int, float)):
+                        page_num = int(page_num)
+                    logger.warning(f"Chunk contains image but no URL found for page {page_num}")
             
             # For non-table queries, also add tables if available
             elif not is_table_query and chunk['contains_table'] and chunk.get('table_content_json'):
@@ -2712,7 +2731,11 @@ Think step-by-step about what the user really wants and how to optimally retriev
                         }
                     })
                     added_tables.add(table_content_hash)
-                    logger.info(f"Added table to response: {table_id} from page {chunk['page_number']}")
+                    page_num = chunk['page_number']
+                    # Convert page number to integer if it's a number
+                    if isinstance(page_num, (int, float)):
+                        page_num = int(page_num)
+                    logger.info(f"Added table to response: {table_id} from page {page_num}")
                 else:
                     logger.info(f"Skipped duplicate table: {table_id}")
     

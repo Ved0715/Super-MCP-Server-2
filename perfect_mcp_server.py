@@ -3729,6 +3729,9 @@ The operation has been successfully cancelled and will stop as soon as possible.
                 
                 # Add contextual information
                 page_num = image_data.get('page_number', 'N/A')
+                # Convert page number to integer if it's a number
+                if isinstance(page_num, (int, float)):
+                    page_num = int(page_num)
                 relevance = image_data.get('relevance_score', 0)
                 img_parts.append(f"**Location:** Page {page_num} | **Relevance:** {relevance:.3f}")
                 
@@ -3756,6 +3759,9 @@ The operation has been successfully cancelled and will stop as soon as possible.
                 
                 # Add contextual information
                 page_num = table_data.get('page_number', 'N/A')
+                # Convert page number to integer if it's a number
+                if isinstance(page_num, (int, float)):
+                    page_num = int(page_num)
                 relevance = table_data.get('relevance_score', 0)
                 table_parts.append(f"**Location:** Page {page_num} | **Relevance:** {relevance:.3f}")
                 
@@ -3858,6 +3864,9 @@ The operation has been successfully cancelled and will stop as soon as possible.
                     # Add image reference with description
                     img_data = element.get('data', {})
                     page_num = img_data.get('page_number', 'N/A')
+                    # Convert page number to integer if it's a number
+                    if isinstance(page_num, (int, float)):
+                        page_num = int(page_num)
                     image_url = img_data.get('s3_url') or img_data.get('display_url', '')
                     if image_url:
                         response_parts.append(f"## 🖼️ Visual Content (Page {page_num})")
@@ -3868,6 +3877,9 @@ The operation has been successfully cancelled and will stop as soon as possible.
                     # Add table reference with summary
                     table_data = element.get('data', {})
                     page_num = table_data.get('page_number', 'N/A')
+                    # Convert page number to integer if it's a number
+                    if isinstance(page_num, (int, float)):
+                        page_num = int(page_num)
                     summary = table_data.get('summary', '')
                     
                     response_parts.append(f"## 📊 Data Table (Page {page_num})")

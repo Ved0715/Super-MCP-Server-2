@@ -1370,7 +1370,7 @@ Summary (2-3 sentences, focus on main content and purpose):"""
             }
             
             # Generate response using the inline generator
-            response_data = self._generate_composite_response(query, [chunk_data], {})
+            response_data = self._generate_composite_response(query, [chunk_data], {}, 'standard')
             response_data['performance_metrics'] = {
                 'query_time': 0.5,
                 'total_results': 1,
@@ -1470,7 +1470,7 @@ Summary (2-3 sentences, focus on main content and purpose):"""
                 'source_document': chunk.metadata.get('source_document', '')
             }
             
-            response_data = self._generate_composite_response(query, [chunk_data], {})
+            response_data = self._generate_composite_response(query, [chunk_data], {}, 'standard')
             response_data['performance_metrics'] = {
                 'query_time': 0.5,
                 'total_results': 1,
@@ -1529,7 +1529,8 @@ Summary (2-3 sentences, focus on main content and purpose):"""
             # Generate response using the full original content (no distillation)
             query_intent = search_params.get('query_intent', {})
             conditional_instructions = query_intent.get('conditional_instructions', {})
-            response_data = self._generate_composite_response(query, relevant_chunks, conditional_instructions)
+            response_scope = query_intent.get('response_scope', 'standard')
+            response_data = self._generate_composite_response(query, relevant_chunks, conditional_instructions, response_scope)
             
             logger.debug(f"Generated response data type: {type(response_data)}")
             logger.debug(f"Response data keys: {list(response_data.keys()) if isinstance(response_data, dict) else 'Not a dict'}")
@@ -2065,9 +2066,9 @@ PERFORM COMPREHENSIVE ANALYSIS:
    - Focused: User wants particular aspect or content type
 
 5. RESPONSE SCOPE INTELLIGENCE (Critical - determines response size):
-   - Minimal: Single sentence/fact answers (e.g., "What is X?", "How many?")
-   - Concise: Brief paragraph with 1-2 elements (e.g., "Explain briefly", "Quick overview")
-   - Standard: Normal response with 2-3 content types (most queries)
+   - Minimal: Simple definition/fact questions (e.g., "What is decoder?", "What is X?", "Define Y", "How many?") - NO IMAGES/TABLES
+   - Concise: Brief explanations (e.g., "Explain briefly", "Quick overview", "Summarize") - MINIMAL MULTIMEDIA  
+   - Standard: Normal detailed response with multiple content types (most queries)
    - Detailed: Thorough analysis with multiple elements (e.g., "Compare", "Analyze deeply")  
    - Comprehensive: Complete coverage with all relevant content (e.g., "Everything about", "Complete guide")
 
@@ -2557,7 +2558,7 @@ Think step-by-step about what the user really wants and how to optimally retriev
             
             return selected_chunks
     
-    def _generate_composite_response(self, query: str, relevant_chunks: List[Dict], conditional_instructions: Dict = None) -> Dict[str, Any]:
+    def _generate_composite_response(self, query: str, relevant_chunks: List[Dict], conditional_instructions: Dict = None, response_scope: str = 'standard') -> Dict[str, Any]:
         """Generate seamlessly integrated response using composite chunks and inline generator with conditional instructions."""
         try:
             if not relevant_chunks:
@@ -2566,7 +2567,7 @@ Think step-by-step about what the user really wants and how to optimally retriev
                 }
             
             # Use the inline generator directly - it handles all content extraction and organization
-            response_data = self.inline_generator.generate_inline_response_from_chunks(query, relevant_chunks, conditional_instructions)
+            response_data = self.inline_generator.generate_inline_response_from_chunks(query, relevant_chunks, conditional_instructions, response_scope)
             
             logger.debug(f"Inline generator response type: {type(response_data)}")
             logger.debug(f"Inline generator response: {response_data}")

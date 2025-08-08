@@ -18,7 +18,7 @@ class InlineMultimodalGenerator:
         self.openai_client = openai_client
         self.chat_model = chat_model
     
-    def generate_inline_response_from_chunks(self, query: str, chunks: List[Dict], conditional_instructions: Dict = None) -> Dict[str, Any]:
+    def generate_inline_response_from_chunks(self, query: str, chunks: List[Dict], conditional_instructions: Dict = None, response_scope: str = 'standard') -> Dict[str, Any]:
         """Generate inline response directly from raw chunks - simpler processing."""
         try:
             # Simple content extraction from chunks
@@ -89,13 +89,13 @@ class InlineMultimodalGenerator:
                         })
             
             # Use the existing response generation logic
-            return self.generate_inline_response(query, filtered_content, conditional_instructions)
+            return self.generate_inline_response(query, filtered_content, conditional_instructions, response_scope)
             
         except Exception as e:
             logger.error(f"Error in generate_inline_response_from_chunks: {e}")
             return {'inline_elements': [{'type': 'text', 'content': f"Error generating response: {str(e)}"}]}
 
-    def generate_inline_response(self, query: str, filtered_content: Dict, conditional_instructions: Dict = None) -> Dict[str, Any]:
+    def generate_inline_response(self, query: str, filtered_content: Dict, conditional_instructions: Dict = None, response_scope: str = 'standard') -> Dict[str, Any]:
         """Generate intelligent inline multimodal response."""
         try:
             # Analyze content availability from filtered content
@@ -111,7 +111,7 @@ class InlineMultimodalGenerator:
             content_map = self._create_content_map(filtered_content, query)
 
             # Generate contextual response structure
-            response_structure = self._generate_response_structure(query, content_map, input_has_text, input_has_images, input_has_tables)
+            response_structure = self._generate_response_structure(query, content_map, input_has_text, input_has_images, input_has_tables, response_scope)
             
             # Validate inline placement
             is_inline_valid, validation_message = self._validate_inline_placement(response_structure)
@@ -120,7 +120,7 @@ class InlineMultimodalGenerator:
             # If inline placement is poor, regenerate with stronger focus
             if not is_inline_valid and (input_has_images or input_has_tables):
                 logger.info("Poor inline placement detected, regenerating with stronger focus...")
-                response_structure = self._regenerate_with_inline_focus(query, content_map, input_has_text, input_has_images, input_has_tables)
+                response_structure = self._regenerate_with_inline_focus(query, content_map, input_has_text, input_has_images, input_has_tables, response_scope)
                 
                 # Validate again with more lenient criteria
                 is_inline_valid, validation_message = self._validate_inline_placement(response_structure, is_regenerated=True)
@@ -253,7 +253,7 @@ class InlineMultimodalGenerator:
         
         return content_map
     
-    def _generate_response_structure(self, query: str, content_map: Dict, has_text: bool, has_images: bool, has_tables: bool) -> str:
+    def _generate_response_structure(self, query: str, content_map: Dict, has_text: bool, has_images: bool, has_tables: bool, response_scope: str = 'standard') -> str:
         """Generate intelligent response structure with seamless multimodal integration."""
         
         # Build comprehensive context for AI with detailed content analysis
@@ -334,11 +334,12 @@ class InlineMultimodalGenerator:
             text_content_prompt = f"\nDOCUMENT TEXT CONTENT (USE THIS FULL CONTENT IN YOUR RESPONSE):\n{chr(10).join(text_content_sections)}\n"
         
         # Enhanced prompt with strong inline placement instructions
-        system_prompt = f"""You are a helpful assistant that answers questions based on the document content provided. 
+        system_prompt = f"""You are an expert AI assistant. Your specialized function is to answer a user's question by transforming provided source documents and media summaries into a single, perfectly formatted, and easy-to-understand explanation.
 
 AVAILABLE CONTENT:
 {', '.join(context_parts)}
 {text_content_prompt}
+
 CONTENT DETAILS:
 {chr(10).join(content_analysis)}
 
@@ -349,68 +350,57 @@ USER'S QUESTION: "{query}"
 
 CRITICAL FORMATTING REQUIREMENTS - YOU MUST FOLLOW THESE EXACTLY:
 
-**STRUCTURED FORMATTING (ChatGPT/Claude Style):**
-1. **USE MARKDOWN FORMATTING**: Structure your response with proper markdown:
-   - Use ## for main section headers
-   - Use ### for subsection headers
-   - Use **bold text** for emphasis and key terms
-   - Use *italic text* for subtle emphasis
-   - Use `code formatting` for technical terms, formulas, or specific values
-   - Use bullet points (- or *) for lists
-   - Use numbered lists (1., 2., 3.) for sequences or steps
-   - Use > blockquotes for important notes or definitions
-   - Add proper line breaks between sections
+STRUCTURED FORMATTING (ChatGPT/Claude Style):
 
-2. **CONTENT ORGANIZATION**: Structure your response logically:
-   - Start with a brief introductory paragraph
-   - Use clear section headers to organize information
-   - End with a summary or conclusion section when appropriate
-   - Ensure smooth flow between sections
-
-3. **USE ALL TEXT CONTENT**: Incorporate the full text content provided above into your response
-
-4. **PROPER CONTEXTUAL REFERENCES**: Write complete contextual references that describe what the multimedia shows:
-   - "Refer to the following image which shows [use the actual image summary from the content details]"
-   - "As illustrated in the image below, [describe the visual content using the image summary]"
-   - "The following image demonstrates [use key points from the image summary]"
-
-5. **TABLE CONTEXTUAL REFERENCES**: Write complete contextual references that describe what the table contains:
-   - "Refer to the following table which contains [use the actual table summary or describe the data structure]"
-   - "As shown in the table below, [describe the data/statistics using table information]"
-   - "The following table presents [use key information from the table summary]"
-
-6. **COMPLETE SENTENCES**: Always write complete sentences for contextual references - never leave them incomplete
-
-7. **INLINE PLACEMENT**: Place these contextual references DIRECTLY within your text flow where they are most relevant
-
-8. **NATURAL INTEGRATION**: Integrate multimedia references naturally within sentences and paragraphs
-
-9. **COMPREHENSIVE RESPONSE**: Use the detailed text content to provide a thorough answer
-
-10. **NO REDUNDANT REFERENCES**: Do NOT repeat the same reference multiple times or add redundant text after the reference
-
+USE PROFESSIONAL MARKDOWN FORMATTING: Structure your response with clean, professional markdown to ensure clarity and readability.
+Use ## for main section headers (with blank lines before and after).
+Use ### for subsection headers (with blank lines before and after).
+Use bold text for key terms and important concepts.
+Use italic text for subtle emphasis or titles.
+Use code formatting for technical terms, specific values, formulas, or file names.
+Use bullet points (* or -) for unordered lists (with a blank line before the list).
+Use numbered lists (1., 2.) for sequences or steps (with a blank line before the list).
+Use > blockquotes for important notes, definitions, or key findings.
+ORGANIZE THE CONTENT LOGICALLY: Your goal is to tell a clear story that answers the user's question.
+Start with a brief introductory paragraph that sets the stage.
+Use clear section headers (##) to organize the information into logical blocks.
+End with a concluding summary when appropriate.
+Ensure a smooth, logical flow between sections using transitional phrases.
+Write in complete, connected paragraphs—avoid single-sentence fragments.
+USE ONLY PROVIDED CONTENT: Synthesize and incorporate the full text content provided. Your knowledge is strictly limited to the source material. Do not invent facts or use any outside knowledge.
+CREATE DESCRIPTIVE CONTEXTUAL REFERENCES: You must write complete, descriptive references that explain what the multimedia shows, using the provided summaries.
+For Images: "Refer to the following image which shows [use the actual image summary from the content details]."
+For Images: "As illustrated in the image below, [describe the visual content using the image summary]."
+For Tables: "As shown in the table below which contains [use the actual table summary or describe the data structure], ..."
+For Tables: "The following table presents [use key information from the table summary]."
+WRITE COMPLETE SENTENCES: All contextual references must be part of a complete, natural-sounding sentence.
+PLACE REFERENCES INLINE: Place these contextual references DIRECTLY within your text flow where they are most relevant to support your explanation.
+INTEGRATE REFERENCES NATURALLY: Weave the references smoothly into your paragraphs. They should feel like a natural part of the text, not an interruption.
+WRITE A COMPREHENSIVE RESPONSE: Use the detailed text content to provide a thorough, well-supported answer to the user's question.
+AVOID REDUNDANCY: Do NOT repeat the same reference multiple times or add redundant text after the reference placeholder.
 EXAMPLE OF CORRECT STRUCTURED RESPONSE:
 
-## Research Methodology Overview
+Research Methodology Overview
+The study employed a three-phase experimental design to investigate the research question. Each phase built upon the previous findings to create a comprehensive analysis framework that ensured data integrity and reproducibility.
 
-The study employed a **three-phase experimental design** to investigate the research question. Each phase built upon the previous findings to create a comprehensive analysis framework.
+Phase 1: Experimental Setup
+The initial phase focused on establishing the experimental parameters. Refer to the following image which shows the experimental setup used in Phase 1, demonstrating the key components and their arrangement. This configuration allowed for precise control of variables while maintaining optimal measurement conditions.
 
-### Phase 1: Experimental Setup
-The initial phase focused on establishing the experimental parameters. Refer to the following image which shows the experimental setup used in Phase 1, demonstrating the key components and their arrangement. This configuration allowed for precise control of variables while maintaining `optimal measurement conditions`.
+Results and Analysis
+The collected data revealed significant improvements across all measured parameters. As shown in the table below which contains species probability data and taxonomic classifications, the results demonstrate a 15% improvement in classification accuracy.
 
-### Results Analysis
-The collected data revealed significant improvements across all measured parameters. As shown in the table below which contains species probability data and taxonomic classifications, the results demonstrate a **15% improvement** in classification accuracy.
-
-> **Key Finding**: The integrated approach yielded consistently better results than traditional methods.
-
-## Conclusion
+Key Finding: The integrated approach yielded consistently better results than traditional methods, highlighting the benefits of a multi-faceted strategy.
+Conclusion
 The three-phase methodology successfully addressed the research objectives and provided valuable insights for future investigations.
 
 EXAMPLE OF INCORRECT REFERENCE (DO NOT DO THIS):
 "The study methodology involved three main phases. Refer to the following image which shows the experimental setup (refer to the following image which shows the experimental setup). The results from the table below (as shown in the table below which contains data)."
 
-**FINAL INSTRUCTIONS:**
-Answer the question naturally and helpfully using the provided document text content. Structure your response with proper markdown formatting like ChatGPT/Claude, using headers, bold text, code formatting, lists, and blockquotes as shown in the example. Create proper contextual references that describe what each image and table shows using the summaries provided, then place these references inline throughout your response where they best support your explanation. Always write complete sentences for contextual references.
+RESPONSE SCOPE INSTRUCTIONS:
+{self._get_scope_instructions(response_scope)}
+
+FINAL INSTRUCTIONS:
+Answer the user's question naturally and helpfully using only the provided document content. Structure your response with perfect markdown formatting as demonstrated in the example. Create descriptive, contextual references for all images and tables, and integrate them seamlessly into your paragraphs to support your statements.
 
 Your detailed, structured answer:"""
 
@@ -424,8 +414,10 @@ Your detailed, structured answer:"""
             
             generated_response = response.choices[0].message.content
             
-            # Return the generated response directly - no grounding verification needed
-            return generated_response
+            # Clean and format the response for better presentation
+            cleaned_response = self._clean_and_format_response(generated_response)
+            
+            return cleaned_response
             
         except Exception as e:
             logger.error(f"Error generating response structure: {e}")
@@ -462,6 +454,50 @@ Your detailed, structured answer:"""
                     fallback_parts.append(f"Refer to the following table which contains {table_summary}.")
             
             return " ".join(fallback_parts)
+    
+    def _get_scope_instructions(self, response_scope: str) -> str:
+        """Get response scope-specific instructions to control response length and detail."""
+        scope_instructions = {
+            'minimal': """
+**MINIMAL RESPONSE REQUIRED**:
+- Provide a VERY SHORT direct answer (1-2 sentences maximum)
+- Only include the most essential information that directly answers the question
+- NO sections, headers, or detailed explanations
+- NO images or tables unless absolutely critical to the answer
+- Keep it extremely brief and to the point""",
+            
+            'concise': """
+**CONCISE RESPONSE REQUIRED**:
+- Provide a SHORT, focused answer (1-2 paragraphs maximum)
+- Include only the key points that directly answer the question
+- Use minimal formatting - at most one main header
+- Include images/tables ONLY if they are directly relevant to the core answer
+- Be brief but informative""",
+            
+            'standard': """
+**STANDARD RESPONSE**:
+- Provide a well-structured, informative response (3-4 paragraphs)
+- Use appropriate formatting with main sections
+- Include relevant images and tables that support the explanation
+- Balance detail with readability""",
+            
+            'detailed': """
+**DETAILED RESPONSE**:
+- Provide a comprehensive, thorough response with multiple sections
+- Use extensive formatting with headers, subheaders, and lists
+- Include all available relevant images and tables
+- Provide in-depth explanations and context""",
+            
+            'comprehensive': """
+**COMPREHENSIVE RESPONSE**:
+- Provide an exhaustive, complete coverage of the topic
+- Use extensive formatting with multiple levels of headers
+- Include all available multimedia content
+- Provide detailed explanations, examples, and contextual information
+- Cover all aspects related to the query"""
+        }
+        
+        return scope_instructions.get(response_scope, scope_instructions['standard'])
     
     def _create_inline_elements(self, response_structure: str, content_map: Dict) -> List[Dict]:
         """Convert response structure with contextual references into seamlessly integrated inline elements."""
@@ -573,6 +609,9 @@ Your detailed, structured answer:"""
             
             # Post-process elements for better flow
             inline_elements = self._optimize_element_flow(inline_elements)
+            
+            # Ensure proper interleaving of content
+            inline_elements = self._ensure_content_interleaving(inline_elements, content_map)
             
             # If still no multimedia content was added, add all available content at the end
             if not any(elem['type'] in ['image', 'table'] for elem in inline_elements):
@@ -715,7 +754,81 @@ Your detailed, structured answer:"""
         # Post-process elements for better flow
         inline_elements = self._optimize_element_flow(inline_elements)
         
+        # Ensure proper interleaving of content
+        inline_elements = self._ensure_content_interleaving(inline_elements, content_map)
+        
         return inline_elements
+    
+    def _ensure_content_interleaving(self, inline_elements: List[Dict], content_map: Dict) -> List[Dict]:
+        """Ensure proper interleaving of content types to avoid clustering."""
+        if not inline_elements:
+            return inline_elements
+        
+        # Check if we have the problematic clustering pattern (all images/tables together)
+        element_types = [elem['type'] for elem in inline_elements]
+        
+        # Look for clustering patterns (consecutive elements of same type > 2)
+        has_clustering = False
+        consecutive_count = 1
+        for i in range(1, len(element_types)):
+            if element_types[i] == element_types[i-1] and element_types[i] != 'text':
+                consecutive_count += 1
+                if consecutive_count > 2:  # More than 2 consecutive non-text elements
+                    has_clustering = True
+                    break
+            else:
+                consecutive_count = 1
+        
+        if not has_clustering:
+            return inline_elements  # Already properly distributed
+        
+        logger.info("Detected content clustering, redistributing for better interleaving")
+        
+        # Separate elements by type
+        text_elements = [elem for elem in inline_elements if elem['type'] == 'text']
+        image_elements = [elem for elem in inline_elements if elem['type'] == 'image']
+        table_elements = [elem for elem in inline_elements if elem['type'] == 'table']
+        
+        # Create a new well-interleaved structure
+        redistributed = []
+        
+        # Start with first text block
+        if text_elements:
+            redistributed.append(text_elements[0])
+            text_elements = text_elements[1:]
+        
+        # Distribute multimedia content between text blocks
+        multimedia_queue = image_elements + table_elements
+        multimedia_queue.sort(key=lambda x: x.get('context', {}).get('relevance', 0), reverse=True)
+        
+        multimedia_index = 0
+        text_index = 0
+        
+        # Interleave multimedia with text
+        while multimedia_index < len(multimedia_queue) and text_index < len(text_elements):
+            # Add 1-2 multimedia items
+            for _ in range(min(2, len(multimedia_queue) - multimedia_index)):
+                if multimedia_index < len(multimedia_queue):
+                    redistributed.append(multimedia_queue[multimedia_index])
+                    multimedia_index += 1
+            
+            # Add next text block
+            if text_index < len(text_elements):
+                redistributed.append(text_elements[text_index])
+                text_index += 1
+        
+        # Add remaining multimedia at the end if any
+        while multimedia_index < len(multimedia_queue):
+            redistributed.append(multimedia_queue[multimedia_index])
+            multimedia_index += 1
+        
+        # Add remaining text at the end if any
+        while text_index < len(text_elements):
+            redistributed.append(text_elements[text_index])
+            text_index += 1
+        
+        logger.info(f"Redistributed {len(inline_elements)} elements with better interleaving")
+        return redistributed
     
     def _merge_consecutive_text_parts(self, parts: List[str]) -> List[str]:
         """Merge consecutive text parts to avoid fragmentation while preserving placeholders."""
@@ -1288,7 +1401,7 @@ IMPORTANT: Create proper contextual references that describe what each image and
         else:
             return True, f"Acceptable inline placement: {len(reference_positions)} contextual references distributed throughout"
     
-    def _regenerate_with_inline_focus(self, query: str, content_map: Dict, has_text: bool, has_images: bool, has_tables: bool) -> str:
+    def _regenerate_with_inline_focus(self, query: str, content_map: Dict, has_text: bool, has_images: bool, has_tables: bool, response_scope: str = 'standard') -> str:
         """Regenerate response with stronger focus on contextual references."""
         
         # Prepare text content for the aggressive prompt
@@ -1348,6 +1461,8 @@ CORRECT FORMAT (DO THIS):
 
 INCORRECT FORMAT (DO NOT DO THIS):
 "Here are the images and tables: {{IMAGE_1}} shows setup. {{TABLE_1}} shows results. The research methodology..."
+
+{self._get_scope_instructions(response_scope)}
 
 Use the image and table summaries provided above to create meaningful contextual descriptions. Integrate all multimedia content inline within your narrative and use the detailed text content provided. Your answer:"""
 
@@ -1462,6 +1577,68 @@ Use the image and table summaries provided above to create meaningful contextual
         except Exception as e:
             logger.warning(f"Error in smart text extraction: {e}. Using original text.")
             return text
+    
+    def _clean_and_format_response(self, response: str) -> str:
+        """Clean and format the response text for better ChatGPT/Claude-style presentation."""
+        import re
+        
+        if not response:
+            return response
+        
+        try:
+            # STEP 1: Remove ALL excessive newlines and spacing patterns
+            # First remove the really problematic patterns like "\n \n\n" and "\n\n\n"
+            cleaned = re.sub(r'\n\s*\n\s*\n+', '\n\n', response)  # Replace 3+ newlines (with possible spaces) with exactly 2
+            cleaned = re.sub(r'\n\s+\n', '\n\n', cleaned)  # Remove patterns like "\n \n"
+            cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)  # Ensure no more than 2 consecutive newlines
+            
+            # STEP 2: Fix header spacing (ChatGPT/Claude style)
+            # Headers should have exactly one blank line before and after
+            cleaned = re.sub(r'\n*(#+\s)', r'\n\n\1', cleaned)  # Ensure blank line before headers
+            cleaned = re.sub(r'(#+\s[^\n]+)\n+', r'\1\n\n', cleaned)  # Ensure blank line after headers
+            
+            # STEP 3: Fix subheading and section spacing
+            # Subheadings should be properly spaced
+            cleaned = re.sub(r'\n*(###\s)', r'\n\n\1', cleaned)  # Subheadings
+            cleaned = re.sub(r'(###\s[^\n]+)\n+', r'\1\n\n', cleaned)
+            
+            # STEP 4: Fix list formatting (clean bullet points)
+            # Lists should have proper spacing without excessive gaps
+            cleaned = re.sub(r'\n+(-\s)', r'\n\n\1', cleaned)  # Blank line before first list item
+            cleaned = re.sub(r'(-\s[^\n]+)\n+(-\s)', r'\1\n\2', cleaned)  # No gap between list items
+            cleaned = re.sub(r'(-\s[^\n]+)\n+([^-\n])', r'\1\n\n\2', cleaned)  # Blank line after list
+            
+            # STEP 5: Fix paragraph spacing
+            # Paragraphs should be separated by exactly one blank line
+            cleaned = re.sub(r'([.!?])\s*\n+([A-Z])', r'\1\n\n\2', cleaned)  # Proper paragraph separation
+            
+            # STEP 6: Clean bold formatting spacing
+            cleaned = re.sub(r'\n+(\*\*[^*]+\*\*)', r'\n\n\1', cleaned)  # Bold headings
+            
+            # STEP 7: Remove excessive spaces and fix sentence spacing
+            cleaned = re.sub(r' {2,}', ' ', cleaned)  # Multiple spaces to single space
+            cleaned = re.sub(r'([.!?])([A-Z])', r'\1 \2', cleaned)  # Space after sentences
+            
+            # STEP 8: Clean beginning and end
+            cleaned = cleaned.strip()
+            
+            # STEP 9: Final cleanup - ensure no weird trailing spaces
+            lines = cleaned.split('\n')
+            lines = [line.rstrip() for line in lines]  # Remove trailing spaces from each line
+            cleaned = '\n'.join(lines)
+            
+            # STEP 10: Ensure proper structure - no more than 2 consecutive newlines anywhere
+            cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+            
+            logger.debug(f"Response cleaning: {len(response)} -> {len(cleaned)} chars")
+            if len(cleaned) != len(response):
+                logger.info("Response formatting and spacing cleaned for better presentation")
+            
+            return cleaned
+            
+        except Exception as e:
+            logger.warning(f"Error in response cleaning: {e}. Using original response.")
+            return response
 
 
 print("InlineMultimodalGenerator created successfully")

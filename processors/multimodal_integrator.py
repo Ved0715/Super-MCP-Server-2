@@ -1840,20 +1840,117 @@ RELEVANCE SCORES:
         return summary
     
     def _apply_ai_selection_strategy(self, chunks: List[Dict], strategy: Dict) -> List[Dict]:
-        """Apply a simple, normal content selection strategy."""
+        """Apply AI-determined content selection strategy based on query intent and content analysis."""
         # Sort chunks by relevance score
         sorted_chunks = sorted(chunks, key=lambda x: x['relevance_score'], reverse=True)
         
-        # Simple selection: take top chunks with a reasonable limit
-        max_chunks = min(8, len(sorted_chunks))  # Normal limit of 8 chunks max
-        selected_chunks = sorted_chunks[:max_chunks]
+        # Extract strategy parameters
+        selection_strategy = strategy.get('selection_strategy', 'balanced')
+        content_limits = strategy.get('content_limits', {})
+        priority_order = strategy.get('priority_order', ['text', 'images', 'tables'])
+        reasoning = strategy.get('reasoning', '')
         
-        # Count selected content types for logging
-        text_selected = sum(1 for c in selected_chunks if c.get('text'))
-        image_selected = sum(1 for c in selected_chunks if c.get('contains_image'))
-        table_selected = sum(1 for c in selected_chunks if c.get('contains_table'))
+        logger.info(f"Applying AI selection strategy: {selection_strategy} with limits {content_limits}")
         
-        logger.info(f"Normal selection applied: {len(selected_chunks)} chunks selected (Text: {text_selected}, Images: {image_selected}, Tables: {table_selected})")
+        # Apply strategy-specific selection logic
+        if selection_strategy == 'comprehensive':
+            # Select more content for comprehensive queries
+            text_limit = content_limits.get('text_sections', [8, 12])[1]  # Use upper bound
+            image_limit = content_limits.get('images', [2, 4])[1]
+            table_limit = content_limits.get('tables', [2, 3])[1]
+        elif selection_strategy == 'focused':
+            # Select focused content for specific queries
+            text_limit = content_limits.get('text_sections', [3, 6])[0]  # Use lower bound
+            image_limit = content_limits.get('images', [1, 2])[0]
+            table_limit = content_limits.get('tables', [1, 2])[0]
+        elif selection_strategy == 'visual':
+            # Prioritize visual content
+            text_limit = content_limits.get('text_sections', [2, 4])[0]
+            image_limit = content_limits.get('images', [3, 5])[1]  # More images
+            table_limit = content_limits.get('tables', [2, 3])[1]
+        elif selection_strategy == 'textual':
+            # Prioritize text content
+            text_limit = content_limits.get('text_sections', [6, 10])[1]  # More text
+            image_limit = content_limits.get('images', [1, 2])[0]
+            table_limit = content_limits.get('tables', [1, 2])[0]
+        else:  # balanced or default
+            text_limit = content_limits.get('text_sections', [4, 6])[1]
+            image_limit = content_limits.get('images', [2, 3])[1]
+            table_limit = content_limits.get('tables', [1, 2])[1]
+        
+        # Enhanced sorting: prioritize chunks with relevant images for image-focused queries
+        if 'images' in priority_order and priority_order.index('images') <= 1:  # Images are high priority
+            # Create separate lists for image chunks and others
+            image_chunks = [c for c in sorted_chunks if c.get('contains_image')]
+            other_chunks = [c for c in sorted_chunks if not c.get('contains_image')]
+            
+            # Sort image chunks by image relevance indicators
+            image_chunks.sort(key=lambda x: (
+                x.get('image_count', 0),  # Prefer multiple images
+                len([s for s in x.get('image_summaries', []) if s and len(s) > 50]),  # Rich summaries
+                x['relevance_score']  # Fallback to relevance score
+            ), reverse=True)
+            
+            # Recombine with image chunks having priority
+            sorted_chunks = image_chunks + other_chunks
+        
+        # Select content according to priority order and limits
+        selected_chunks = []
+        text_selected = 0
+        image_selected = 0
+        table_selected = 0
+        
+        for priority_type in priority_order:
+            for chunk in sorted_chunks:
+                if len(selected_chunks) >= (text_limit + image_limit + table_limit):
+                    break
+                    
+                if chunk in selected_chunks:
+                    continue
+                
+                # Select based on priority type and limits
+                if priority_type == 'text' and chunk.get('text') and text_selected < text_limit:
+                    selected_chunks.append(chunk)
+                    text_selected += 1
+                elif priority_type == 'images' and chunk.get('contains_image') and image_selected < image_limit:
+                    # Enhanced image selection: prioritize chunks with multiple relevant images
+                    image_count = chunk.get('image_count', 0)
+                    image_summaries = chunk.get('image_summaries', [])
+                    
+                    # Boost selection if chunk has multiple images or highly relevant image summaries
+                    should_prioritize = image_count > 1 or any(
+                        summary and len(summary) > 50 and any(
+                            keyword in summary.lower() 
+                            for keyword in ['diagram', 'architecture', 'model', 'visualization', 'chart', 'figure']
+                        ) for summary in image_summaries
+                    )
+                    
+                    # Add chunk, prioritizing those with better image content
+                    selected_chunks.append(chunk)
+                    image_selected += 1
+                elif priority_type == 'tables' and chunk.get('contains_table') and table_selected < table_limit:
+                    selected_chunks.append(chunk)
+                    table_selected += 1
+        
+        # Fill remaining slots if we haven't reached limits
+        for chunk in sorted_chunks:
+            if len(selected_chunks) >= (text_limit + image_limit + table_limit):
+                break
+                
+            if chunk not in selected_chunks:
+                if chunk.get('text') and text_selected < text_limit:
+                    selected_chunks.append(chunk)
+                    text_selected += 1
+                elif chunk.get('contains_image') and image_selected < image_limit:
+                    selected_chunks.append(chunk)
+                    image_selected += 1
+                elif chunk.get('contains_table') and table_selected < table_limit:
+                    selected_chunks.append(chunk)
+                    table_selected += 1
+        
+        logger.info(f"AI selection strategy '{selection_strategy}' applied: {len(selected_chunks)} chunks selected (Text: {text_selected}, Images: {image_selected}, Tables: {table_selected})")
+        logger.debug(f"Selection reasoning: {reasoning}")
+        
         return selected_chunks
     
     
@@ -1967,13 +2064,20 @@ PERFORM COMPREHENSIVE ANALYSIS:
    - Specific: User wants targeted, focused information
    - Focused: User wants particular aspect or content type
 
-5. CONDITIONAL LOGIC DETECTION:
+5. RESPONSE SCOPE INTELLIGENCE (Critical - determines response size):
+   - Minimal: Single sentence/fact answers (e.g., "What is X?", "How many?")
+   - Concise: Brief paragraph with 1-2 elements (e.g., "Explain briefly", "Quick overview")
+   - Standard: Normal response with 2-3 content types (most queries)
+   - Detailed: Thorough analysis with multiple elements (e.g., "Compare", "Analyze deeply")  
+   - Comprehensive: Complete coverage with all relevant content (e.g., "Everything about", "Complete guide")
+
+6. CONDITIONAL LOGIC DETECTION:
    - Positive filters: "show", "include", "focus on", "with", "containing"
    - Negative filters: "without", "exclude", "not", "except", "avoid"
    - Content preferences: "only tables", "just images", "text only"
    - Quality requirements: "detailed", "brief", "comprehensive"
 
-6. CONTEXTUAL UNDERSTANDING:
+7. CONTEXTUAL UNDERSTANDING:
    - Temporal context: "recent", "historical", "current", "latest"
    - Comparative context: "compare", "versus", "difference", "similar"
    - Analytical context: "analyze", "evaluate", "assess", "interpret"
@@ -1986,6 +2090,7 @@ RESPOND WITH THIS EXACT JSON FORMAT:
     "content_preferences": ["text", "images", "tables"],
     "complexity_level": "simple|medium|complex", 
     "scope": "comprehensive|specific|focused",
+    "response_scope": "minimal|concise|standard|detailed|comprehensive",
     "semantic_concepts": ["concept1", "concept2", "concept3"],
     "intent_keywords": ["key1", "key2", "key3"],
     "conditional_instructions": {{
@@ -2020,6 +2125,7 @@ Think step-by-step about what the user really wants and how to optimally retriev
             
             # Parse JSON response with better error handling
             response_content = response.choices[0].message.content.strip()
+            logger.debug(f"LLM Query Intent Raw Response: {response_content[:300]}...")
             
             try:
                 # Try to extract JSON if it's embedded in other text
@@ -2028,19 +2134,21 @@ Think step-by-step about what the user really wants and how to optimally retriev
                     end_idx = response_content.rfind('}') + 1
                     json_content = response_content[start_idx:end_idx]
                     intent_analysis = json.loads(json_content)
+                    logger.debug(f"LLM Intent Analysis Parsed: {json.dumps(intent_analysis, indent=2)}")
                 else:
                     # Fallback if no JSON found
                     raise json.JSONDecodeError("No JSON found in response", response_content, 0)
                     
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to parse JSON from LLM response: {e}. Response: {response_content[:200]}...")
+                logger.info("Using fallback heuristic query intent analysis instead of LLM")
                 # Use enhanced fallback instead of simple fallback
                 return self._fallback_intent_analysis_enhanced(query)
             
             # Validate and enrich the analysis
             intent_analysis = self._validate_and_enrich_intent(intent_analysis, query)
             
-            logger.info(f"Enhanced query intent analysis - Type: {intent_analysis.get('query_type')}, Strategy: {intent_analysis.get('search_strategy')}, Confidence: {intent_analysis.get('confidence_score')}")
+            logger.info(f"LLM-driven query intent analysis - Type: {intent_analysis.get('query_type')}, Strategy: {intent_analysis.get('search_strategy')}, Confidence: {intent_analysis.get('confidence_score')}, Response Scope: {intent_analysis.get('response_scope')}")
             return intent_analysis
             
         except Exception as e:
@@ -2052,7 +2160,7 @@ Think step-by-step about what the user really wants and how to optimally retriev
         """Validate and enrich the intent analysis with additional processing."""
         try:
             # Ensure all required fields are present
-            required_fields = ['query_type', 'search_strategy', 'content_preferences', 'complexity_level', 'scope']
+            required_fields = ['query_type', 'search_strategy', 'content_preferences', 'complexity_level', 'scope', 'response_scope']
             for field in required_fields:
                 if field not in intent_analysis:
                     logger.warning(f"Missing required field {field} in intent analysis")
@@ -2132,6 +2240,21 @@ Think step-by-step about what the user really wants and how to optimally retriev
             scope = 'balanced'
             complexity_level = 'medium'
         
+        # Determine response scope for controlling response size
+        response_scope = 'standard'  # default
+        if any(word in query_lower for word in ['what is', 'define', 'definition', 'how many', 'when']):
+            response_scope = 'minimal'
+        elif any(word in query_lower for word in ['briefly', 'quick', 'short', 'summary']):
+            response_scope = 'concise'
+        elif any(word in query_lower for word in ['detailed', 'thorough', 'comprehensive', 'analyze deeply']):
+            response_scope = 'detailed'
+        elif any(word in query_lower for word in ['everything about', 'complete guide', 'all aspects']):
+            response_scope = 'comprehensive'
+        elif len(words) <= 3:  # Very short queries default to minimal
+            response_scope = 'minimal'
+        elif complexity_level == 'simple':
+            response_scope = 'concise'
+        
         # Extract semantic concepts and keywords
         semantic_concepts = [word for word in words if len(word) > 3 and word not in ['what', 'how', 'why', 'when', 'where', 'which', 'show', 'tell', 'give']]
         intent_keywords = words
@@ -2170,13 +2293,17 @@ Think step-by-step about what the user really wants and how to optimally retriev
             'content_preferences': content_preferences,
             'complexity_level': complexity_level,
             'scope': scope,
+            'response_scope': response_scope,
             'semantic_concepts': semantic_concepts,
             'intent_keywords': intent_keywords,
             'conditional_instructions': conditional_instructions,
             'search_parameters': search_parameters,
             'confidence_score': 0.6,  # Lower confidence for fallback
-            'reasoning': f'Fallback analysis based on heuristic patterns. Query type: {query_type}, Strategy: {search_strategy}, Scope: {scope}'
+            'reasoning': f'Fallback analysis based on heuristic patterns. Query type: {query_type}, Strategy: {search_strategy}, Response scope: {response_scope}'
         }
+        
+        logger.info(f"Heuristic-based query intent analysis - Type: {query_type}, Strategy: {search_strategy}, Response Scope: {response_scope}")
+        return result
     
     def _fallback_intent_analysis(self, query: str) -> Dict[str, Any]:
         """Fallback heuristic-based intent analysis."""
@@ -2220,6 +2347,46 @@ Think step-by-step about what the user really wants and how to optimally retriev
             'primary_content': primary_content,
             'reasoning': 'Heuristic fallback analysis'
         }
+    
+    def _get_dynamic_content_limits(self, response_scope: str, is_comprehensive: bool, 
+                                  is_analytical: bool, is_visual_focused: bool) -> Dict[str, List[int]]:
+        """Dynamically determine content limits based on response scope and query characteristics."""
+        
+        # Base limits for different response scopes
+        base_limits = {
+            'minimal': {'text': [1, 1], 'images': [0, 1], 'tables': [0, 1]},
+            'concise': {'text': [1, 2], 'images': [0, 1], 'tables': [0, 1]}, 
+            'standard': {'text': [2, 4], 'images': [1, 2], 'tables': [0, 2]},
+            'detailed': {'text': [3, 6], 'images': [1, 3], 'tables': [1, 2]},
+            'comprehensive': {'text': [4, 8], 'images': [2, 4], 'tables': [1, 3]}
+        }
+        
+        # Get base limits
+        content_limits = base_limits.get(response_scope, base_limits['standard']).copy()
+        
+        # Adjust based on query characteristics
+        if is_comprehensive and response_scope not in ['minimal', 'concise']:
+            # Increase limits for comprehensive queries (unless explicitly minimal)
+            content_limits['text'][1] = min(content_limits['text'][1] + 2, 10)
+            content_limits['images'][1] = min(content_limits['images'][1] + 1, 5)
+            content_limits['tables'][1] = min(content_limits['tables'][1] + 1, 4)
+            
+        elif is_analytical:
+            # Prioritize text and tables for analytical queries
+            content_limits['text'][1] = min(content_limits['text'][1] + 1, 8)
+            content_limits['tables'][1] = min(content_limits['tables'][1] + 1, 3)
+            
+        elif is_visual_focused:
+            # Prioritize images for visual queries
+            content_limits['images'][0] = max(content_limits['images'][0], 1)
+            content_limits['images'][1] = min(content_limits['images'][1] + 2, 6)
+            
+        # Ensure minimums don't exceed maximums
+        for content_type in content_limits:
+            if content_limits[content_type][0] > content_limits[content_type][1]:
+                content_limits[content_type][0] = content_limits[content_type][1]
+                
+        return content_limits
     
     def _apply_content_type_boosting(self, chunks: List[Dict], query_intent: Dict) -> List[Dict]:
         """Apply content-type specific boosting based on query intent."""
@@ -2491,7 +2658,6 @@ Think step-by-step about what the user really wants and how to optimally retriev
                         'table_content_json': chunk.get('table_content_json'),
                         'table_id': table_id,
                         'page_number': chunk.get('page_number', 0),
-                        'summary': chunk.get('table_summary', ''),
                         'relevance_score': chunk.get('relevance_score', 0)
                     })
         
@@ -2517,23 +2683,28 @@ Think step-by-step about what the user really wants and how to optimally retriev
             has_images = any(c.get('contains_image') for c in chunks)
             text_chunks = sum(1 for c in chunks if c.get('text'))
             
+            # Get dynamic content limits based on response scope from query intent
+            search_params = self._get_adaptive_search_params(query)
+            query_intent = search_params.get('query_intent', {})
+            response_scope = query_intent.get('response_scope', 'standard')
+            
+            # Use response scope intelligence to determine content limits
+            content_limits = self._get_dynamic_content_limits(response_scope, is_comprehensive, is_analytical, is_visual_focused)
+            logger.debug(f"Dynamic content limits applied for response_scope '{response_scope}': {content_limits}")
+            
             # Determine strategy based on query and content
             if is_comprehensive:
                 selection_strategy = 'comprehensive'
                 organization_strategy = 'comprehensive'
-                content_limits = {'text': [3, 8], 'images': [2, 4], 'tables': [1, 3]}
             elif is_analytical and text_chunks > 2:
                 selection_strategy = 'focused'
                 organization_strategy = 'analytical'
-                content_limits = {'text': [2, 4], 'images': [1, 2], 'tables': [0, 2]}
             elif is_visual_focused:
                 selection_strategy = 'visual'
                 organization_strategy = 'visual_priority'
-                content_limits = {'text': [1, 3], 'images': [2, 5], 'tables': [1, 2]}
             else:
                 selection_strategy = 'balanced'
                 organization_strategy = 'balanced'
-                content_limits = {'text': [2, 5], 'images': [1, 3], 'tables': [0, 2]}
             
             # Content priorities [min, max, threshold]
             content_priorities = {
@@ -2711,7 +2882,6 @@ Think step-by-step about what the user really wants and how to optimally retriev
                         'data': {
                             'page_number': chunk['page_number'],
                             'relevance_score': chunk['relevance_score'],
-                            'summary': chunk.get('table_summary', ''),
                             'table_content_json': chunk['table_content_json'],
                             'table_id': table_id,
                             'pdf_id': chunk.get('pdf_id', ''),
@@ -2768,7 +2938,6 @@ Think step-by-step about what the user really wants and how to optimally retriev
                         'data': {
                             'page_number': chunk['page_number'],
                             'relevance_score': chunk['relevance_score'],
-                            'summary': chunk.get('table_summary', ''),
                             'table_content_json': chunk['table_content_json'],
                             'table_id': table_id,
                             'pdf_id': chunk.get('pdf_id', ''),
@@ -3075,6 +3244,45 @@ Create a high-quality, informative response that provides real value to the user
             if any(indicator in content for indicator in ['table', 'figure', 'chart', 'data', 'result']):
                 quality_score += 0.05
         
+        # Image relevance enhancement using new metadata arrays
+        image_relevance_boost = 0.0
+        if match.metadata.get('contains_image') and match.metadata.get('image_summaries'):
+            image_summaries = match.metadata.get('image_summaries', [])
+            query_text = ' '.join(query_keywords).lower()
+            
+            # Calculate semantic similarity between query and image summaries
+            for image_summary in image_summaries:
+                if image_summary:
+                    image_summary_lower = image_summary.lower()
+                    
+                    # Direct keyword matching in image summary
+                    summary_keyword_matches = sum(1 for kw in query_keywords if kw in image_summary_lower)
+                    if summary_keyword_matches > 0:
+                        image_relevance_boost += (summary_keyword_matches / len(query_keywords)) * 0.15
+                    
+                    # Semantic concept matching in image summaries
+                    summary_concept_matches = sum(1 for concept in semantic_concepts if concept.lower() in image_summary_lower)
+                    if summary_concept_matches > 0:
+                        image_relevance_boost += (summary_concept_matches / max(len(semantic_concepts), 1)) * 0.1
+                    
+                    # Intent keyword matching in image summaries
+                    summary_intent_matches = sum(1 for intent_kw in intent_keywords if intent_kw.lower() in image_summary_lower)
+                    if summary_intent_matches > 0:
+                        image_relevance_boost += (summary_intent_matches / max(len(intent_keywords), 1)) * 0.08
+                    
+                    # Visual content type indicators boost
+                    visual_indicators = ['diagram', 'chart', 'graph', 'illustration', 'figure', 'visualization', 'plot', 'architecture', 'model', 'flow', 'structure']
+                    visual_matches = sum(1 for indicator in visual_indicators if indicator in image_summary_lower)
+                    if visual_matches > 0 and any(kw in query_text for kw in ['show', 'illustrate', 'diagram', 'visual', 'architecture', 'model', 'structure']):
+                        image_relevance_boost += min(visual_matches * 0.05, 0.2)
+            
+            # Cap image relevance boost
+            image_relevance_boost = min(image_relevance_boost, 0.3)
+            
+            # Log significant image relevance boosts for debugging
+            if image_relevance_boost > 0.1:
+                logger.debug(f"Image relevance boost applied: {image_relevance_boost:.3f} for chunk with {len(image_summaries)} images")
+        
         # Strategy-specific adjustments
         strategy_multiplier = 1.0
         if strategy == 'precision':
@@ -3086,12 +3294,13 @@ Create a high-quality, informative response that provides real value to the user
             if concept_matches > 0:
                 strategy_multiplier = 1.15
         
-        # Combine all signals with better balance
+        # Combine all signals with better balance, including image relevance
         # Ensure base score dominates to prevent over-penalization
         final_score = (
-            base_score * 0.7 +  # Increased base score weight
+            base_score * 0.65 +  # Slightly reduced base score to accommodate image boost
             keyword_score * 0.2 +  # Reduced keyword weight
-            quality_score * 0.1   # Reduced quality weight
+            quality_score * 0.1 +   # Reduced quality weight
+            image_relevance_boost * 0.05  # Image relevance enhancement
         ) * content_type_boost * strategy_multiplier
         
         # Ensure minimum score is not too low

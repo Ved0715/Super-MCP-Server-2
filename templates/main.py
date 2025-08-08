@@ -419,11 +419,14 @@ def generate_presentation_with_preview_api(content, topic, user_prompt, num_slid
         dict: Result with preview data and output file path
     """
     try:
-        # Step 1: Get preview data (same as preview_prompt_breakdown)
-        from .prompt_builder import decompose_user_prompt, extract_relevant_content
+        # Step 1: Content-aware question decomposition
+        from .prompt_builder import decompose_user_prompt_content_aware, extract_relevant_content, analyze_slide_content_similarity, regenerate_content_for_uniqueness, extract_display_content_from_slide
         
-        # Decompose user prompt into questions
-        slide_questions = decompose_user_prompt(user_prompt, num_slides, topic)
+        # Decompose user prompt into questions using content-aware approach
+        slide_questions = decompose_user_prompt_content_aware(user_prompt, num_slides, topic, content)
+        print(f"   📝 Generated {len(slide_questions)} questions for {num_slides} total slides:")
+        for i, q in enumerate(slide_questions):
+            print(f"      {i+1}. {q}")
         
         # Extract relevant content and analyze format for each question
         preview_data = {
@@ -437,10 +440,53 @@ def generate_presentation_with_preview_api(content, topic, user_prompt, num_slid
         }
         
         content_analysis_results = []
+        previous_slides_display_content = []  # Track slide display content for duplication checking
         
+        print(f"   🔄 Processing {len(slide_questions)} questions into slide data...")
         for i, question in enumerate(slide_questions):
+            print(f"   📋 Processing slide {i+1}/{len(slide_questions)}: {question[:50]}...")
             # Extract relevant content for this question
             relevant_content = extract_relevant_content(content, question, topic)
+            
+            # PRE-ANALYZE FORMAT to determine if this is a structured content question
+            from .content_format_analyzer import content_analyzer
+            pre_format_analysis = content_analyzer.analyze_content_format_with_flow(
+                question, relevant_content, [], i + 1, len(slide_questions), topic, template_inventory=None
+            )
+            detected_format = pre_format_analysis.get('content_format', 'paragraph')
+            format_confidence = pre_format_analysis.get('confidence_score', 0.0)
+            
+            print(f"   🎯 Pre-detected format: {detected_format} (confidence: {format_confidence:.2f})")
+            
+            # TABLE IMMUNITY SYSTEM
+            if detected_format == 'table':
+                print(f"   🛡️  TABLE IMMUNITY: Skipping similarity check to preserve table structure and content")
+            elif previous_slides_display_content:
+                try:
+                    print(f"   🔍 Checking similarity for slide {i+1}, previous slides: {len(previous_slides_display_content)}")
+                    
+                    # Standard similarity detection for non-table formats
+                    similarity_threshold = 0.85 if detected_format in ['boxes', 'bullet_points'] else 0.7
+                    similarity_analysis = analyze_slide_content_similarity(relevant_content, previous_slides_display_content, topic)
+                    print(f"   🔍 Content similarity check: {similarity_analysis['recommendation']} (score: {similarity_analysis['similarity_score']:.2f}, threshold: {similarity_threshold})")
+                    
+                    if similarity_analysis['is_similar'] and similarity_analysis['similarity_score'] > similarity_threshold:
+                        print(f"   🔄 Content too similar, regenerating for uniqueness...")
+                        relevant_content = regenerate_content_for_uniqueness(
+                            question, content, topic, previous_slides_display_content, i + 1
+                        )
+                except Exception as e:
+                    print(f"   ❌ Similarity check failed: {e}")
+            else:
+                print(f"   ✅ First slide, no similarity check needed")
+            
+            # Store this slide's content with format context for future similarity checks
+            slide_context = {
+                'content_summary': relevant_content[:200],
+                'format': detected_format,
+                'question_type': 'comparison' if 'vs' in question.lower() or 'compare' in question.lower() else 'general'
+            }
+            previous_slides_display_content.append(slide_context)
             
             # Analyze content format with flow (no template needed for method 3)
             format_analysis = content_analyzer.analyze_content_format_with_flow(
@@ -478,6 +524,9 @@ def generate_presentation_with_preview_api(content, topic, user_prompt, num_slid
         # Step 2: Generate PowerPoint presentation
         output_path = generate_output_filename(topic)
         
+        print(f"   🎨 Creating PowerPoint with {len(content_analysis_results)} content slides...")
+        print(f"   📊 Content slide formats: {[s.get('format_type', 'unknown') for s in content_analysis_results]}")
+        
         # Create PowerPoint with title slide, content slides, and thank you slide
         from .replace_content import create_ppt_with_title_and_thanks
         create_ppt_with_title_and_thanks(content_analysis_results, output_path, topic, user_prompt)
@@ -504,204 +553,71 @@ def generate_presentation_with_preview_api(content, topic, user_prompt, num_slid
 
 
 def main():
-    """CLI version for interactive use"""
+    """CLI version for interactive use - Content-aware Preview Mode"""
     print("=== AI PowerPoint Content Formatter ===")
-    print("Choose generation mode:")
-    print("1. Standard Mode (content formatting only)")
-    print("2. Enhanced Mode (user prompt + question-based generation)")
-    print("3. Preview Mode (show prompt breakdown and content extraction + create PPT)")
+    print("Content-aware generation with format-specific layouts and duplication prevention")
     
-    mode_choice = input("\nEnter your choice (1, 2, or 3): ").strip()
+    user_topic = input("Enter presentation topic: ").strip()
+    if not user_topic:
+        print("❌ Topic is required.")
+        return
     
-    if mode_choice == "1":
-        # Standard mode
-        user_topic, user_content = get_user_content_and_topic()
-        template_path = get_template_path()
-        output_path = generate_output_filename(user_topic)
-        
-        print(f"\n📋 Processing Summary:")
-        print(f"📁 Template: {template_path}")
-        print(f"📁 Output: {output_path}")
-        print(f"📊 Topic: {user_topic}")
-        print(f"📝 Content Length: {len(user_content)} characters")
-        
-        confirm = input("\nProceed with processing? (y/n): ").lower().strip()
-        if confirm != 'y':
-            print("❌ Processing cancelled.")
+    print("\nEnter your content (press Enter twice to finish):")
+    user_content_lines = []
+    while True:
+        line = input()
+        if line == "" and user_content_lines and user_content_lines[-1] == "":
+            break
+        user_content_lines.append(line)
+    
+    user_content = "\n".join(user_content_lines[:-1])  # Remove the last empty line
+    if not user_content.strip():
+        print("❌ Content is required.")
+        return
+    
+    print("\nEnter your presentation prompt/instructions:")
+    print("Example: 'Start with introduction, then explain methodology, present results, discuss implications, and conclude'")
+    user_prompt = input("Prompt: ").strip()
+    if not user_prompt:
+        print("❌ User prompt is required.")
+        return
+    
+    try:
+        num_slides = int(input("Enter number of slides: ").strip())
+        if num_slides < 3:
+            print("❌ Number of slides must be at least 3 (1 title + 1 content + 1 thank you).")
             return
+    except ValueError:
+        print("❌ Please enter a valid number of slides.")
+        return
+    
+    print(f"\n📋 Processing Summary:")
+    print(f"📊 Topic: {user_topic}")
+    print(f"📝 Content Length: {len(user_content)} characters")
+    print(f"🎯 User Prompt: {user_prompt}")
+    print(f"📊 Number of Slides: {num_slides}")
+    
+    confirm = input("\nProceed with generation? (y/n): ").lower().strip()
+    if confirm != 'y':
+        print("❌ Generation cancelled.")
+        return
+    
+    try:
+        print(f"\n🎨 Creating PowerPoint with content-aware generation and duplication prevention...")
+        result = generate_presentation_with_preview_api(user_content, user_topic, user_prompt, num_slides)
         
-        try:
-            output_file = generate_presentation_api(user_content, user_topic)
-            print(f"\n🎉 FORMATTING COMPLETED! 🎉")
-            print(f"📁 Output saved as: {output_file}")
+        if result["success"]:
+            print(f"\n🎉 GENERATION COMPLETED! 🎉")
+            print(f"📁 Output saved as: {result['output_file']}")
             print(f"📊 Topic: {user_topic}")
-        except Exception as e:
-            print(f"\n❌ Error: {e}")
-            print("Please check the logs above for details.")
-    
-    elif mode_choice == "2":
-        # Enhanced mode
-        print("\n=== Enhanced Mode: User Prompt + Question-Based Generation ===")
-        
-        user_topic = input("Enter presentation topic: ").strip()
-        if not user_topic:
-            print("❌ Topic is required.")
-            return
-        
-        print("\nEnter your content (press Enter twice to finish):")
-        user_content_lines = []
-        while True:
-            line = input()
-            if line == "" and user_content_lines and user_content_lines[-1] == "":
-                break
-            user_content_lines.append(line)
-        
-        user_content = "\n".join(user_content_lines[:-1])  # Remove the last empty line
-        if not user_content.strip():
-            print("❌ Content is required.")
-            return
-        
-        print("\nEnter your presentation prompt/instructions:")
-        print("Example: 'Start with introduction, then explain methodology, present results, discuss implications, and conclude'")
-        user_prompt = input("Prompt: ").strip()
-        if not user_prompt:
-            print("❌ User prompt is required for enhanced mode.")
-            return
-        
-        try:
-            num_slides = int(input("Enter number of slides: ").strip())
-            if num_slides < 3:
-                print("❌ Number of slides must be at least 3 (1 title + 1 content + 1 thank you).")
-                return
-        except ValueError:
-            print("❌ Please enter a valid number of slides.")
-            return
-        
-        template_path = get_template_path()
-        output_path = generate_output_filename(user_topic)
-        
-        print(f"\n📋 Enhanced Processing Summary:")
-        print(f"📁 Template: {template_path}")
-        print(f"📁 Output: {output_path}")
-        print(f"📊 Topic: {user_topic}")
-        print(f"📝 Content Length: {len(user_content)} characters")
-        print(f"🎯 User Prompt: {user_prompt}")
-        print(f"📊 Number of Slides: {num_slides}")
-        
-        confirm = input("\nProceed with enhanced processing? (y/n): ").lower().strip()
-        if confirm != 'y':
-            print("❌ Processing cancelled.")
-            return
-        
-        try:
-            output_file = generate_presentation_api_enhanced(user_content, user_topic, user_prompt, num_slides)
-            print(f"\n🎉 ENHANCED GENERATION COMPLETED! 🎉")
-            print(f"📁 Output saved as: {output_file}")
-            print(f"📊 Topic: {user_topic}")
-            print(f"🎯 Generated {num_slides} slides based on your prompt!")
-        except Exception as e:
-            print(f"\n❌ Error: {e}")
-            print("Please check the logs above for details.")
-    
-    elif mode_choice == "3":
-        # Preview mode
-        print("\n=== Preview Mode: Show Prompt Breakdown and Content Extraction ===")
-        
-        user_topic = input("Enter presentation topic: ").strip()
-        if not user_topic:
-            print("❌ Topic is required.")
-            return
-        
-        print("\nEnter your content (press Enter twice to finish):")
-        user_content_lines = []
-        while True:
-            line = input()
-            if line == "" and user_content_lines and user_content_lines[-1] == "":
-                break
-            user_content_lines.append(line)
-        
-        user_content = "\n".join(user_content_lines[:-1])  # Remove the last empty line
-        if not user_content.strip():
-            print("❌ Content is required.")
-            return
-        
-        print("\nEnter your presentation prompt/instructions:")
-        print("Example: 'Start with introduction, then explain methodology, present results, discuss implications, and conclude'")
-        user_prompt = input("Prompt: ").strip()
-        if not user_prompt:
-            print("❌ User prompt is required for preview mode.")
-            return
-        
-        try:
-            num_slides = int(input("Enter number of slides: ").strip())
-            if num_slides < 3:
-                print("❌ Number of slides must be at least 3 (1 title + 1 content + 1 thank you).")
-                return
-        except ValueError:
-            print("❌ Please enter a valid number of slides.")
-            return
-        
-        print(f"\n📋 Preview Summary:")
-        print(f"📊 Topic: {user_topic}")
-        print(f"📝 Content Length: {len(user_content)} characters")
-        print(f"🎯 User Prompt: {user_prompt}")
-        print(f"📊 Number of Slides: {num_slides}")
-        
-        confirm = input("\nProceed with preview? (y/n): ").lower().strip()
-        if confirm != 'y':
-            print("❌ Preview cancelled.")
-            return
-        
-        try:
-            preview_data = preview_prompt_breakdown(user_content, user_topic, user_prompt, num_slides)
-            print(f"\n🎉 PREVIEW COMPLETED! 🎉")
-            print(f"📊 Topic: {user_topic}")
-            print(f"🎯 Analyzed {num_slides} questions from your prompt!")
+            print(f"🎯 Generated {num_slides} slides with format-specific layouts!")
+            print(f"🎨 Content-aware generation with duplication prevention active!")
+        else:
+            print(f"\n❌ Generation failed: {result.get('error', 'Unknown error')}")
             
-            # Ask if user wants to create PowerPoint
-            create_ppt = input(f"\n🎨 Would you like to create a PowerPoint presentation with format-specific layouts? (y/n): ").lower().strip()
-            if create_ppt == 'y':
-                print(f"\n🎨 Creating PowerPoint with format-specific layouts...")
-                output_path = generate_output_filename(user_topic)
-                
-                # Create content analysis results from preview data
-                content_analysis_results = []
-                for i, question_data in enumerate(preview_data["questions"]):
-                    slide_data = {
-                        'format_type': question_data["format_analysis"].get('content_format', 'paragraph'),
-                        'content': question_data["extracted_content"],
-                        'question': question_data["question"],
-                        'slide_num': i + 1,
-                        'confidence': question_data["format_analysis"].get('confidence_score', 0.0),
-                        'recommended_slide_type': question_data["format_analysis"].get('recommended_slide_type', 'content_slide'),
-                        'template_match': question_data["format_analysis"].get('template_match', {}),
-                        'slide_role': question_data["format_analysis"].get('slide_role', ''),
-                        'flow_adjustment': question_data["format_analysis"].get('flow_adjustment', 0.0)
-                    }
-                    content_analysis_results.append(slide_data)
-                
-                # Create PowerPoint with title slide, content slides, and thank you slide
-                from .replace_content import create_ppt_with_title_and_thanks
-                from tqdm import tqdm
-                
-                with tqdm(total=1, desc="💾 Creating presentation", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}") as pbar:
-                    create_ppt_with_title_and_thanks(content_analysis_results, output_path, user_topic, user_prompt)
-                    pbar.update(1)
-                
-                print(f"\n🎉 POWERPOINT CREATION COMPLETED! 🎉")
-                print(f"📁 Output saved as: {output_path}")
-                print(f"📊 Topic: {user_topic}")
-                print(f"🎯 Generated {num_slides} slides with format-specific layouts!")
-                print(f"🎨 Each slide has custom visual layout matching its content format!")
-            else:
-                print(f"💡 To generate the actual presentation later, use this same option (3) and choose 'y' when prompted.")
-                
-        except Exception as e:
-            print(f"\n❌ Error: {e}")
-            print("Please check the logs above for details.")
-    
-    else:
-        print("❌ Invalid choice. Please enter 1, 2, or 3.")
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        print("Please check the logs above for details.")
 
 
 if __name__ == "__main__":

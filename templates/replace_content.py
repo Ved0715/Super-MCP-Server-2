@@ -8,6 +8,7 @@ import os
 import json
 import re
 from dotenv import load_dotenv
+from .universal_question_analyzer import universal_analyzer
 
 # =====================================================
 # SAFE SLIDE LAYOUT FUNCTIONS
@@ -71,48 +72,26 @@ TABLE_TEMPLATES = {
 
 def analyze_table_question_intent(question):
     """
-    Analyze question to determine the optimal table structure and intent
+    Universal Question Analyzer wrapper for table analysis
+    Enhanced with AI + rule-based hybrid approach
     """
-    if not question:
-        return "classification", TABLE_TEMPLATES["classification"]
+    print(f"   📊 Table Question Analysis: '{question[:50]}...' (using Universal Analyzer)")
     
-    question_lower = question.lower()
+    # Use Universal Analyzer for intelligent analysis
+    universal_result = universal_analyzer.analyze_question_comprehensive(question, content="")
     
-    # Statistics questions
-    if any(word in question_lower for word in ['statistics', 'data', 'numbers', 'percentage', 'rate', 'measurement', 'metrics', 'figures', 'amount', 'quantity', 'how much', 'how many']):
-        return "statistics", TABLE_TEMPLATES["statistics"]
+    # Map universal analyzer results to table types
+    format_type = universal_result.get("format", "paragraph")
+    subtype = universal_result.get("subtype", "default")
+    confidence = universal_result.get("confidence", 0.5)
     
-    # Comparison questions
-    elif any(word in question_lower for word in ['compare', 'comparison', 'difference', 'versus', 'vs', 'between', 'contrast', 'similarities', 'differ']):
-        return "comparison", TABLE_TEMPLATES["comparison"]
-    
-    # Process questions - Note: Process questions should be TIMELINE format, not table
-    # This function should NOT handle process questions as they are better suited for timeline slides
-    # elif any(word in question_lower for word in ['process', 'steps', 'procedure', 'workflow', 'how to', 'method', 'approach', 'sequence', 'stages', 'phases']):
-    #     return "process", TABLE_TEMPLATES["process"]
-    
-    # Benefits/advantages questions
-    elif any(word in question_lower for word in ['benefits', 'advantages', 'pros', 'positive', 'strengths', 'gains', 'value']):
-        return "benefits", TABLE_TEMPLATES["benefits"]
-    
-    # Problems/challenges questions
-    elif any(word in question_lower for word in ['problems', 'issues', 'challenges', 'difficulties', 'cons', 'disadvantages', 'limitations', 'drawbacks']):
-        return "problems", TABLE_TEMPLATES["problems"]
-    
-    # Features questions
-    elif any(word in question_lower for word in ['features', 'capabilities', 'functions', 'functionality', 'what does', 'what can', 'abilities']):
-        return "features", TABLE_TEMPLATES["features"]
-    
-    # Timeline/history questions
-    elif any(word in question_lower for word in ['history', 'evolution', 'timeline', 'development', 'over time', 'chronology', 'progression', 'when', 'timeline']):
-        return "timeline", TABLE_TEMPLATES["timeline"]
-    
-    # Classification questions (types, kinds, categories)
-    elif any(word in question_lower for word in ['types', 'kinds', 'categories', 'varieties', 'forms', 'classes', 'what are']):
-        return "classification", TABLE_TEMPLATES["classification"]
-    
-    # Default to classification for general questions
+    if format_type == "table":
+        table_type = subtype if subtype in TABLE_TEMPLATES else "classification"
+        print(f"   ✅ Universal Analyzer detected table: {table_type} (confidence: {confidence:.2f})")
+        return table_type, TABLE_TEMPLATES[table_type]
     else:
+        # If not table format, provide sensible table fallback
+        print(f"   ⚠️  Universal Analyzer detected non-table format: {format_type}, using table fallback")
         return "classification", TABLE_TEMPLATES["classification"]
 
 def plan_table_structure(question, content):
@@ -172,122 +151,840 @@ def extract_table_data_with_ai(question, content, table_plan):
         
         client = openai.OpenAI(api_key=api_key)
         
-        # Create AI prompt for table data extraction
-        prompt = f"""
+        # Multi-strategy retry system
+        strategies = [
+            {
+                "name": "detailed_analysis",
+                "prompt_template": """
+PRESENTATION CONTEXT: Slide for question about {structure_type}
 QUESTION: {question}
-
 CONTENT TO ANALYZE:
-{content[:3000]}  
+{content}
 
-TASK: Create a {table_plan['structure_type']} table that directly answers the question using ONLY the provided content.
+TASK: Create a {structure_type} table that directly answers the question using ONLY the provided content.
 
-REQUIRED TABLE STRUCTURE:
-Headers: {table_plan['headers']}
-Description: {table_plan['template_description']}
+SUGGESTED TABLE STRUCTURE (you can modify these headers to be more contextual):
+Default Headers: {headers}
+Description: {template_description}
 
-CRITICAL INSTRUCTIONS:
-1. Extract data from the provided content that directly relates to the question
-2. Organize the extracted data into the exact column structure specified
-3. If specific data is not available in the content, write "Not specified in content" or "Information not provided"
-4. Do NOT make up or infer data that isn't explicitly stated in the content
+ADVANCED INSTRUCTIONS:
+1. PRIORITY: Create contextually appropriate headers that match the question intent (ignore default headers if they don't fit the content)
+2. Extract comparative data and show improvements/changes where mentioned
+3. Calculate derived metrics (percentages, differences) from the content
+4. Synthesize related information into comprehensive rows
 5. Each row should contain related information across all columns
-6. Aim for 3-5 meaningful rows of data
-7. Keep cell contents concise but informative (max 100 characters per cell)
+6. Aim for 3-6 meaningful rows of data
+7. Keep cell contents informative but concise (max 150 characters per cell)
 
 RESPONSE FORMAT: Return ONLY a JSON array of arrays, where the first array is headers and subsequent arrays are data rows.
 
-EXAMPLE FORMAT:
-[
-  ["Header1", "Header2", "Header3"],
-  ["Data1A", "Data1B", "Data1C"],
-  ["Data2A", "Data2B", "Data2C"]
-]
+Extract the table data now:""",
+                "max_tokens": 2000,
+                "temperature": 0.2
+            },
+            {
+                "name": "simplified_extraction", 
+                "prompt_template": """
+QUESTION: {question}
+CONTENT: {content}
 
-Extract the table data now:
-"""
+Create a {structure_type} table with the BEST headers for this specific question and content.
+Suggested headers: {headers} (but create better ones if possible)
+Extract data directly from content. Return JSON format only.
+[["Your_Better_Header1", "Your_Better_Header2"], ["Data1", "Data2"]]""",
+                "max_tokens": 1500,
+                "temperature": 0.3
+            },
+            {
+                "name": "fallback_structure",
+                "prompt_template": """
+Extract any data from this content that relates to: {question}
+Create appropriate headers for the data you find (suggested: {headers})
+Content: {content}
+JSON only: [["Contextual_Header1", "Contextual_Header2"], ["Data1", "Data2"]]""",
+                "max_tokens": 1000,
+                "temperature": 0.4
+            }
+        ]
         
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=1500,
-            temperature=0.3
-        )
-        
-        ai_result_raw = response.choices[0].message.content
-        # Defensive type checking - handle case where content might be a list
-        if isinstance(ai_result_raw, list):
-            ai_result = str(ai_result_raw[0]) if ai_result_raw else ""
-        else:
-            ai_result = str(ai_result_raw).strip() if ai_result_raw else ""
-        
-        # Parse AI response
-        try:
-            # Clean up the response to extract JSON
-            if '```json' in ai_result:
-                ai_result = ai_result.split('```json')[1].split('```')[0].strip()
-            elif '```' in ai_result:
-                ai_result = ai_result.split('```')[1].strip()
-            
-            table_data = json.loads(ai_result)
-            
-            # Validate the table data
-            if validate_table_data(table_data, table_plan):
-                print(f"   SUCCESS: AI extracted {len(table_data)} rows of table data")
-                return table_data
-            else:
-                print("   WARNING: AI data validation failed, using rule-based extraction")
-                return extract_table_data_rule_based(question, content, table_plan)
+        for strategy in strategies:
+            try:
+                print(f"   >>> Trying strategy: {strategy['name']}")
                 
-        except json.JSONDecodeError as e:
-            print(f"   WARNING: AI response parsing failed: {e}, using rule-based extraction")
-            return extract_table_data_rule_based(question, content, table_plan)
+                prompt = strategy["prompt_template"].format(
+                    question=question,
+                    content=content,
+                    structure_type=table_plan['structure_type'],
+                    headers=table_plan['headers'],
+                    template_description=table_plan['template_description']
+                )
+                
+                response = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=strategy["max_tokens"],
+                    temperature=strategy["temperature"]
+                )
+                
+                ai_result_raw = response.choices[0].message.content
+                # Defensive type checking - handle case where content might be a list
+                if isinstance(ai_result_raw, list):
+                    ai_result = str(ai_result_raw[0]) if ai_result_raw else ""
+                else:
+                    ai_result = str(ai_result_raw).strip() if ai_result_raw else ""
+                
+                # Parse AI response
+                try:
+                    # Clean up the response to extract JSON
+                    if '```json' in ai_result:
+                        ai_result = ai_result.split('```json')[1].split('```')[0].strip()
+                    elif '```' in ai_result:
+                        ai_result = ai_result.split('```')[1].strip()
+                    
+                    table_data = json.loads(ai_result)
+                    
+                    # Validate the table data
+                    if validate_table_data(table_data, table_plan):
+                        print(f"   SUCCESS: AI extracted {len(table_data)} rows with strategy: {strategy['name']}")
+                        print(f"   HEADERS CREATED: {table_data[0] if table_data else 'None'}")
+                        return table_data
+                    else:
+                        print(f"   Strategy {strategy['name']} failed validation, trying next...")
+                        continue
+                        
+                except (json.JSONDecodeError, ValueError) as parse_error:
+                    print(f"   Strategy {strategy['name']} failed JSON parsing: {parse_error}, trying next...")
+                    continue
+                    
+            except Exception as strategy_error:
+                print(f"   Strategy {strategy['name']} failed: {strategy_error}, trying next...")
+                continue
+        
+        # All strategies failed
+        print(f"   All AI strategies failed, falling back to rule-based extraction")
+        return extract_table_data_rule_based(question, content, table_plan)
             
     except Exception as e:
         print(f"   ERROR: AI table extraction failed: {e}, using rule-based extraction")
         return extract_table_data_rule_based(question, content, table_plan)
 
-def validate_table_data(table_data, table_plan):
+def validate_and_enrich_table_data(table_data, table_plan):
     """
-    Validate that the extracted table data is coherent and properly structured
+    Intelligently validate and enrich table data with semantic understanding
     """
     if not table_data or len(table_data) < 2:
         return False
     
-    # Check if headers match expected structure
     headers = table_data[0]
-    expected_headers = table_plan['headers']
-    
-    if len(headers) != len(expected_headers):
-        return False
-    
-    # Check if we have meaningful data rows
     data_rows = table_data[1:]
-    if not data_rows:
+    
+    # Very flexible header validation - allow contextual headers
+    expected_count = len(table_plan['headers'])
+    if len(headers) < 2 or len(headers) > 6:  # Allow 2-6 columns for any table type
         return False
     
-    # Check if all rows have the same number of columns
-    expected_cols = len(headers)
-    for row in data_rows:
-        if len(row) != expected_cols:
-            return False
+    # Semantic coherence checking
+    coherence_score = 0
     
-    # Check for meaningful content (not all "Not specified" or similar)
-    meaningful_cells = 0
-    total_cells = 0
+    # Check if headers are contextually appropriate
+    question_lower = table_plan['question'].lower()
+    structure_type = table_plan['structure_type']
+    
+    header_relevance = 0
+    for header in headers:
+        header_lower = header.lower()
+        if structure_type == "statistics" and any(word in header_lower for word in ['metric', 'value', 'data', 'number', 'score', 'rate']):
+            header_relevance += 1
+        elif structure_type == "comparison" and any(word in header_lower for word in ['feature', 'option', 'vs', 'difference', 'comparison']):
+            header_relevance += 1
+        elif structure_type == "classification" and any(word in header_lower for word in ['category', 'type', 'kind', 'class', 'description']):
+            header_relevance += 1
+        elif structure_type == "benefits" and any(word in header_lower for word in ['benefit', 'advantage', 'pro', 'strength', 'impact']):
+            header_relevance += 1
+        elif structure_type == "problems" and any(word in header_lower for word in ['problem', 'issue', 'challenge', 'difficulty', 'solution']):
+            header_relevance += 1
+        elif structure_type == "features" and any(word in header_lower for word in ['feature', 'capability', 'function', 'description', 'purpose']):
+            header_relevance += 1
+        elif structure_type == "timeline" and any(word in header_lower for word in ['time', 'period', 'phase', 'event', 'development']):
+            header_relevance += 1
+    
+    if header_relevance >= len(headers) * 0.3:  # At least 30% relevant headers (more flexible)
+        coherence_score += 0.4
+    
+    # Data relationship validation
+    non_empty_rows = 0
+    meaningful_content = 0
     
     for row in data_rows:
+        if len(row) >= len(headers):
+            non_empty_cells = sum(1 for cell in row if cell and str(cell).strip() and len(str(cell).strip()) > 2)
+            if non_empty_cells >= len(headers) * 0.6:  # At least 60% meaningful content
+                non_empty_rows += 1
+                if any(len(str(cell).strip()) > 10 for cell in row):  # Has substantial content
+                    meaningful_content += 1
+    
+    if non_empty_rows >= len(data_rows) * 0.7:  # 70% of rows have good content
+        coherence_score += 0.4
+    
+    if meaningful_content >= len(data_rows) * 0.5:  # 50% have substantial content
+        coherence_score += 0.2
+    
+    # Return True if coherence score is acceptable
+    is_valid = coherence_score >= 0.6
+    
+    if is_valid:
+        print(f"   Table validation passed with coherence score: {coherence_score:.2f}")
+    else:
+        print(f"   Table validation failed with coherence score: {coherence_score:.2f}")
+    
+    return is_valid
+
+def detect_repetitive_columns(table_data):
+    """
+    Enhanced detection that identifies various types of generic content
+    """
+    if not table_data or len(table_data) < 2:
+        return []
+    
+    headers = table_data[0]
+    data_rows = table_data[1:]
+    repetitive_columns = []
+    
+    for col_idx, header in enumerate(headers):
+        column_values = []
+        for row in data_rows:
+            if col_idx < len(row):
+                column_values.append(str(row[col_idx]).strip().lower())
+        
+        if len(column_values) < 2:
+            continue
+        
+        # Enhanced generic content detection patterns
+        generic_patterns = [
+            'varies', 'depends', 'multiple', 'different', 'various', 'several',
+            'not specified', 'not available', 'n/a', 'tbd', 'unknown',
+            'see above', 'as mentioned', 'similar', 'comparable', 'standard',
+            'combination of', 'different types', 'depends on', 'varies by method',
+            'combination of cryptographic techniques', 'as described in content',
+            'see content for details', 'information provided in content',
+            'refer to source material', 'combination of cryptographic',
+            'cryptographic techniques'
+        ]
+        
+        # Check for exact repetition
+        unique_values = set(column_values)
+        if len(unique_values) <= 1:
+            repetitive_columns.append({
+                'column_index': col_idx,
+                'header': header,
+                'generic_content': column_values[0] if column_values else '',
+                'repetition_type': 'identical',
+                'row_count': len(column_values)
+            })
+            continue
+        
+        # Check for generic content patterns
+        generic_count = 0
+        for value in column_values:
+            if any(pattern in value for pattern in generic_patterns):
+                generic_count += 1
+        
+        # If more than 70% are generic, mark for enhancement
+        if generic_count / len(column_values) > 0.7:
+            from collections import Counter
+            most_common = Counter(column_values).most_common(1)[0][0]
+            repetitive_columns.append({
+                'column_index': col_idx,
+                'header': header,
+                'generic_content': most_common,
+                'repetition_type': 'generic',
+                'row_count': len(column_values)
+            })
+    
+    return repetitive_columns
+
+def analyze_content_context_universal(question, content, column_header, row_context):
+    """
+    Universal content analysis that works for any topic/domain
+    Uses AI to understand context rather than hardcoded domain knowledge
+    """
+    try:
+        import openai
+        from dotenv import load_dotenv
+        import os
+        
+        load_dotenv()
+        api_key = os.getenv('OPENAI_API_KEY')
+        
+        if not api_key:
+            return None
+            
+        # Create context-aware prompt for any topic
+        prompt = f"""
+        Analyze this content and provide specific information for a table cell.
+        
+        Original Question: {question}
+        Content Context: {content[:1000]}
+        
+        Table Context:
+        - Column Header: "{column_header}"
+        - Row Context: {row_context}
+        
+        Task: Instead of generic answers like "Varies" or "Depends", provide specific information based on the content.
+        If the content doesn't specify details, make reasonable inferences based on the topic and context.
+        
+        Requirements:
+        - Be specific and concrete
+        - Use information from the content when available
+        - Make logical inferences when direct information isn't available
+        - Keep response under 80 characters for table formatting
+        - Avoid vague terms like "varies", "depends", "multiple"
+        
+        Response format: Just the specific content for this table cell.
+        """
+        
+        client = openai.OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=100,
+            temperature=0.3
+        )
+        
+        result = response.choices[0].message.content.strip()
+        return result if result else None
+        
+    except Exception as e:
+        print(f"   >>> Universal content analysis failed: {e}")
+        return None
+
+def generate_context_based_fallback(column_header, row_context, question):
+    """
+    Generate contextual fallback content without domain-specific knowledge
+    """
+    # Get the primary identifier (usually first column)
+    primary_key = None
+    if row_context:
+        primary_key = list(row_context.values())[0]
+    
+    # Universal patterns based on column header analysis
+    header_lower = column_header.lower()
+    
+    if any(word in header_lower for word in ['method', 'approach', 'way', 'technique']):
+        return f"Method for {primary_key}" if primary_key else "Specific method"
+    
+    elif any(word in header_lower for word in ['feature', 'characteristic', 'property']):
+        return f"Feature of {primary_key}" if primary_key else "Key feature"
+    
+    elif any(word in header_lower for word in ['process', 'procedure', 'steps']):
+        return f"Process in {primary_key}" if primary_key else "Defined process"
+    
+    elif any(word in header_lower for word in ['benefit', 'advantage', 'pro']):
+        return f"Benefit for {primary_key}" if primary_key else "Key benefit"
+    
+    elif any(word in header_lower for word in ['requirement', 'need', 'prerequisite']):
+        return f"Required for {primary_key}" if primary_key else "Requirement"
+    
+    elif any(word in header_lower for word in ['impact', 'effect', 'result']):
+        return f"Impact on {primary_key}" if primary_key else "Measurable impact"
+    
+    elif any(word in header_lower for word in ['compatibility', 'support', 'platform']):
+        return f"Compatible with {primary_key}" if primary_key else "Supported"
+    
+    else:
+        # Generic but contextual fallback
+        return f"Specific to {primary_key}" if primary_key else "Context-dependent"
+
+def generate_specific_column_content(table_data, repetitive_column, question, content):
+    """
+    Universal content generation that works for any topic
+    """
+    headers = table_data[0]
+    data_rows = table_data[1:]
+    col_idx = repetitive_column['column_index']
+    column_header = repetitive_column['header']
+    
+    enhanced_content = []
+    
+    for row_idx, row in enumerate(data_rows):
+        # Build row context from other columns
+        row_context = {}
+        for i, header in enumerate(headers):
+            if i != col_idx and i < len(row):
+                row_context[header] = row[i]
+        
+        # Use universal content analysis
+        specific_content = analyze_content_context_universal(
+            question, content, column_header, row_context
+        )
+        
+        if specific_content:
+            enhanced_content.append(specific_content)
+        else:
+            # Fallback to context-based generation
+            fallback_content = generate_context_based_fallback(
+                column_header, row_context, question
+            )
+            enhanced_content.append(fallback_content)
+    
+    return enhanced_content
+
+def generate_fallback_column_content(table_data, repetitive_column):
+    """
+    Generate improved fallback content when AI is not available
+    """
+    headers = table_data[0]
+    data_rows = table_data[1:]
+    col_idx = repetitive_column['column_index']
+    column_header = repetitive_column['header']
+    
+    enhanced_rows = []
+    
+    for row_idx, row in enumerate(data_rows):
+        # Get context from first column (usually the main identifier)
+        if len(row) > 0:
+            first_col_content = str(row[0]).strip()
+            # Create more specific content based on the row context
+            if 'cryptographic' in column_header.lower():
+                if 'email' in first_col_content.lower():
+                    enhanced_rows.append("RSA + AES encryption")
+                elif 'file' in first_col_content.lower():
+                    enhanced_rows.append("Symmetric encryption")
+                elif 'signature' in first_col_content.lower():
+                    enhanced_rows.append("RSA/DSA algorithms")
+                elif 'data' in first_col_content.lower():
+                    enhanced_rows.append("Hash verification")
+                else:
+                    enhanced_rows.append(f"Applied to {first_col_content.lower()}")
+            else:
+                # Generic improvement for other column types
+                enhanced_rows.append(f"Specific to {first_col_content}")
+        else:
+            enhanced_rows.append(repetitive_column['generic_content'])
+    
+    return enhanced_rows
+
+def enhance_repetitive_columns(table_data, question, content):
+    """
+    Enhanced main function with universal topic support
+    """
+    if not table_data or len(table_data) < 2:
+        return table_data
+    
+    print(f"   >>> Checking for repetitive columns (universal analysis)...")
+    
+    # Step 1: Detect repetitive columns with enhanced patterns
+    repetitive_columns = detect_repetitive_columns(table_data)
+    
+    if not repetitive_columns:
+        print(f"   >>> No repetitive columns detected")
+        return table_data
+    
+    print(f"   >>> Found {len(repetitive_columns)} repetitive column(s) to enhance")
+    
+    # Step 2: Create enhanced table data
+    enhanced_table = [row[:] for row in table_data]  # Deep copy
+    
+    for repetitive_column in repetitive_columns:
+        col_idx = repetitive_column['column_index']
+        column_header = repetitive_column['header']
+        
+        print(f"   >>> Enhancing column '{column_header}' using universal analysis")
+        
+        try:
+            # Try universal AI enhancement
+            enhanced_content = generate_specific_column_content(table_data, repetitive_column, question, content)
+            
+            # Apply enhanced content to table
+            for row_idx, enhanced_value in enumerate(enhanced_content):
+                if row_idx + 1 < len(enhanced_table):  # +1 to skip header row
+                    if col_idx < len(enhanced_table[row_idx + 1]):
+                        enhanced_table[row_idx + 1][col_idx] = enhanced_value
+            
+            print(f"   >>> Successfully enhanced column '{column_header}' with topic-aware content")
+            
+        except Exception as e:
+            print(f"   >>> Universal enhancement failed for column '{column_header}': {e}")
+            print(f"   >>> Using pattern-based fallback...")
+            
+            # Apply pattern-based fallback for each row
+            for row_idx in range(len(enhanced_table) - 1):  # Skip header
+                if col_idx < len(enhanced_table[row_idx + 1]):
+                    row_context = {}
+                    for i, header in enumerate(enhanced_table[0]):
+                        if i != col_idx and i < len(enhanced_table[row_idx + 1]):
+                            row_context[header] = enhanced_table[row_idx + 1][i]
+                    
+                    fallback_content = generate_context_based_fallback(
+                        column_header, row_context, question
+                    )
+                    enhanced_table[row_idx + 1][col_idx] = fallback_content
+            
+            print(f"   >>> Applied universal fallback for column '{column_header}'")
+    
+    return enhanced_table
+
+def extract_topic_keywords(question):
+    """
+    Extract main topic keywords from question for contextual content
+    """
+    # Remove common question words
+    stop_words = {'what', 'how', 'why', 'when', 'where', 'are', 'is', 'the', 'and', 'or', 'but', 'for', 'with', 'about'}
+    words = question.lower().split()
+    keywords = [word for word in words if word not in stop_words and len(word) > 2]
+    
+    # Return first meaningful keyword or phrase
+    if keywords:
+        return keywords[0].upper()
+    return "system"
+
+def analyze_content_richness(content):
+    """
+    Analyze how rich the provided content is for table generation
+    """
+    if not content:
+        return 0.0
+    
+    word_count = len(content.split())
+    sentences = len([s for s in content.split('.') if s.strip()])
+    
+    # Look for data indicators
+    data_indicators = ['%', 'percent', 'statistics', 'data', 'number', 'rate', 'level', 'measure']
+    data_count = sum(1 for indicator in data_indicators if indicator in content.lower())
+    
+    # Calculate richness score
+    word_score = min(word_count / 200, 1.0)  # 200 words = full score
+    sentence_score = min(sentences / 10, 1.0)  # 10 sentences = full score
+    data_score = min(data_count / 3, 1.0)  # 3 data indicators = full score
+    
+    return (word_score + sentence_score + data_score) / 3
+
+def determine_content_strategy(provided_content, question):
+    """
+    Determine how much to rely on provided vs. inferred content
+    """
+    content_richness = analyze_content_richness(provided_content)
+    
+    if content_richness > 0.8:  # Rich content
+        return "extraction_primary"  # 90% provided, 10% formatting
+    elif content_richness > 0.5:  # Moderate content  
+        return "hybrid_balanced"     # 70% provided, 30% expansion
+    elif content_richness > 0.2:  # Sparse content
+        return "inference_supported" # 50% provided, 50% logical inference
+    else:  # Very sparse
+        return "structured_fallback" # Create reasonable framework
+
+def generate_effectiveness_metrics_table(headers, content, question):
+    """
+    Generate effectiveness/metrics table with meaningful content based on provided content
+    """
+    # Extract topic from question
+    topic_keywords = extract_topic_keywords(question)
+    
+    # Extract aspects mentioned in content
+    content_lower = content.lower()
+    mentioned_aspects = []
+    
+    # Look for effectiveness-related terms in content
+    effectiveness_terms = {
+        'security': ['secure', 'safety', 'protection', 'encryption'],
+        'performance': ['fast', 'speed', 'efficient', 'performance', 'overhead'],
+        'adoption': ['used', 'popular', 'widely', 'adopted', 'standard'],
+        'usability': ['easy', 'simple', 'user', 'interface', 'friendly'],
+        'reliability': ['reliable', 'stable', 'consistent', 'dependable']
+    }
+    
+    for aspect, terms in effectiveness_terms.items():
+        if any(term in content_lower for term in terms):
+            mentioned_aspects.append(aspect.title())
+    
+    # If no specific aspects found, use generic ones
+    if not mentioned_aspects:
+        mentioned_aspects = ["Security", "Performance", "Adoption", "Implementation"]
+    
+    # Limit to 4-5 aspects for good table size
+    mentioned_aspects = mentioned_aspects[:4]
+    
+    table_data = [headers]
+    
+    for aspect in mentioned_aspects:
+        if len(headers) >= 3:
+            # Extract relevant content snippet for this aspect
+            relevant_content = extract_relevant_snippet(content, aspect.lower())
+            row = [
+                f"{aspect} Effectiveness",
+                relevant_content if relevant_content else f"Measures {aspect.lower()} aspects of {topic_keywords}",
+                "Based on provided content" if relevant_content else "Contextual framework"
+            ]
+        else:
+            row = [aspect, f"Key aspect for {topic_keywords}"][:len(headers)]
+        
+        table_data.append(row)
+    
+    return table_data
+
+def extract_relevant_snippet(content, aspect_keyword):
+    """
+    Extract relevant snippet from content for a specific aspect
+    """
+    sentences = [s.strip() for s in content.split('.') if s.strip()]
+    
+    for sentence in sentences:
+        if aspect_keyword in sentence.lower() and len(sentence) < 100:
+            return sentence
+    
+    return None
+
+def generate_comparison_table(headers, content, question):
+    """
+    Generate comparison table based on provided content
+    """
+    topic_keywords = extract_topic_keywords(question)
+    content_sentences = [s.strip() for s in content.split('.') if s.strip() and len(s) > 20]
+    
+    table_data = [headers]
+    
+    # Try to find comparison points in content
+    comparison_indicators = ['vs', 'versus', 'compared to', 'different', 'while', 'however', 'but']
+    comparison_sentences = []
+    
+    for sentence in content_sentences[:4]:  # Limit to first 4 sentences
+        if any(indicator in sentence.lower() for indicator in comparison_indicators):
+            comparison_sentences.append(sentence)
+    
+    if not comparison_sentences:
+        comparison_sentences = content_sentences[:3]  # Use first 3 sentences
+    
+    for i, sentence in enumerate(comparison_sentences):
+        if len(headers) >= 3:
+            row = [
+                f"Aspect {i+1}",
+                sentence[:80] + "..." if len(sentence) > 80 else sentence,
+                "From provided content"
+            ]
+        else:
+            row = [f"Point {i+1}", sentence[:60]][:len(headers)]
+        
+        table_data.append(row)
+    
+    return table_data
+
+def generate_contextual_table_content(question, content, table_plan):
+    """
+    Generate meaningful table content using AI inference when direct extraction fails
+    """
+    try:
+        import openai
+        from dotenv import load_dotenv
+        import os
+        
+        load_dotenv()
+        api_key = os.getenv('OPENAI_API_KEY')
+        
+        if not api_key:
+            return generate_rule_based_contextual_content(question, content, table_plan)
+        
+        # Determine content strategy
+        strategy = determine_content_strategy(content, question)
+        
+        # Enhanced AI prompt for content inference
+        prompt = f"""
+        Create a meaningful table based on this question and the provided content.
+        
+        Question: {question}
+        Provided Content: {content[:1500]}
+        
+        Content Strategy: {strategy}
+        Required table structure: {table_plan['headers']}
+        
+        Instructions based on strategy "{strategy}":
+        - PRIMARY: Use information directly from the provided content whenever possible
+        - SECONDARY: Only expand with logical context when the provided content is sparse
+        - Generate 3-4 rows of meaningful information
+        - Avoid meta-commentary like "not specified" or "content doesn't contain"
+        - Base the table on what IS mentioned in the content, not what's missing
+        - If specific data isn't provided, create reasonable categories/aspects based on the content theme
+        
+        Return as JSON array where first row is headers: {table_plan['headers']}
+        Example format: [["Header1", "Header2"], ["Row1Col1", "Row1Col2"], ...]
+        """
+        
+        client = openai.OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=800,
+            temperature=0.3  # Lower temperature for more content-faithful responses
+        )
+        
+        # Parse and validate the response
+        import json
+        result = response.choices[0].message.content.strip()
+        
+        # Extract JSON if wrapped in markdown
+        if '```json' in result:
+            result = result.split('```json')[1].split('```')[0].strip()
+        elif '```' in result:
+            result = result.split('```')[1].split('```')[0].strip()
+        
+        table_data = json.loads(result)
+        
+        if isinstance(table_data, list) and len(table_data) > 1:
+            print(f"   >>> Generated contextual table with {len(table_data)-1} rows using strategy: {strategy}")
+            return table_data
+        
+    except Exception as e:
+        print(f"   >>> AI contextual generation failed: {e}")
+    
+    # Fallback to rule-based generation
+    return generate_rule_based_contextual_content(question, content, table_plan)
+
+def generate_rule_based_contextual_content(question, content, table_plan):
+    """
+    Generate meaningful table content using intelligent rules when AI fails
+    """
+    headers = table_plan['headers']
+    question_lower = question.lower()
+    
+    # Analyze question intent for better content generation
+    if 'effectiveness' in question_lower and 'metrics' in question_lower:
+        return generate_effectiveness_metrics_table(headers, content, question)
+    elif 'comparison' in question_lower or 'vs' in question_lower:
+        return generate_comparison_table(headers, content, question)
+    elif 'features' in question_lower or 'characteristics' in question_lower:
+        return generate_features_table(headers, content, question)
+    else:
+        return generate_generic_contextual_table(headers, content, question)
+
+def generate_features_table(headers, content, question):
+    """
+    Generate features table based on provided content
+    """
+    topic_keywords = extract_topic_keywords(question)
+    
+    # Extract feature-related content
+    content_lower = content.lower()
+    feature_indicators = ['feature', 'capability', 'function', 'aspect', 'characteristic', 'property']
+    
+    # Find sentences mentioning features
+    sentences = [s.strip() for s in content.split('.') if s.strip()]
+    feature_sentences = []
+    
+    for sentence in sentences:
+        if any(indicator in sentence.lower() for indicator in feature_indicators) or len(feature_sentences) < 3:
+            feature_sentences.append(sentence)
+        if len(feature_sentences) >= 4:
+            break
+    
+    if not feature_sentences:
+        feature_sentences = sentences[:3]  # Use first 3 sentences as fallback
+    
+    table_data = [headers]
+    
+    for i, sentence in enumerate(feature_sentences):
+        if len(headers) >= 3:
+            row = [
+                f"Feature {i+1}",
+                sentence[:70] + "..." if len(sentence) > 70 else sentence,
+                "From provided analysis"
+            ]
+        else:
+            row = [f"Feature {i+1}", sentence[:60]][:len(headers)]
+        
+        table_data.append(row)
+    
+    return table_data
+
+def generate_generic_contextual_table(headers, content, question):
+    """
+    Generate generic contextual table when no specific pattern is detected
+    """
+    topic_keywords = extract_topic_keywords(question)
+    
+    # Use content sentences as basis
+    sentences = [s.strip() for s in content.split('.') if s.strip() and len(s) > 15]
+    
+    table_data = [headers]
+    
+    for i, sentence in enumerate(sentences[:4]):  # Limit to 4 rows
+        if len(headers) >= 3:
+            row = [
+                f"{topic_keywords} Aspect {i+1}",
+                sentence[:80] + "..." if len(sentence) > 80 else sentence,
+                "Content-based analysis"
+            ]
+        else:
+            row = [f"Point {i+1}", sentence[:60]][:len(headers)]
+        
+        table_data.append(row)
+    
+    return table_data
+
+def validate_and_improve_table_content(table_data, question, content):
+    """
+    Validate table content and improve if it contains meta-commentary or poor content
+    """
+    if not table_data or len(table_data) < 2:
+        return table_data
+    
+    # Check for meta-commentary problems
+    problematic_phrases = [
+        'user content provided does not contain',
+        'not specified',
+        'content does not include',
+        'information not available',
+        'data not provided',
+        'content doesn\'t contain',
+        'no specific'
+    ]
+    
+    needs_improvement = False
+    for row in table_data[1:]:  # Skip headers
         for cell in row:
-            total_cells += 1
-            if cell and isinstance(cell, str) and len(cell.strip()) > 5 and \
-               "not specified" not in cell.lower() and "not provided" not in cell.lower() and \
-               "information not" not in cell.lower():
-                meaningful_cells += 1
+            cell_text = str(cell).lower()
+            if any(phrase in cell_text for phrase in problematic_phrases):
+                needs_improvement = True
+                break
+        if needs_improvement:
+            break
     
-    # At least 40% of cells should have meaningful content
-    if total_cells > 0 and meaningful_cells / total_cells >= 0.4:
-        return True
+    # If content is problematic, regenerate
+    if needs_improvement:
+        print(f"   >>> Detected meta-commentary in table, regenerating with contextual content...")
+        table_plan = plan_table_structure(question, content)
+        return generate_contextual_table_content(question, content, table_plan)
     
-    return False
+    return table_data
+
+def extract_content_with_intelligent_inference(question, content, table_plan):
+    """
+    Enhanced content extraction that makes intelligent inferences when specific data isn't found
+    """
+    # Step 1: Try existing hybrid extraction
+    direct_content = extract_table_data_hybrid(question, content, table_plan)
+    
+    if direct_content and len(direct_content) > 1:
+        # Validate the extracted content quality
+        validated_content = validate_and_improve_table_content(direct_content, question, content)
+        if validated_content and len(validated_content) > 1:
+            return validated_content
+    
+    # Step 2: Try legacy extraction methods
+    legacy_content = parse_table_content(content, question)
+    if legacy_content and len(legacy_content) > 1:
+        validated_legacy = validate_and_improve_table_content(legacy_content, question, content)
+        if validated_legacy and len(validated_legacy) > 1:
+            return validated_legacy
+    
+    # Step 3: Intelligent inference based on question type and content
+    print(f"   >>> Direct extraction insufficient, using intelligent content inference...")
+    return generate_contextual_table_content(question, content, table_plan)
+
+def validate_table_data(table_data, table_plan):
+    """
+    Legacy validation function - now calls enhanced validation for backward compatibility
+    """
+    return validate_and_enrich_table_data(table_data, table_plan)
 
 def extract_table_data_rule_based(question, content, table_plan):
     """
@@ -369,10 +1066,20 @@ def extract_comparison_rule_based(content, question):
             option2 = smart_content_adaptation(parts[-1].strip(), 60) if len(parts) > 1 else "Not specified"
             rows.append([feature, option1, option2])
     
-    # Generic fallback
+    # Improved fallback - extract meaningful content instead of generic placeholders
     if not rows:
-        rows.append(["Primary Aspect", "Information provided in content", "Additional details available"])
-        rows.append(["Secondary Aspect", "Content describes various features", "Context explains functionality"])
+        # Try to extract meaningful sentences for comparison
+        sentences = [s.strip() for s in re.split(r'[.!?]+', content) if len(s.strip()) > 15][:2]
+        for i, sentence in enumerate(sentences):
+            feature = f"Aspect {i+1}"
+            words = sentence.split()
+            if len(words) > 8:
+                option1 = smart_content_adaptation(' '.join(words[:len(words)//2]), 60)
+                option2 = smart_content_adaptation(' '.join(words[len(words)//2:]), 60)
+            else:
+                option1 = smart_content_adaptation(sentence, 60)
+                option2 = "See content for details"
+            rows.append([feature, option1, option2])
     
     return rows
 
@@ -385,9 +1092,20 @@ def extract_classification_rule_based(content):
     
     if list_items:
         for item in list_items[:4]:
-            category = smart_content_adaptation(item.strip(), 30)
-            description = "As described in content"
-            example = "Refer to source material"
+            item_text = item.strip()
+            category = smart_content_adaptation(item_text, 30)
+            
+            # Extract meaningful description from the item text itself
+            words = item_text.split()
+            if len(words) > 5:
+                description = smart_content_adaptation(' '.join(words[3:]), 80)
+            elif len(words) > 2:
+                description = f"Related to {' '.join(words[:2])}"
+            else:
+                description = f"Key aspect of {category.lower()}"
+                
+            # Create more specific example text
+            example = "See content for details"
             rows.append([category, description, example])
     else:
         # Look for key terms that might be categories
@@ -524,104 +1242,49 @@ BOXES_TEMPLATES = {
 
 def analyze_boxes_question_intent(question):
     """
-    Analyze question to determine the optimal boxes structure and intent
-    Enhanced with intelligent question type detection for boxes/comparison layouts
+    Universal Question Analyzer wrapper for boxes analysis
+    Enhanced with AI + rule-based hybrid approach
     """
-    if not question:
-        return "generic", BOXES_TEMPLATES["aspects"]
+    print(f"   📦 Boxes Question Analysis: '{question[:50]}...' (using Universal Analyzer)")
     
-    question_lower = question.lower()
+    # Use Universal Analyzer for intelligent analysis
+    universal_result = universal_analyzer.analyze_question_comprehensive(question, content="")
     
-    # COMPARISON DETECTION - Strong indicators for two-item comparisons
-    comparison_keywords = ['compare', 'vs', 'versus', 'difference', 'differ', 'contrast', 'similarities', 'vs.']
-    if any(keyword in question_lower for keyword in comparison_keywords):
-        print(f"   >>> Comparison question detected for boxes format")
-        return "comparison", BOXES_TEMPLATES["comparison"]
+    # Map universal analyzer results to boxes types
+    format_type = universal_result.get("format", "paragraph")
+    subtype = universal_result.get("subtype", "default")
+    confidence = universal_result.get("confidence", 0.5)
     
-    # COMPONENTS DETECTION - Parts, elements, components of systems
-    components_keywords = ['components', 'parts', 'elements', 'pieces', 'modules', 'sections']
-    if any(keyword in question_lower for keyword in components_keywords):
-        print(f"   >>> Components question detected for boxes format")
-        return "components", BOXES_TEMPLATES["components"]
-    
-    # FEATURES DETECTION - Characteristics, features, attributes
-    features_keywords = ['features', 'characteristics', 'attributes', 'properties', 'qualities', 'capabilities']
-    if any(keyword in question_lower for keyword in features_keywords):
-        print(f"   >>> Features question detected for boxes format")
-        return "features", BOXES_TEMPLATES["features"]
-    
-    # CATEGORIES DETECTION - Types, kinds, classifications
-    categories_keywords = ['types', 'kinds', 'categories', 'classifications', 'classes', 'varieties']
-    if any(keyword in question_lower for keyword in categories_keywords):
-        print(f"   >>> Categories question detected for boxes format")
-        return "categories", BOXES_TEMPLATES["categories"]
-    
-    # ASPECTS DETECTION - Different aspects, dimensions, areas
-    aspects_keywords = ['aspects', 'dimensions', 'areas', 'factors', 'considerations', 'perspectives']
-    if any(keyword in question_lower for keyword in aspects_keywords):
-        print(f"   >>> Aspects question detected for boxes format")
+    if format_type == "boxes":
+        boxes_type = subtype if subtype in BOXES_TEMPLATES else "aspects"
+        print(f"   ✅ Universal Analyzer detected boxes: {boxes_type} (confidence: {confidence:.2f})")
+        return boxes_type, BOXES_TEMPLATES[boxes_type]
+    else:
+        # If not boxes format, provide sensible boxes fallback
+        print(f"   ⚠️  Universal Analyzer detected non-boxes format: {format_type}, using boxes fallback")
         return "aspects", BOXES_TEMPLATES["aspects"]
-    
-    # "What are the" questions - Usually components or categories
-    if question_lower.startswith('what are the'):
-        if any(word in question_lower for word in ['main', 'key', 'primary', 'core']):
-            return "components", BOXES_TEMPLATES["components"]
-        else:
-            return "categories", BOXES_TEMPLATES["categories"]
-    
-    # Default to aspects for general questions
-    return "aspects", BOXES_TEMPLATES["aspects"]
 
 def analyze_timeline_question_intent(question):
     """
-    Analyze question to determine the optimal timeline structure and intent
-    Enhanced with better component/parts detection to avoid timeline misclassification
+    Universal Question Analyzer wrapper for timeline analysis
+    Enhanced with AI + rule-based hybrid approach
     """
-    if not question:
-        return "generic", TIMELINE_TEMPLATES["process"]
+    print(f"   🔍 Timeline Question Analysis: '{question[:50]}...' (using Universal Analyzer)")
     
-    question_lower = question.lower()
+    # Use Universal Analyzer for intelligent analysis
+    universal_result = universal_analyzer.analyze_question_comprehensive(question, content="")
     
-    # EXCLUSION RULES: Questions that should NOT be timelines
-    # Components/parts questions should be boxes, not timelines
-    components_keywords = ['components', 'parts', 'elements', 'aspects', 'features', 'main', 'key', 'core']
-    if any(keyword in question_lower for keyword in components_keywords):
-        print(f"   >>> Components question detected - NOT timeline format")
-        return "generic", TIMELINE_TEMPLATES["process"]  # Return generic to indicate not timeline
+    # Map universal analyzer results to timeline types
+    format_type = universal_result.get("format", "paragraph")
+    subtype = universal_result.get("subtype", "default")
+    confidence = universal_result.get("confidence", 0.5)
     
-    # "What are the" questions are usually lists/boxes, not timelines
-    if question_lower.startswith('what are the') and not any(word in question_lower for word in ['steps', 'stages', 'phases', 'history', 'evolution']):
-        print(f"   >>> 'What are the' question detected - likely not timeline format")
-        return "generic", TIMELINE_TEMPLATES["process"]
-    
-    # POSITIVE TIMELINE DETECTION
-    # Historical timeline questions - Strong indicators
-    if any(word in question_lower for word in ['history', 'evolution', 'evolved', 'developed over time', 'timeline', 'chronology', 'over the years', 'development of', 'advancement', 'progression over time', 'since its inception', 'over time']):
-        return "historical", TIMELINE_TEMPLATES["historical"]
-    
-    # Process timeline questions - Only for clear process questions
-    elif any(phrase in question_lower for phrase in ['steps to', 'how to', 'procedure for', 'process of', 'workflow for', 'method to', 'approach to']):
-        return "process", TIMELINE_TEMPLATES["process"]
-    
-    # Lifecycle questions
-    elif any(word in question_lower for word in ['lifecycle', 'life cycle', 'development cycle', 'phases of development', 'project phases', 'software development', 'cycle']):
-        return "lifecycle", TIMELINE_TEMPLATES["lifecycle"]
-    
-    # Sequential questions - Must be clearly sequential
-    elif any(phrase in question_lower for phrase in ['sequence of', 'order of', 'progression of', 'flow of', 'chain of', 'series of']):
-        return "sequential", TIMELINE_TEMPLATES["sequential"]
-    
-    # Stages questions - Must be clearly about stages
-    elif any(phrase in question_lower for phrase in ['stages of', 'phases of', 'levels of']) and not any(word in question_lower for word in ['components', 'parts', 'elements']):
-        return "stages", TIMELINE_TEMPLATES["stages"]
-    
-    # If "process" keyword alone without clear timeline indicators, return generic
-    elif 'process' in question_lower and not any(word in question_lower for word in ['steps', 'stages', 'phases', 'how', 'sequence']):
-        print(f"   >>> Generic process question - likely not timeline format")
-        return "generic", TIMELINE_TEMPLATES["process"]
-    
-    # Default to generic (not timeline) for ambiguous questions
+    if format_type == "timeline":
+        timeline_type = subtype if subtype in TIMELINE_TEMPLATES else "process"
+        print(f"   ✅ Universal Analyzer detected timeline: {timeline_type} (confidence: {confidence:.2f})")
+        return timeline_type, TIMELINE_TEMPLATES[timeline_type]
     else:
+        print(f"   ❌ Universal Analyzer detected non-timeline format: {format_type}")
         return "generic", TIMELINE_TEMPLATES["process"]
 
 def plan_timeline_structure(question, content):
@@ -1894,6 +2557,163 @@ def create_ppt_from_scratch(content_analysis_results, output_path):
     print(f"SUCCESS: PowerPoint created successfully: {output_path}")
     return output_path
 
+# =====================================================
+# HYBRID INTELLIGENCE SYSTEM FOR TABLE EXTRACTION
+# =====================================================
+
+def extract_table_data_hybrid(question, content, table_plan):
+    """
+    Hybrid intelligence system combining AI understanding with rule-based reliability
+    """
+    print(f"   >>> Using hybrid intelligence for {table_plan['structure_type']} table...")
+    
+    try:
+        load_dotenv()
+        api_key = os.getenv('OPENAI_API_KEY')
+        
+        if api_key:
+            # Phase 1: AI Content Analysis
+            ai_analysis = analyze_content_with_ai(question, content, table_plan, api_key)
+            
+            if ai_analysis and ai_analysis.get('patterns'):
+                # Phase 2: Enhanced Rule-based Extraction with AI insights
+                extracted_data = extract_with_enhanced_rules(content, ai_analysis['patterns'], table_plan)
+                
+                if extracted_data and len(extracted_data) > 1:
+                    # Phase 3: AI Organization and Enrichment
+                    final_table = organize_and_enrich_with_ai(extracted_data, ai_analysis, question, api_key)
+                    
+                    if final_table and validate_and_enrich_table_data(final_table, table_plan):
+                        print(f"   SUCCESS: Hybrid extraction produced {len(final_table)} rows")
+                        return final_table
+        
+        # Fallback to enhanced AI extraction
+        print(f"   >>> Hybrid failed, trying enhanced AI extraction...")
+        return extract_table_data_with_ai(question, content, table_plan)
+        
+    except Exception as e:
+        print(f"   ERROR: Hybrid extraction failed: {e}, using enhanced AI")
+        return extract_table_data_with_ai(question, content, table_plan)
+
+def analyze_content_with_ai(question, content, table_plan, api_key):
+    """AI analysis phase - understand content structure and patterns"""
+    try:
+        client = openai.OpenAI(api_key=api_key)
+        
+        prompt = f"""
+Analyze this content to identify data patterns for table extraction:
+
+QUESTION: {question}
+TABLE TYPE: {table_plan['structure_type']}
+CONTENT: {content[:2000]}
+
+Return JSON with:
+1. "patterns": List of data patterns found (numbers, comparisons, lists, etc.)
+2. "key_entities": Important terms, metrics, concepts
+3. "relationships": How data points relate to each other
+4. "structure_insights": Suggested table organization
+
+Format: {{"patterns": [...], "key_entities": [...], "relationships": [...], "structure_insights": "..."}}
+"""
+        
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=800,
+            temperature=0.1
+        )
+        
+        result = response.choices[0].message.content.strip()
+        # Clean up the response to extract JSON
+        if '```json' in result:
+            result = result.split('```json')[1].split('```')[0].strip()
+        elif '```' in result:
+            result = result.split('```')[1].strip()
+
+        try:
+            return json.loads(result)
+        except json.JSONDecodeError as e:
+            print(f"   JSON parsing failed: {e}, result was: {result[:200]}")
+            return None
+        
+    except Exception as e:
+        print(f"   AI analysis failed: {e}")
+        return None
+
+def extract_with_enhanced_rules(content, ai_patterns, table_plan):
+    """Enhanced rule-based extraction guided by AI insights"""
+    structure_type = table_plan['structure_type']
+    headers = table_plan['headers']
+    
+    # Use AI patterns to guide extraction
+    table_data = [headers]
+    
+    # Enhanced pattern matching based on AI insights
+    if ai_patterns:
+        for pattern in ai_patterns:
+            if isinstance(pattern, str):
+                # Use pattern to extract relevant data
+                if "percentage" in pattern.lower() or "%" in pattern:
+                    # Enhanced percentage extraction
+                    percentage_data = extract_statistics_data(content, table_plan['question'])
+                    if percentage_data and len(percentage_data) > 1:
+                        table_data.extend(percentage_data[1:])  # Skip header
+                        
+                elif "comparison" in pattern.lower() or "vs" in pattern.lower():
+                    # Enhanced comparison extraction
+                    comparison_data = extract_comparison_data(content, table_plan['question'])
+                    if comparison_data and len(comparison_data) > 1:
+                        table_data.extend(comparison_data[1:])
+    
+    # Fallback to original rule-based if no patterns worked
+    if len(table_data) <= 1:
+        return extract_table_data_rule_based(table_plan['question'], content, table_plan)
+    
+    return table_data
+
+def organize_and_enrich_with_ai(extracted_data, ai_analysis, question, api_key):
+    """Final AI organization and enrichment phase"""
+    try:
+        client = openai.OpenAI(api_key=api_key)
+        
+        prompt = f"""
+Organize and enrich this extracted table data:
+
+QUESTION: {question}
+EXTRACTED DATA: {json.dumps(extracted_data)}
+AI INSIGHTS: {json.dumps(ai_analysis.get('structure_insights', ''))}
+
+Tasks:
+1. Keep the headers from extracted data if they're good, or improve them to be more contextually appropriate
+2. Add calculated metrics if possible (improvements, percentages, etc.)
+3. Organize rows logically
+4. Fill gaps with "Not specified" if needed
+5. Ensure consistency across columns
+
+Return JSON table format: [["Header1", "Header2"], ["Data1", "Data2"]]
+"""
+        
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1200,
+            temperature=0.2
+        )
+        
+        result = response.choices[0].message.content.strip()
+        if '```json' in result:
+            result = result.split('```json')[1].split('```')[0].strip()
+        
+        return json.loads(result)
+        
+    except Exception as e:
+        print(f"   AI enrichment failed: {e}")
+        return extracted_data  # Return original data if enrichment fails
+
+# =====================================================
+# TIMELINE SLIDE CREATION SYSTEM
+# =====================================================
+
 def create_timeline_slide(prs, question, content, slide_num):
     """Create a timeline slide with enhanced question-aware structure and AI-powered content extraction"""
     from pptx.util import Inches, Pt
@@ -1912,15 +2732,24 @@ def create_timeline_slide(prs, question, content, slide_num):
     title_frame = title_box.text_frame
     
     # Generate professional title using AI
-    from .prompt_builder import generate_slide_title
+    from .prompt_builder import generate_slide_title, generate_slide_subheading
     # Extract topic from question or use a default
     topic = question.split()[-1] if question else ""
     professional_title = generate_slide_title(question, content, "timeline", topic)
+    subheading = generate_slide_subheading(question, content, professional_title, "timeline", topic)
     title_frame.text = professional_title
     
     title_frame.paragraphs[0].font.size = Pt(24)
     title_frame.paragraphs[0].font.bold = True
     title_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
+    
+    # Add subheading
+    subheading_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.0), Inches(9), Inches(0.5))
+    subheading_frame = subheading_box.text_frame
+    subheading_frame.text = subheading
+    subheading_frame.paragraphs[0].font.size = Pt(18)
+    subheading_frame.paragraphs[0].font.color.rgb = RGBColor(80, 80, 80)
+    subheading_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
     
     # STEP 1: Plan timeline structure based on question intent
     timeline_plan = plan_timeline_structure(question, content)
@@ -2518,31 +3347,34 @@ def create_table_slide(prs, question, content, slide_num):
     title_frame = title_box.text_frame
     
     # Generate professional title using AI
-    from .prompt_builder import generate_slide_title
+    from .prompt_builder import generate_slide_title, generate_slide_subheading
     # Extract topic from question or use a default
     topic = question.split()[-1] if question else ""
     professional_title = generate_slide_title(question, content, "table", topic)
+    subheading = generate_slide_subheading(question, content, professional_title, "table", topic)
     title_frame.text = professional_title
     
     title_frame.paragraphs[0].font.size = Pt(24)
     title_frame.paragraphs[0].font.bold = True
     title_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
     
+    # Add subheading
+    subheading_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.0), Inches(9), Inches(0.5))
+    subheading_frame = subheading_box.text_frame
+    subheading_frame.text = subheading
+    subheading_frame.paragraphs[0].font.size = Pt(18)
+    subheading_frame.paragraphs[0].font.color.rgb = RGBColor(80, 80, 80)
+    subheading_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
+    
     # STEP 1: Plan table structure based on question intent
     table_plan = plan_table_structure(question, content)
     
-    # STEP 2: Extract table data using AI-powered approach
-    table_data = extract_table_data_with_ai(question, content, table_plan)
+    # STEP 2: Enhanced extraction with intelligent inference and quality validation
+    table_data = extract_content_with_intelligent_inference(question, content, table_plan)
     
-    # STEP 3: Fallback to legacy extraction if needed
-    if not table_data or len(table_data) <= 1:
-        print(f"   >>> Enhanced extraction failed, trying legacy approach...")
-        table_data = parse_table_content(content, question)
-    
-    # STEP 4: Final fallback to content-based extraction
-    if not table_data or len(table_data) <= 1:
-        print(f"   >>> Using content-based extraction as final fallback...")
-        table_data = extract_content_based_data(content, question)
+    # STEP 3: Apply targeted enhancement to repetitive columns (only if needed)
+    if table_data and len(table_data) > 1:
+        table_data = enhance_repetitive_columns(table_data, question, content)
     
     if table_data and len(table_data) > 1:
         # Calculate table dimensions
@@ -2685,15 +3517,24 @@ def create_comparison_slide(prs, question, content, slide_num):
     title_frame = title_box.text_frame
     
     # Generate professional title using AI
-    from .prompt_builder import generate_slide_title
+    from .prompt_builder import generate_slide_title, generate_slide_subheading
     # Extract topic from question or use a default  
     topic = question.split()[-1] if question else ""
     professional_title = generate_slide_title(question, content, "boxes", topic)
+    subheading = generate_slide_subheading(question, content, professional_title, "boxes", topic)
     title_frame.text = professional_title
     
     title_frame.paragraphs[0].font.size = Pt(24)
     title_frame.paragraphs[0].font.bold = True
     title_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
+    
+    # Add subheading
+    subheading_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.0), Inches(9), Inches(0.5))
+    subheading_frame = subheading_box.text_frame
+    subheading_frame.text = subheading
+    subheading_frame.paragraphs[0].font.size = Pt(18)
+    subheading_frame.paragraphs[0].font.color.rgb = RGBColor(80, 80, 80)
+    subheading_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
     
     # STEP 1: Plan boxes structure based on question intent
     boxes_plan = plan_boxes_structure(question, content)
@@ -2855,6 +3696,11 @@ def create_two_column_comparison_layout(slide, boxes_data, boxes_plan):
         for i in range(1, len(left_frame.paragraphs)):
             left_frame.paragraphs[i].font.size = Pt(14)
             left_frame.paragraphs[i].alignment = PP_ALIGN.LEFT
+        
+        # Set text color to black for readability on light background
+        for paragraph in left_frame.paragraphs:
+            for run in paragraph.runs:
+                run.font.color.rgb = RGBColor(0, 0, 0)  # Black text
     
     # Right comparison box with error handling
     try:
@@ -2909,6 +3755,11 @@ def create_two_column_comparison_layout(slide, boxes_data, boxes_plan):
         for i in range(1, len(right_frame.paragraphs)):
             right_frame.paragraphs[i].font.size = Pt(14)
             right_frame.paragraphs[i].alignment = PP_ALIGN.LEFT
+        
+        # Set text color to black for readability on light background
+        for paragraph in right_frame.paragraphs:
+            for run in paragraph.runs:
+                run.font.color.rgb = RGBColor(0, 0, 0)  # Black text
     
     # Add subtle fill colors first (proper styling order)
     left_box.fill.solid()
@@ -3012,7 +3863,7 @@ def create_multi_box_grid_layout(slide, boxes_data, boxes_plan):
     from pptx.enum.shapes import MSO_SHAPE
     from pptx.enum.text import PP_ALIGN
     from pptx.dml.color import RGBColor
-    from pptx.enum.dml import MSO_SHADOW_STYLE
+    # from pptx.enum.dml import MSO_SHADOW_STYLE  # Not available in this version
     
     print(f"   Creating multi-box grid layout with {len(boxes_data)} boxes")
     
@@ -3083,7 +3934,7 @@ def create_multi_box_grid_layout(slide, boxes_data, boxes_plan):
             # ✅ Add subtle shadow
             try:
                 box.shadow.inherit = False
-                box.shadow.style = MSO_SHADOW_STYLE.OUTER
+                # box.shadow.style = MSO_SHADOW_STYLE.OUTER  # Not available
                 box.shadow.blur_radius = Pt(3)
                 box.shadow.distance = Pt(2)
                 box.shadow.direction = 315  # Bottom-right shadow
@@ -3120,7 +3971,7 @@ def create_multi_box_grid_layout(slide, boxes_data, boxes_plan):
             
             text_frame.text = full_text
             
-            # Format text with proper sizing
+            # Format text with proper sizing and colors
             if text_frame.paragraphs:
                 # Title formatting
                 text_frame.paragraphs[0].font.size = Pt(14)
@@ -3131,6 +3982,11 @@ def create_multi_box_grid_layout(slide, boxes_data, boxes_plan):
                 for j in range(1, len(text_frame.paragraphs)):
                     text_frame.paragraphs[j].font.size = Pt(11)
                     text_frame.paragraphs[j].alignment = PP_ALIGN.LEFT
+                
+                # Set text color to black for all paragraphs for readability on light backgrounds
+                for paragraph in text_frame.paragraphs:
+                    for run in paragraph.runs:
+                        run.font.color.rgb = RGBColor(0, 0, 0)  # Black text
                     
         except Exception as e:
             print(f"   ERROR: Error creating auto-shape box {i}: {e}")
@@ -3147,11 +4003,11 @@ def create_multi_box_grid_layout(slide, boxes_data, boxes_plan):
                 print(f"   ERROR: Fallback text box also failed for box {i}: {e2}")
                 continue
 
-
 def create_bullet_slide(prs, question, content, slide_num):
     """Create a bullet point slide"""
     from pptx.util import Inches, Pt
     from pptx.enum.text import PP_ALIGN
+    from pptx.dml.color import RGBColor
     
     # Add slide
     slide_layout = get_safe_slide_layout(prs)  # Safe layout selection
@@ -3162,15 +4018,24 @@ def create_bullet_slide(prs, question, content, slide_num):
     title_frame = title_box.text_frame
     
     # Generate professional title using AI
-    from .prompt_builder import generate_slide_title
+    from .prompt_builder import generate_slide_title, generate_slide_subheading
     # Extract topic from question or use a default
     topic = question.split()[-1] if question else ""
     professional_title = generate_slide_title(question, content, "bullet_points", topic)
+    subheading = generate_slide_subheading(question, content, professional_title, "bullet_points", topic)
     title_frame.text = professional_title
     
     title_frame.paragraphs[0].font.size = Pt(24)
     title_frame.paragraphs[0].font.bold = True
     title_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
+    
+    # Add subheading
+    subheading_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.0), Inches(9), Inches(0.5))
+    subheading_frame = subheading_box.text_frame
+    subheading_frame.text = subheading
+    subheading_frame.paragraphs[0].font.size = Pt(18)
+    subheading_frame.paragraphs[0].font.color.rgb = RGBColor(80, 80, 80)
+    subheading_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
     
     # Reformat content to fit slide
     reformatted_content = reformat_content_for_slide(content, "bullet_points")
@@ -3903,7 +4768,7 @@ def reformat_comparison_content(content, max_chars):
         return content
     
     # Parse comparison content
-    comparison_parts = parse_comparison_content(content)
+    comparison_parts = parse_comparison_content(content, "")
     
     if len(comparison_parts) < 2:
         # If no clear comparison, create a simple summary
@@ -3961,6 +4826,7 @@ def create_paragraph_slide(prs, question, content, slide_num):
     """Create a paragraph slide with intelligent content distribution and AI reformatting"""
     from pptx.util import Inches, Pt
     from pptx.enum.text import PP_ALIGN
+    from pptx.dml.color import RGBColor
     
     # Add slide
     slide_layout = get_safe_slide_layout(prs)  # Safe layout selection
@@ -3971,15 +4837,24 @@ def create_paragraph_slide(prs, question, content, slide_num):
     title_frame = title_box.text_frame
     
     # Generate professional title using AI
-    from .prompt_builder import generate_slide_title
+    from .prompt_builder import generate_slide_title, generate_slide_subheading
     # Extract topic from question or use a default
     topic = question.split()[-1] if question else ""
     professional_title = generate_slide_title(question, content, "paragraph", topic)
+    subheading = generate_slide_subheading(question, content, professional_title, "paragraph", topic)
     title_frame.text = professional_title
     
     title_frame.paragraphs[0].font.size = Pt(24)
     title_frame.paragraphs[0].font.bold = True
     title_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
+    
+    # Add subheading
+    subheading_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.0), Inches(9), Inches(0.5))
+    subheading_frame = subheading_box.text_frame
+    subheading_frame.text = subheading
+    subheading_frame.paragraphs[0].font.size = Pt(18)
+    subheading_frame.paragraphs[0].font.color.rgb = RGBColor(80, 80, 80)
+    subheading_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
     
     # Intelligent content reformatting
     reformatted_content = reformat_content_for_slide(content, "paragraph")
@@ -4550,7 +5425,8 @@ def format_table_content_with_ai(content, max_length):
         - Do not add any new information
         """
         
-        response = openai.ChatCompletion.create(
+        client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        response = client.chat.completions.create(
             model="gpt-4o",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200,

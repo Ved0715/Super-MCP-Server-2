@@ -103,6 +103,103 @@ def extract_title_fallback(question, topic=""):
     # Ultimate fallback
     return f"{topic} Overview" if topic else "Slide Overview"
 
+def generate_slide_subheading(question, content, title, content_type, topic):
+    """Generate descriptive subheading using AI with enhanced detail requirements"""
+    load_dotenv()
+    api_key = os.getenv('OPENAI_API_KEY')
+    
+    if not api_key:
+        return get_fallback_subheading(content_type, topic)
+    
+    client = openai.OpenAI(api_key=api_key)
+    
+    subheading_prompt = f"""
+    Create a detailed, descriptive subheading that tells users exactly what this slide content covers.
+    
+    REQUIREMENTS:
+    - 6-15 words describing what the content covers in detail
+    - Should be highly specific so users understand exactly what to expect
+    - Include key concepts, methods, or data types mentioned in content
+    - Must be different from the title: "{title}"
+    - Format: {content_type}
+    - Topic: {topic}
+    
+    Question: {question}
+    Content preview: {content[:400]}...
+    
+    Generate only the subheading text, nothing else.
+    """
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are an expert at creating detailed, descriptive slide subheadings."},
+                {"role": "user", "content": subheading_prompt}
+            ],
+            max_tokens=50,
+            temperature=0.3
+        )
+        
+        subheading = response.choices[0].message.content.strip()
+        
+        # Validate length and word count
+        if len(subheading) > 120:
+            subheading = subheading[:117] + "..."
+        
+        word_count = len(subheading.split())
+        if word_count < 6 or word_count > 15:
+            return get_fallback_subheading(content_type, topic)
+            
+        return subheading
+        
+    except Exception as e:
+        print(f"   Warning: AI subheading generation failed ({e}), using fallback")
+        return get_fallback_subheading(content_type, topic)
+
+def get_fallback_subheading(content_type, topic):
+    """Enhanced fallback subheadings with more detailed descriptions"""
+    fallbacks = {
+        "timeline": "Key developments and milestones in chronological sequence",
+        "table": "Structured data comparison with detailed analysis and metrics", 
+        "boxes": "Comparative analysis of key concepts with detailed breakdowns",
+        "bullet_points": "Essential points and actionable insights with clear explanations",
+        "paragraph": "Comprehensive overview with detailed explanations and context"
+    }
+    
+    base_subheading = fallbacks.get(content_type, "Detailed analysis and comprehensive insights")
+    
+    if topic:
+        return f"{topic}: {base_subheading}"
+    else:
+        return base_subheading
+
+def extract_subheading_fallback(content, format_type):
+    """Fallback subheading based on content analysis"""
+    content_lower = content.lower()
+    
+    # Analyze content patterns for meaningful subheading
+    if "vs" in content_lower or "comparison" in content_lower:
+        return "Detailed comparison and analysis"
+    elif "steps" in content_lower or "process" in content_lower:
+        return "Step-by-step process guide"
+    elif "benefits" in content_lower or "advantages" in content_lower:
+        return "Key benefits and value analysis"
+    elif "security" in content_lower:
+        return "Security features and implementation"
+    elif "performance" in content_lower or "%" in content:
+        return "Performance metrics and data"
+    elif format_type == "timeline":
+        return "Sequential stages and key milestones"
+    elif format_type == "table":
+        return "Data comparison and metrics"
+    elif format_type == "boxes":
+        return "Component breakdown and features"
+    elif format_type == "bullet_points":
+        return "Key highlights and important points"
+    else:
+        return "Comprehensive overview and details"
+
 def generate_presentation_subtitle(topic, user_prompt):
     """
     Generate professional presentation subtitle using AI based on topic and user prompt
@@ -259,6 +356,532 @@ def decompose_user_prompt(user_prompt, num_slides, user_topic=""):
             else:
                 fallback_questions.append(f"What is aspect {i+1} of {user_topic}?")
         return fallback_questions
+
+def decompose_user_prompt_content_aware(user_prompt, num_slides, user_topic="", user_content=""):
+    """
+    Content-aware question decomposition: Analyze content capabilities first, then generate questions
+    that align with both user prompt intent AND available content to prevent 'content not available' errors
+    """
+    load_dotenv()
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key:
+        raise ValueError("OpenAI API key not found")
+    
+    client = openai.OpenAI(api_key=api_key)
+    
+    # Calculate content slides (total - title slide - thank you slide)
+    content_slides = max(1, num_slides - 2)
+    
+    # Truncate content if too long for analysis
+    max_content_length = 4000
+    truncated_content = user_content[:max_content_length]
+    if len(user_content) > max_content_length:
+        truncated_content += "..."
+    
+    # Step 1: Analyze content capabilities
+    content_analysis_prompt = f"""
+    Analyze this content to understand what information is available and what questions can be answered.
+
+    CONTENT TO ANALYZE:
+    {truncated_content}
+
+    TASK: Identify the main themes, topics, and types of information present in this content.
+    
+    REQUIREMENTS:
+    - List the key topics and themes covered
+    - Identify what types of information are available (explanations, data, processes, comparisons, features, algorithms, etc.)
+    - Note specific details, examples, or data points present
+    - Identify comparative content (X vs Y, different types, features, algorithms, methods)
+    - Determine what aspects of {user_topic} are well-covered vs missing
+    
+    RESPONSE FORMAT: Return a JSON object with:
+    {{
+        "main_themes": ["theme1", "theme2", ...],
+        "available_information_types": ["explanations", "data", "processes", "examples", "comparisons", "features", ...],
+        "specific_topics_covered": ["topic1", "topic2", ...],
+        "comparative_content": ["X vs Y", "different algorithms", "feature comparisons", ...],
+        "content_strengths": ["what the content does well"],
+        "content_gaps": ["what might be missing"]
+    }}
+    """
+    
+    try:
+        content_analysis_response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": content_analysis_prompt}],
+            max_tokens=1000,
+            temperature=0.1,
+            response_format={"type": "json_object"}
+        )
+        
+        content_capabilities = json.loads(content_analysis_response.choices[0].message.content)
+        
+        # Step 2: Generate questions that align with both user prompt and content capabilities
+        question_generation_prompt = f"""
+        Generate {content_slides} presentation questions that align with BOTH the user's intent AND the available content.
+
+        USER PROMPT: {user_prompt}
+        TOPIC: {user_topic}
+        CONTENT CAPABILITIES: {json.dumps(content_capabilities, indent=2)}
+        
+        TASK: Create {content_slides} specific questions that:
+        1. Follow the user's presentation intent from their prompt
+        2. Can be answered using the available content (based on content analysis above)
+        3. Create a logical presentation flow
+        4. Use varied question types for different slide formats
+        5. Generate table questions when comparative_content or structured information is available
+        
+        QUESTION TYPE VARIETY (use varied mix):
+        - "What are..." for lists and bullet points
+        - EXACT TABLE PATTERNS: "Compare [A] vs [B]" or "Statistics on [topic]" or "Data about [topic]" for tables
+        - HISTORICAL TIMELINE PATTERNS: "History of [topic]" or "How has [topic] evolved over time" or "Development of [topic] since its inception"
+        - PROCESS TIMELINE PATTERNS: "What is the process of..." or "Steps to..." or "How to..." for process flows
+        - "How does...work" or "Why is..." for paragraph/explanatory
+        - "How do...compare" or "What are the differences..." for comparison/boxes
+        
+        IMPORTANT: Use EXACT wording for table questions:
+        ✅ "Compare PGP vs GPG security methods"  
+        ✅ "Statistics on PGP adoption rates"
+        ✅ "Data about encryption performance"
+        ❌ "How do PGP and GPG compare?" (this triggers boxes, not tables)
+        
+        CRITICAL: Only ask questions that the content can actually answer. If the content lacks certain information, adjust the question or skip that aspect.
+        
+        RESPONSE FORMAT: Return a JSON object with a "questions" array.
+        Example: {{"questions": ["What is the main concept covered?", "History of PGP encryption development", "Compare PGP vs GPG encryption methods", "Statistics on PGP usage worldwide"]}}
+        
+        Generate {content_slides} answerable questions:
+        """
+        
+        questions_response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": question_generation_prompt}],
+            max_tokens=1000,
+            temperature=0.3,
+            response_format={"type": "json_object"}
+        )
+        
+        raw_response = questions_response.choices[0].message.content
+        print("   🔍 AI Response:", raw_response[:200] + "...")
+        
+        questions_data = json.loads(raw_response)
+        
+        # Handle different response formats with better debugging
+        if isinstance(questions_data, dict):
+            if "questions" in questions_data:
+                questions = questions_data["questions"]
+                print(f"   ✅ Found questions array with {len(questions)} questions")
+            else:
+                # Fallback: try to extract values or keys that look like questions
+                all_values = list(questions_data.values())
+                if all_values and isinstance(all_values[0], list):
+                    questions = all_values[0]  # Take first list found
+                elif all_values and isinstance(all_values[0], str):
+                    questions = all_values  # All values are strings
+                else:
+                    print("   ⚠️  Unexpected dict format:", list(questions_data.keys()))
+                    questions = list(questions_data.values())
+                print(f"   🔄 Extracted {len(questions)} questions from dict values")
+        elif isinstance(questions_data, list):
+            questions = questions_data
+            print(f"   ✅ Found direct list with {len(questions)} questions")
+        else:
+            print("   ❌ Unexpected response type:", type(questions_data))
+            raise ValueError(f"Unexpected response format: {type(questions_data)}")
+        
+        # Ensure we have the right number of questions
+        if len(questions) != content_slides:
+            if len(questions) < content_slides:
+                for i in range(len(questions), content_slides):
+                    questions.append(f"What additional insights about {user_topic} are available?")
+            else:
+                questions = questions[:content_slides]
+        
+        print(f"   ✅ Content-aware generation: {len(questions)} questions aligned with available content")
+        return questions
+        
+    except Exception as e:
+        print(f"   ❌ Content-aware generation failed: {e}")
+        print(f"   🔄 Falling back to standard question generation...")
+        # Fallback to original method
+        return decompose_user_prompt(user_prompt, num_slides, user_topic)
+
+def regenerate_content_for_uniqueness_format_aware(question, user_content, topic, previous_slides_summaries, slide_num, format_type):
+    """
+    Format-aware content regeneration that preserves the structure needed for specific slide formats
+    """
+    load_dotenv()
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key:
+        return extract_relevant_content(user_content, question, topic)  # fallback
+    
+    client = openai.OpenAI(api_key=api_key)
+    
+    # Extract previous content summaries (handle both old string format and new dict format)
+    previous_summaries_text = ""
+    for i, slide_info in enumerate(previous_slides_summaries):
+        if isinstance(slide_info, dict):
+            summary = slide_info.get('content_summary', '')
+            slide_format = slide_info.get('format', 'unknown')
+            previous_summaries_text += f"Slide {i+1} ({slide_format}): {summary}\n"
+        else:
+            # Backward compatibility with old string format
+            previous_summaries_text += f"Slide {i+1}: {slide_info}\n"
+    
+    # Format-specific regeneration prompts
+    format_specific_instructions = {
+        'table': """
+        CRITICAL: This question requires TABULAR/COMPARISON data. You must preserve comparison structure.
+        - Maintain A vs B comparison format if present
+        - Keep numerical data, statistics, or measurable differences
+        - Ensure data can be organized into rows and columns
+        - Focus on different comparison criteria while preserving table structure
+        Example: If previous slide compared "cost and features", find data about "performance and security"
+        """,
+        'timeline': """
+        CRITICAL: This question requires SEQUENTIAL/CHRONOLOGICAL data. You must preserve timeline structure.
+        - Maintain chronological order or step-by-step progression
+        - Keep time markers, sequence indicators, or process stages
+        - Ensure content can be organized into timeline format
+        - Focus on different time periods or process phases while preserving timeline flow
+        """,
+        'boxes': """
+        CRITICAL: This question requires CATEGORICAL/COMPARISON data. You must preserve box structure.
+        - Maintain distinct categories or comparison items
+        - Keep structured groupings of related information
+        - Ensure content can be organized into separate boxes/categories
+        - Focus on different categories while preserving comparison structure
+        """,
+        'bullet_points': """
+        CRITICAL: This question requires LIST/ENUMERATION data. You must preserve list structure.
+        - Maintain list format with distinct items
+        - Keep enumerable points or features
+        - Ensure content can be organized into bullet points
+        - Focus on different aspects while preserving list structure
+        """,
+        'paragraph': """
+        This question requires explanatory content. Focus on different explanatory aspects.
+        - Provide detailed explanations from different angles
+        - Focus on aspects not covered in previous slides
+        - Maintain comprehensive explanatory format
+        """
+    }
+    
+    format_instructions = format_specific_instructions.get(format_type, format_specific_instructions['paragraph'])
+    
+    unique_content_prompt = f"""
+    Extract content that answers the question while avoiding repetition of previous slides.
+    
+    QUESTION: {question}
+    TOPIC: {topic}
+    SLIDE NUMBER: {slide_num}
+    FORMAT TYPE: {format_type.upper()}
+    
+    PREVIOUS SLIDES ALREADY COVERED:
+    {previous_summaries_text}
+    
+    USER CONTENT:
+    {user_content[:3000]}...
+    
+    FORMAT-SPECIFIC REQUIREMENTS:
+    {format_instructions}
+    
+    TASK: Find information that answers the question while:
+    1. Preserving the format structure required by the question type
+    2. Avoiding repetition of topics already covered in previous slides
+    3. Finding complementary aspects that enhance rather than duplicate previous content
+    4. Ensuring the content can still properly answer the original question
+    
+    CRITICAL: The regenerated content MUST still be suitable for {format_type} format. 
+    Do not sacrifice format requirements for uniqueness.
+    
+    RESPONSE: Provide content that maintains {format_type} structure while offering unique insights.
+    """
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": unique_content_prompt}],
+            max_tokens=1000,
+            temperature=0.4  # Slightly higher for more creative alternatives
+        )
+        
+        regenerated_content = response.choices[0].message.content.strip()
+        print(f"   ✅ Format-preserving regeneration completed for {format_type} format")
+        return regenerated_content
+        
+    except Exception as e:
+        print(f"   ❌ Format-aware regeneration failed: {e}, using original content")
+        return extract_relevant_content(user_content, question, topic)
+
+def analyze_slide_content_similarity_format_aware(new_slide_content, previous_slides_summaries, topic, format_type, current_question):
+    """
+    Enhanced format-aware similarity analysis that understands different slide formats
+    and focuses on content uniqueness while preserving format structure
+    """
+    if not previous_slides_summaries:
+        return {"is_similar": False, "similarity_score": 0.0, "recommendation": "first_slide"}
+    
+    load_dotenv()
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key:
+        return {"is_similar": False, "similarity_score": 0.5, "recommendation": "api_unavailable"}
+    
+    client = openai.OpenAI(api_key=api_key)
+    
+    # Build context-rich comparison data
+    previous_summaries_text = ""
+    for i, slide_info in enumerate(previous_slides_summaries):
+        if isinstance(slide_info, dict):
+            summary = slide_info.get('content_summary', '')
+            slide_format = slide_info.get('format', 'unknown')
+            question_type = slide_info.get('question_type', 'general')
+            previous_summaries_text += f"Slide {i+1} ({slide_format}, {question_type}): {summary}\n"
+        else:
+            # Backward compatibility with old string format
+            previous_summaries_text += f"Slide {i+1}: {slide_info}\n"
+    
+    # Format-specific similarity analysis
+    format_specific_guidance = {
+        'table': """
+        SPECIAL INSTRUCTIONS FOR TABLE SIMILARITY:
+        - Tables comparing different aspects (cost vs performance vs security) are UNIQUE
+        - Tables with the same subjects but different comparison criteria are UNIQUE  
+        - Focus on the comparison criteria and data points, not the subjects being compared
+        - Example: "PGP vs GPG cost" is different from "PGP vs GPG performance"
+        - Structural similarity (having columns/rows) does not mean content similarity
+        """,
+        'timeline': """
+        SPECIAL INSTRUCTIONS FOR TIMELINE SIMILARITY:
+        - Timelines covering different time periods are UNIQUE
+        - Timelines with different focus areas (technical vs historical vs adoption) are UNIQUE
+        - Focus on the time periods and events covered, not the general topic
+        - Sequential structure similarity does not mean content similarity
+        """,
+        'boxes': """
+        SPECIAL INSTRUCTIONS FOR BOXES SIMILARITY:
+        - Boxes comparing different categories or aspects are UNIQUE
+        - Focus on the specific categories and features being compared
+        - Similar structure does not mean content similarity
+        """,
+        'bullet_points': """
+        SPECIAL INSTRUCTIONS FOR BULLET POINTS SIMILARITY:
+        - Lists covering different aspects of the same topic are UNIQUE
+        - Focus on the specific points and details covered
+        """,
+        'paragraph': """
+        SPECIAL INSTRUCTIONS FOR PARAGRAPH SIMILARITY:
+        - Focus on the explanatory content and specific details
+        - Different explanatory angles on the same topic are UNIQUE
+        """
+    }
+    
+    format_guidance = format_specific_guidance.get(format_type, format_specific_guidance['paragraph'])
+    
+    similarity_prompt = f"""
+    Analyze if this new slide content is too similar to previous slides, considering format context.
+
+    CURRENT SLIDE:
+    Format: {format_type.upper()}
+    Question: {current_question}
+    Content: {new_slide_content[:800]}...
+    
+    TOPIC: {topic}
+    
+    PREVIOUS SLIDES SUMMARY:
+    {previous_summaries_text}
+    
+    {format_guidance}
+    
+    ANALYSIS TASK:
+    Determine if this new slide offers substantially different information or if it duplicates previous content.
+    
+    KEY CONSIDERATIONS:
+    - Same format + same comparison criteria = SIMILAR
+    - Same format + different comparison criteria = UNIQUE  
+    - Different format + same topic = UNIQUE
+    - Focus on INFORMATION VALUE, not structural patterns
+    - Consider the QUESTION being answered - different questions = likely unique
+    
+    RESPONSE FORMAT: Return a JSON object:
+    {{
+        "similarity_score": 0.0-1.0,
+        "is_similar": true/false,
+        "main_overlap_reasons": ["reason1", "reason2"],
+        "recommendation": "unique|similar|very_similar",
+        "format_analysis": "how format affects similarity assessment"
+    }}
+    
+    Consider similar if > 80% information overlap for structured formats, > 70% for others.
+    """
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": similarity_prompt}],
+            max_tokens=400,
+            temperature=0.1,
+            response_format={"type": "json_object"}
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        return {
+            "is_similar": result.get("is_similar", False),
+            "similarity_score": result.get("similarity_score", 0.0),
+            "recommendation": result.get("recommendation", "unknown"),
+            "main_overlap_reasons": result.get("main_overlap_reasons", []),
+            "format_analysis": result.get("format_analysis", "")
+        }
+        
+    except Exception as e:
+        print(f"   ❌ Format-aware similarity analysis failed: {e}")
+        # Fallback to conservative approach
+        return {"is_similar": False, "similarity_score": 0.4, "recommendation": "analysis_failed"}
+
+def extract_display_content_from_slide(slide_content):
+    """
+    Extract the actual text content that will be displayed in the slide
+    from the generated slide_content structure
+    """
+    display_texts = []
+    
+    for item in slide_content:
+        if isinstance(item, dict) and 'text' in item:
+            display_texts.append(item['text'])
+        elif isinstance(item, str):
+            display_texts.append(item)
+    
+    return " | ".join(display_texts)  # Combine all display text
+
+def analyze_slide_content_similarity(new_slide_content, previous_slides_summaries, topic):
+    """
+    Format-aware similarity analysis for slide content
+    Returns similarity score and recommendation
+    """
+    if not previous_slides_summaries:
+        return {"is_similar": False, "similarity_score": 0.0, "recommendation": "first_slide"}
+    
+    load_dotenv()
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key:
+        return {"is_similar": False, "similarity_score": 0.5, "recommendation": "api_unavailable"}
+    
+    client = openai.OpenAI(api_key=api_key)
+    
+    # Handle both old string format and new dict format for backward compatibility
+    previous_summaries_text = ""
+    for i, slide_info in enumerate(previous_slides_summaries):
+        if isinstance(slide_info, dict):
+            summary = slide_info.get('content_summary', '')
+            slide_format = slide_info.get('format', 'unknown')
+            question_type = slide_info.get('question_type', 'general')
+            previous_summaries_text += f"Slide {i+1} ({slide_format}, {question_type}): {summary}\n"
+        else:
+            # Backward compatibility with old string format
+            previous_summaries_text += f"Slide {i+1}: {slide_info}\n"
+    
+    similarity_prompt = f"""
+    Analyze if this new slide content is too similar to previous slides in the presentation.
+    Consider format context when determining similarity.
+
+    TOPIC: {topic}
+    
+    PREVIOUS SLIDES SUMMARY (with format context):
+    {previous_summaries_text}
+    
+    NEW SLIDE CONTENT:
+    {new_slide_content[:500]}...
+    
+    TASK: Determine if the new slide covers substantially different aspects or if it's repetitive.
+    
+    IMPORTANT CONSIDERATIONS:
+    - Different slide formats can naturally cover similar topics with different perspectives
+    - Table slides comparing A vs B are different from paragraph slides explaining A or B
+    - Timeline slides about topic X are different from bullet slides listing features of X
+    - Comparison slides (table/boxes) can have structural similarity while being content-different
+    - Focus on CONTENT overlap, not structural/format similarities
+    
+    RESPONSE FORMAT: Return a JSON object:
+    {{
+        "similarity_score": 0.0-1.0,
+        "is_similar": true/false,
+        "main_topic_overlap": ["overlapping_concept1", "overlapping_concept2"],
+        "recommendation": "unique|similar|very_similar",
+        "format_consideration": "explanation of how format affects similarity assessment"
+    }}
+    
+    Consider similar if > 70% CONTENT topic overlap (ignoring format structural similarities).
+    """
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": similarity_prompt}],
+            max_tokens=300,
+            temperature=0.1,
+            response_format={"type": "json_object"}
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        return result
+        
+    except Exception as e:
+        print(f"   ❌ Similarity analysis failed: {e}")
+        return {"is_similar": False, "similarity_score": 0.5, "recommendation": "analysis_failed"}
+
+def regenerate_content_for_uniqueness(question, user_content, topic, previous_slides_summaries, slide_num):
+    """
+    Regenerate content with explicit instructions to avoid similarity to previous slides
+    """
+    load_dotenv()
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key:
+        return extract_relevant_content(user_content, question, topic)  # fallback
+    
+    client = openai.OpenAI(api_key=api_key)
+    
+    previous_summaries_text = "\n".join([f"Slide {i+1}: {summary}" for i, summary in enumerate(previous_slides_summaries)])
+    
+    unique_content_prompt = f"""
+    Extract content that focuses on DIFFERENT aspects than previous slides.
+
+    QUESTION: {question}
+    TOPIC: {topic}
+    SLIDE NUMBER: {slide_num}
+    
+    PREVIOUS SLIDES ALREADY COVERED:
+    {previous_summaries_text}
+    
+    USER CONTENT:
+    {user_content[:3000]}...
+    
+    TASK: Find information that answers the question while avoiding topics already covered in previous slides.
+    
+    REQUIREMENTS:
+    - Focus on UNIQUE aspects not yet covered
+    - Avoid repeating concepts from previous slides
+    - Find different angles, examples, or details
+    - If similar concepts must be mentioned, provide different perspectives
+    - Ensure content is substantially different from previous slides
+    
+    RESPONSE: Provide unique content that complements rather than repeats previous slides.
+    """
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": unique_content_prompt}],
+            max_tokens=1500,
+            temperature=0.3
+        )
+        
+        unique_content = response.choices[0].message.content.strip()
+        print(f"   ✅ Regenerated unique content for slide {slide_num}")
+        return unique_content
+        
+    except Exception as e:
+        print(f"   ❌ Unique content generation failed: {e}")
+        return extract_relevant_content(user_content, question, topic)  # fallback
 
 def extract_relevant_content(user_content, question, user_topic=""):
     """
@@ -550,9 +1173,9 @@ def generate_presentation_with_prompt(user_content, user_prompt, topic, num_slid
     
     print(f"🎯 Decomposing user prompt into {num_slides} questions...")
     
-    # Step 1: Decompose user prompt into questions
-    with tqdm(total=1, desc="🤖 Generating questions", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}") as pbar:
-        slide_questions = decompose_user_prompt(user_prompt, num_slides, topic)
+    # Step 1: Content-aware question decomposition
+    with tqdm(total=1, desc="🤖 Analyzing content + generating questions", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}") as pbar:
+        slide_questions = decompose_user_prompt_content_aware(user_prompt, num_slides, topic, user_content)
         pbar.update(1)
     
     print(f"✅ Generated {len(slide_questions)} questions:")
@@ -579,6 +1202,7 @@ def generate_presentation_with_prompt(user_content, user_prompt, topic, num_slid
             other_metadata.extend(slide_metadata)
     
     all_results = []
+    previous_slides_display_content = []  # Track ACTUAL slide display content
     
     # Step 4: For each slide/question with progress bar
     with tqdm(total=num_slides, desc="🎯 Generating slide content", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} slides") as pbar:
@@ -620,6 +1244,24 @@ def generate_presentation_with_prompt(user_content, user_prompt, topic, num_slid
             slide_content = generate_slide_content(question, relevant_content, slide_metadata, topic, slide_num)
             
             if slide_content:
+                # Extract the actual display text from slide_content
+                display_content = extract_display_content_from_slide(slide_content)
+                
+                # Check similarity with previous slides' display content
+                if previous_slides_display_content:
+                    similarity_analysis = analyze_slide_content_similarity(display_content, previous_slides_display_content, topic)
+                    print(f"   🔍 Display content similarity: {similarity_analysis['recommendation']} (score: {similarity_analysis['similarity_score']:.2f})")
+                    
+                    if similarity_analysis['is_similar'] and similarity_analysis['similarity_score'] > 0.7:
+                        print(f"   🔄 Display content too similar, regenerating...")
+                        # Regenerate with uniqueness constraints
+                        relevant_content = regenerate_content_for_uniqueness(question, user_content, topic, previous_slides_display_content, slide_num + 1)
+                        slide_content = generate_slide_content(question, relevant_content, slide_metadata, topic, slide_num)
+                        display_content = extract_display_content_from_slide(slide_content)
+                
+                # Store this slide's display content for future comparisons
+                previous_slides_display_content.append(display_content)
+                
                 all_results.extend(slide_content)
                 print(f"   ✅ Generated {len(slide_content)} content items for slide {slide_num + 1}")
             else:

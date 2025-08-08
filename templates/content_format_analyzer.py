@@ -2,6 +2,7 @@ import re
 import json
 from collections import Counter
 from typing import Dict, List, Tuple, Any
+from .universal_question_analyzer import universal_analyzer
 
 class ContentFormatAnalyzer:
     """
@@ -55,49 +56,51 @@ class ContentFormatAnalyzer:
                                        slide_position: int, total_slides: int, topic: str, 
                                        template_inventory: Dict = None) -> Dict[str, Any]:
         """
-        Enhanced content format analysis with flow planning and intelligent template assignment
+        Enhanced content format analysis using Universal Question Analyzer with flow planning
         """
         if not answer_content or not answer_content.strip():
             return self._get_default_analysis_with_flow(slide_position, total_slides, topic)
         
-        # Basic content analysis - pass question for enhanced detection
+        print(f"   🔍 Analyzing slide {slide_position}/{total_slides} with Universal System")
+        
+        # STEP 1: Universal AI + Rule-based Question Analysis
+        universal_analysis = universal_analyzer.analyze_question_comprehensive(
+            question=question, 
+            content=answer_content, 
+            context={"slide_position": slide_position, "total_slides": total_slides, "topic": topic}
+        )
+        
+        # STEP 2: Legacy content analysis for compatibility
         content_analysis = self._analyze_content_characteristics(answer_content)
-        content_analysis["question"] = question  # Add question for enhanced detection
-        question_analysis = self._analyze_question_context(question)
         
-        # Calculate format scores
-        format_scores = self._calculate_format_scores(content_analysis, question_analysis)
-        
-        # Determine slide role in presentation flow
+        # STEP 3: Determine slide role in presentation flow
         slide_role = self._determine_slide_role(slide_position, total_slides, topic)
         
-        # Adjust format scores based on presentation flow
-        adjusted_scores = self._adjust_format_scores_for_flow(format_scores, slide_role, topic)
+        # STEP 4: Flow-based adjustments to universal analysis
+        adjusted_analysis = self._adjust_universal_analysis_for_flow(universal_analysis, slide_role, topic, content_analysis)
         
-        # Get best format
-        best_format = max(adjusted_scores.items(), key=lambda x: x[1])[0]
-        confidence_score = adjusted_scores[best_format]
+        # STEP 5: Get recommended slide type based on universal analysis
+        recommended_slide_type = self._get_recommended_slide_type(adjusted_analysis["format"], content_analysis)
         
-        # Get recommended slide type
-        recommended_slide_type = self._get_recommended_slide_type(best_format, content_analysis)
+        # STEP 6: Get formatting instructions using universal analysis
+        formatting_instructions = self._get_formatting_instructions(adjusted_analysis["format"], content_analysis)
         
-        # Get formatting instructions
-        formatting_instructions = self._get_formatting_instructions(best_format, content_analysis)
-        
-        # Intelligent template assignment
+        # STEP 7: Intelligent template assignment
         template_match = self._assign_intelligent_template(
-            best_format, slide_role, template_inventory, slide_position, total_slides
+            adjusted_analysis["format"], slide_role, template_inventory, slide_position, total_slides
         )
         
         return {
-            "content_format": best_format,
+            "content_format": adjusted_analysis["format"],
+            "content_subtype": adjusted_analysis["subtype"],
             "recommended_slide_type": recommended_slide_type,
             "formatting_instructions": formatting_instructions,
-            "confidence_score": confidence_score,
+            "confidence_score": adjusted_analysis["confidence"],
             "template_match": template_match,
             "slide_role": slide_role,
             "content_analysis": content_analysis,
-            "format_scores": adjusted_scores,
+            "universal_analysis": universal_analysis,
+            "adjusted_analysis": adjusted_analysis,
             "flow_adjustment": self._calculate_flow_adjustment(slide_role, topic)
         }
     
@@ -136,6 +139,48 @@ class ContentFormatAnalyzer:
             topic_adjustment = 0.1
         
         return base_adjustments.get(slide_role, 0.0) + topic_adjustment
+    
+    def _adjust_universal_analysis_for_flow(self, universal_analysis: Dict, slide_role: str, topic: str, content_analysis: Dict) -> Dict:
+        """
+        Adjust Universal Question Analyzer results based on presentation flow and slide role
+        """
+        adjusted_analysis = universal_analysis.copy()
+        topic_lower = topic.lower()
+        
+        # Flow-based format adjustments
+        format_adjustments = {
+            "introduction": {"paragraph": 0.2, "bullets": 0.1, "boxes": -0.1},
+            "conclusion": {"bullets": 0.2, "paragraph": 0.1, "timeline": -0.1},
+            "detail": {"timeline": 0.1, "table": 0.15, "boxes": 0.1},
+            "overview": {"bullets": 0.2, "boxes": 0.1, "paragraph": 0.1}
+        }
+        
+        # Apply slide role adjustments
+        if slide_role in format_adjustments:
+            format_type = adjusted_analysis.get("format", "")
+            if format_type in format_adjustments[slide_role]:
+                confidence_adjustment = format_adjustments[slide_role][format_type]
+                adjusted_analysis["confidence"] = min(
+                    adjusted_analysis.get("confidence", 0.5) + confidence_adjustment, 
+                    1.0
+                )
+                adjusted_analysis["reasoning"] += f"; Flow adjustment: {slide_role} +{confidence_adjustment:.2f}"
+        
+        # Topic-specific adjustments
+        if "technical" in topic_lower or "process" in topic_lower:
+            if adjusted_analysis.get("format") == "timeline":
+                adjusted_analysis["confidence"] = min(adjusted_analysis.get("confidence", 0.5) + 0.1, 1.0)
+        
+        # Content length considerations
+        word_count = content_analysis.get("word_count", 0)
+        if word_count < 50:
+            if adjusted_analysis.get("format") == "timeline":
+                adjusted_analysis["confidence"] *= 0.8  # Reduce confidence for short content
+        elif word_count > 300:
+            if adjusted_analysis.get("format") in ["bullets", "boxes"]:
+                adjusted_analysis["confidence"] *= 0.9  # Slightly reduce for very long content
+        
+        return adjusted_analysis
     
     def _adjust_format_scores_for_flow(self, format_scores: Dict[str, float], slide_role: str, topic: str) -> Dict[str, float]:
         """Adjust format scores based on slide role and topic"""
@@ -361,10 +406,30 @@ class ContentFormatAnalyzer:
         }
     
     def _analyze_question_context(self, question: str) -> Dict[str, Any]:
-        """Analyze the question context for format clues"""
-        question_lower = question.lower()
+        """
+        Legacy compatibility wrapper - now uses Universal Question Analyzer
+        Maintained for backward compatibility with existing code
+        """
+        print(f"   📋 Legacy question context analysis (redirecting to Universal Analyzer)")
         
-        # Enhanced question type detection
+        # Use Universal Analyzer for better results
+        universal_result = universal_analyzer.analyze_question_comprehensive(question, content="")
+        
+        # Convert to legacy format for compatibility
+        format_scores = {
+            "bullet_points": 0.3,
+            "boxes": 0.3,
+            "table": 0.3,
+            "timeline": 0.3,
+            "paragraph": 0.3
+        }
+        
+        # Boost the detected format score
+        detected_format = universal_result.get("format", "paragraph")
+        if detected_format in format_scores:
+            format_scores[detected_format] = universal_result.get("confidence", 0.5)
+        
+        # Legacy question indicators (simplified)
         question_indicators = {
             "bullet_points": [
                 "what are", "list", "enumerate", "steps", "ways", "methods", "types", "kinds", 
@@ -393,12 +458,21 @@ class ContentFormatAnalyzer:
             ]
         }
         
+        question_lower = question.lower()
+        
+        # Legacy scoring for compatibility
         question_scores = {}
         for format_type, indicators in question_indicators.items():
             score = sum(1 for indicator in indicators if indicator in question_lower)
             question_scores[format_type] = score
         
-        return question_scores
+        return {
+            "format_scores": format_scores,
+            "question_scores": question_scores,
+            "universal_result": universal_result,
+            "detected_format": detected_format,
+            "confidence": universal_result.get("confidence", 0.5)
+        }
     
     def _calculate_format_scores(self, content_analysis: Dict, question_analysis: Dict) -> Dict[str, float]:
         """Calculate scores for each format based on content and question analysis"""

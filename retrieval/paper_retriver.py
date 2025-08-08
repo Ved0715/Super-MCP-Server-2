@@ -543,7 +543,7 @@ Use [Page X] format and bullet points where necessary.
             # Call the multimodal integrator to get results
             results = self.multimodal_integrator.query_multimodal_content(
                 query=query,
-                pdf_id=paper_id,
+                document_uuid=paper_id,
                 max_chunks= max_chunks
             )
 

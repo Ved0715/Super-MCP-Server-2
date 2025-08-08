@@ -38,23 +38,43 @@ class InlineMultimodalGenerator:
                         'page_number': chunk.get('page_number', 0)
                     })
                 
-                # Add image content
-                if chunk.get('contains_image') and chunk.get('image_url'):
-                    filtered_content['images'].append({
-                        'image_summary': chunk.get('image_summary', ''),
-                        's3_url': chunk.get('image_url', ''),
-                        'page_number': chunk.get('page_number', 0),
-                        'relevance_score': chunk.get('relevance_score', 0)
-                    })
+                # Add image content from arrays  
+                if chunk.get('contains_image') and chunk.get('image_s3_urls'):
+                    image_urls = chunk.get('image_s3_urls', [])
+                    image_summaries = chunk.get('image_summaries', [])
+                    image_ids = chunk.get('image_ids', [])
+                    
+                    # Process each image in the arrays
+                    for i, image_url in enumerate(image_urls):
+                        image_summary = image_summaries[i] if i < len(image_summaries) else ''
+                        image_id = image_ids[i] if i < len(image_ids) else f'img_{i}'
+                        
+                        filtered_content['images'].append({
+                            'image_summary': image_summary,
+                            's3_url': image_url,
+                            'image_id': image_id,
+                            'page_number': chunk.get('page_number', 0),
+                            'relevance_score': chunk.get('relevance_score', 0)
+                        })
                 
-                # Add table content
-                if chunk.get('contains_table') and chunk.get('table_content_json'):
-                    filtered_content['tables'].append({
-                        'summary': chunk.get('table_summary', ''),
-                        'table_content_json': chunk.get('table_content_json', '{}'),
-                        'page_number': chunk.get('page_number', 0),
-                        'relevance_score': chunk.get('relevance_score', 0)
-                    })
+                # Add table content from arrays
+                if chunk.get('contains_table') and chunk.get('table_content_jsons'):
+                    table_jsons = chunk.get('table_content_jsons', [])
+                    table_summaries = chunk.get('table_summaries', [])
+                    table_ids = chunk.get('table_ids', [])
+                    
+                    # Process each table in the arrays
+                    for i, table_json in enumerate(table_jsons):
+                        table_summary = table_summaries[i] if i < len(table_summaries) else ''
+                        table_id = table_ids[i] if i < len(table_ids) else f'table_{i}'
+                        
+                        filtered_content['tables'].append({
+                            'summary': table_summary,
+                            'table_content_json': table_json,
+                            'table_id': table_id,
+                            'page_number': chunk.get('page_number', 0),
+                            'relevance_score': chunk.get('relevance_score', 0)
+                        })
             
             # Use the existing response generation logic
             return self.generate_inline_response(query, filtered_content, conditional_instructions)

@@ -143,21 +143,21 @@ class MultimodalIntegrator:
             start_time = time.time()
             
             # Use original filename if provided, otherwise extract from path
-            pdf_name = original_filename if original_filename else Path(pdf_path).name
+            document_name = original_filename if original_filename else Path(pdf_path).name
             
-            # Generate PDF ID and namespace using the original filename
-            pdf_id = self._generate_pdf_id_from_name(pdf_name)
+            # Generate document UUID and namespace using the original filename
+            document_uuid = self._generate_pdf_id_from_name(document_name)
             
             # Check if already processed
-            if not force_reprocess and self._is_pdf_processed(pdf_id, pdf_name):
-                st.info(f"📋 PDF already processed: {pdf_name}")
+            if not force_reprocess and self._is_pdf_processed(document_uuid, document_name):
+                st.info(f"📋 PDF already processed: {document_name}")
                 return {
-                    'pdf_id': pdf_id,
+                    'document_uuid': document_uuid,
                     'cached': True,
                     'processing_time': 0
                 }
             
-            st.info(f"🚀 Starting complete multimodal processing: {pdf_name}")
+            st.info(f"🚀 Starting complete multimodal processing: {document_name}")
             
             with st.spinner("Parsing PDF with LlamaParse..."):
                 # Parse PDF with LlamaParse and capture job ID
@@ -171,21 +171,21 @@ class MultimodalIntegrator:
                 
                 # Extract images from LlamaParse results using proven methods
                 logger.info(f"Extracting images from LlamaParse JSON results using proven extraction")
-                extracted_count = self._extract_images_from_results(json_objs, pdf_id, pdf_name)
+                extracted_count = self._extract_images_from_results(json_objs, document_uuid, document_name)
                 logger.info(f"Enhanced image extraction completed: {extracted_count} images processed")
                 
-                logger.info(f"LlamaParse extraction complete for {pdf_name}")
+                logger.info(f"LlamaParse extraction complete for {document_name}")
             
             # Process all content types in parallel
             with st.spinner("Processing multimodal content..."):
                 processing_results = self._process_multimodal_content_parallel(
-                    json_objs, pdf_name, pdf_id
+                    json_objs, document_name, document_uuid
                 )
             
             # Create composite chunks combining all content types
             with st.spinner("Creating composite chunks..."):
                 composite_results = self._process_composite_chunks(
-                    json_objs, pdf_name, pdf_id, 
+                    json_objs, document_name, document_uuid, 
                     processing_results.get('images', {}), 
                     processing_results.get('tables', {})
                 )
@@ -195,7 +195,7 @@ class MultimodalIntegrator:
             self._display_processing_results(processing_results, time.time() - start_time)
             
             return {
-                'pdf_id': pdf_id,
+                'document_uuid': document_uuid,
                 'cached': False,
                 'processing_time': time.time() - start_time,
                 'results': processing_results
@@ -237,7 +237,7 @@ class MultimodalIntegrator:
         
         return results
     
-    def _process_composite_chunks(self, json_objs: List[Dict], pdf_name: str, pdf_id: str, 
+    def _process_composite_chunks(self, json_objs: List[Dict], document_name: str, document_uuid: str, 
                                 images_data: Dict, tables_data: Dict) -> Dict[str, Any]:
         """Create composite chunks combining text, images, and tables with unified embeddings."""
         try:
@@ -248,7 +248,7 @@ class MultimodalIntegrator:
             pages = json_data.get('pages', [])
             
             # Extract tables directly from LlamaParse JSON structure
-            tables_by_page = self._extract_tables_from_llamaparse_json(json_objs, pdf_id)
+            tables_by_page = self._extract_tables_from_llamaparse_json(json_objs, document_uuid)
             
             # Organize images by page
             images_by_page = self._organize_content_by_page(images_data.get('processed_images', []))
@@ -275,7 +275,7 @@ class MultimodalIntegrator:
                     # Create composite chunk
                     composite_chunk = self._create_composite_chunk(
                         text, page_images, page_tables, 
-                        pdf_id, pdf_name, page_num
+                        document_uuid, document_name, page_num
                     )
                     
                     if composite_chunk:
@@ -284,7 +284,7 @@ class MultimodalIntegrator:
                     logger.warning(f"Page {page_num}: Skipped due to insufficient text content ({text_length} chars)")
             
             # Store composite chunks in Pinecone
-            stored_count = self._store_composite_chunks_in_pinecone(composite_chunks, pdf_id)
+            stored_count = self._store_composite_chunks_in_pinecone(composite_chunks, document_uuid)
             
             logger.info(f"Composite chunk processing complete: {len(composite_chunks)} chunks, {stored_count} stored")
             
@@ -485,65 +485,81 @@ Summary (2-3 sentences, focus on main insights):"""
             return "Table data summary"
     
     def _create_composite_chunk(self, text: str, page_images: List[Dict], 
-                               page_tables: List[Dict], pdf_id: str, pdf_name: str, 
+                               page_tables: List[Dict], document_uuid: str, document_name: str, 
                                page_num: int) -> Optional[Dict]:
         """Create composite chunk with unified text embedding combining text + image OCR + table summaries. 
         
-        Uses the exact format: 'text [Image OCR: ...] [Image Keywords: ...] [Table Summary: ...]' 
+        Uses arrays for multiple images and tables per chunk.
         Implements comprehensive error handling with fallbacks.
         """
         try:
             # Generate unique chunk ID
-            chunk_id = f"{pdf_id}_p{page_num}_c{int(time.time() * 1000) % 100000}"
+            chunk_id = f"{document_uuid}_p{page_num}_c{int(time.time() * 1000) % 100000}"
             
             # Start building composite text with main content
             composite_text_parts = [text.strip()]
             
-            # Initialize lightweight metadata (content goes into vector embeddings)
+            # Initialize metadata with new array-based structure
             chunk_metadata = {
                 "chunk_id": chunk_id,
-                "source_document": pdf_name,
+                "document_name": document_name,
+                "document_uuid": document_uuid,
                 "page_number": page_num,
                 "contains_image": False,
-                "image_url": "",
-                "image_id": "",
                 "contains_table": False,
-                "table_id": "",
-                "pdf_id": pdf_id
+                "has_text": bool(text.strip()),
+                # Arrays for multiple images
+                "image_s3_urls": [],
+                "image_ids": [],
+                "image_summaries": [],
+                "image_count": 0,
+                # Arrays for multiple tables  
+                "table_content_jsons": [],
+                "table_ids": [],
+                "table_summaries": [],
+                "table_count": 0
             }
             
             # Process images with comprehensive error handling
             if page_images:
                 try:
-                    image_summaries = []
+                    image_summaries_for_text = []
                     image_keywords = []
                     
-                    for i, img_data in enumerate(page_images[:3]):  # Limit to 3 images per chunk
+                    for img_data in page_images:  # Process all images
                         try:
                             # Extract image summary with fallbacks
                             img_summary = self._extract_image_summary_with_fallbacks(img_data)
                             if img_summary:
-                                image_summaries.append(img_summary)
+                                image_summaries_for_text.append(img_summary)
+                                chunk_metadata["image_summaries"].append(img_summary)
                             
                             # Extract keywords with fallbacks
                             img_keywords = self._extract_image_keywords_with_fallbacks(img_data)
                             if img_keywords:
                                 image_keywords.extend(img_keywords)
                             
-                            # Update metadata with first image details (store summary for context)
-                            if not chunk_metadata["contains_image"]:
-                                chunk_metadata["contains_image"] = True
-                                chunk_metadata["image_url"] = img_data.get('s3_url', '') or img_data.get('local_path', '')
-                                chunk_metadata["image_id"] = img_data.get('image_id', '')
-                                chunk_metadata["image_summary"] = img_summary  # Store for UI context
+                            # Add image data to arrays
+                            img_url = img_data.get('s3_url', '') or img_data.get('local_path', '')
+                            img_id = img_data.get('image_id', '')
+                            
+                            if img_url:
+                                chunk_metadata["image_s3_urls"].append(img_url)
+                            if img_id:
+                                chunk_metadata["image_ids"].append(img_id)
                                 
                         except Exception as e:
                             logger.warning(f"Error processing image in chunk {chunk_id}: {e}")
                             continue
                     
+                    # Update metadata flags and counts
+                    if chunk_metadata["image_s3_urls"]:
+                        chunk_metadata["contains_image"] = True
+                        chunk_metadata["image_count"] = len(chunk_metadata["image_s3_urls"])
+                    
                     # Add image information to composite text using exact format
-                    if image_summaries:
-                        composite_text_parts.append(f"[Image OCR: {' '.join(image_summaries)}]")
+                    if image_summaries_for_text:
+                        composite_text_parts.append(f"[Image OCR: {' '.join(image_summaries_for_text)}]")
                     
                     if image_keywords:
                         # Remove duplicates and limit keywords
@@ -557,34 +573,40 @@ Summary (2-3 sentences, focus on main insights):"""
             # Process tables with comprehensive error handling
             if page_tables:
                 try:
-                    table_summaries = []
+                    table_summaries_for_text = []
                     
-                    for table_data in page_tables[:2]:  # Limit to 2 tables per chunk
+                    for table_data in page_tables:  # Process all tables
                         try:
                             # Use pre-extracted table data from LlamaParse
                             table_summary = table_data.get('table_summary', '')
                             table_json = table_data.get('table_content_json', '')
+                            table_id = table_data.get('table_id', '')
                             
                             if table_summary:
-                                table_summaries.append(table_summary)
+                                table_summaries_for_text.append(table_summary)
+                                chunk_metadata["table_summaries"].append(table_summary)
                             
-                            # Update metadata with first table details (store JSON for UI display)
-                            if not chunk_metadata["contains_table"]:
-                                chunk_metadata["contains_table"] = True
-                                chunk_metadata["table_id"] = table_data.get('table_id', '')
-                                chunk_metadata["table_content_json"] = table_json  # Store for UI display
-                                chunk_metadata["table_summary"] = table_summary  # Store for UI display
+                            if table_json:
+                                chunk_metadata["table_content_jsons"].append(table_json)
                                 
-                                # Log table extraction for debugging
-                                logger.info(f"Added table to chunk {chunk_id}: {table_data.get('table_id', '')} with {len(table_json)} chars JSON")
+                            if table_id:
+                                chunk_metadata["table_ids"].append(table_id)
+                                
+                            # Log table extraction for debugging
+                            logger.info(f"Added table to chunk {chunk_id}: {table_id} with {len(table_json)} chars JSON")
                                 
                         except Exception as e:
                             logger.warning(f"Error processing table in chunk {chunk_id}: {e}")
                             continue
                     
+                    # Update metadata flags and counts
+                    if chunk_metadata["table_content_jsons"]:
+                        chunk_metadata["contains_table"] = True
+                        chunk_metadata["table_count"] = len(chunk_metadata["table_content_jsons"])
+                    
                     # Add table information to composite text using exact format
-                    if table_summaries:
-                        composite_text_parts.append(f"[Table Summary: {' | '.join(table_summaries)}]")
+                    if table_summaries_for_text:
+                        composite_text_parts.append(f"[Table Summary: {' | '.join(table_summaries_for_text)}]")
                         
                 except Exception as e:
                     logger.error(f"Error processing tables for chunk {chunk_id}: {e}")
@@ -619,19 +641,23 @@ Summary (2-3 sentences, focus on main insights):"""
             # Return basic fallback chunk with just text
             try:
                 return {
-                    "chunk_id": f"{pdf_id}_p{page_num}_fallback",
-                    "source_document": pdf_name,
+                    "chunk_id": f"{document_uuid}_p{page_num}_fallback",
+                    "document_name": document_name,
+                    "document_uuid": document_uuid,
                     "page_number": page_num,
                     "composite_text": text.strip(),
                     "contains_image": False,
-                    "image_url": "",
-                    "image_id": "",
-                    "image_summary": "",
                     "contains_table": False,
-                    "table_id": "",
-                    "table_content_json": "",
-                    "table_summary": "",
-                    "pdf_id": pdf_id,
+                    "has_text": bool(text.strip()),
+                    # Empty arrays for fallback
+                    "image_s3_urls": [],
+                    "image_ids": [],
+                    "image_summaries": [],
+                    "image_count": 0,
+                    "table_content_jsons": [],
+                    "table_ids": [],
+                    "table_summaries": [],
+                    "table_count": 0,
                     "processed_timestamp": datetime.now().isoformat(),
                     "fallback_chunk": True
                 }
@@ -1015,7 +1041,7 @@ Summary (2-3 sentences, focus on main content and purpose):"""
             logger.warning(f"Error extracting table JSON: {e}")
             return "{}"
     
-    def _store_composite_chunks_in_pinecone(self, composite_chunks: List[Dict], pdf_id: str) -> int:
+    def _store_composite_chunks_in_pinecone(self, composite_chunks: List[Dict], document_uuid: str) -> int:
         """Store composite chunks in Pinecone with unified embeddings and comprehensive error handling."""
         if not composite_chunks:
             logger.warning("No composite chunks to store")
@@ -1041,27 +1067,29 @@ Summary (2-3 sentences, focus on main content and purpose):"""
                         logger.warning(f"Failed to generate embedding for chunk {chunk.get('chunk_id')}")
                         continue
                     
-                    # Create lightweight metadata (content is in vector embeddings)
+                    # Create metadata using new structure with arrays
                     metadata = {
-                        'content_type': 'composite_chunk',
                         'chunk_id': chunk.get('chunk_id', ''),
-                        'pdf_id': pdf_id,
-                        'source_document': chunk.get('source_document', '')[:100],
+                        'document_uuid': document_uuid,
+                        'document_name': chunk.get('document_name', ''),
                         'page_number': chunk.get('page_number', 0),
+                        'has_text': chunk.get('has_text', True),
                         
-                        # Lightweight flags and IDs
+                        # Image arrays
                         'contains_image': chunk.get('contains_image', False),
-                        'image_url': chunk.get('image_url', '')[:500],
-                        'image_id': chunk.get('image_id', ''),
-                        'image_summary': chunk.get('image_summary', '')[:1000],  # Store for UI context
+                        'image_count': chunk.get('image_count', 0),
+                        'image_s3_urls': chunk.get('image_s3_urls', []),
+                        'image_ids': chunk.get('image_ids', []),
+                        'image_summaries': chunk.get('image_summaries', []),
                         
+                        # Table arrays  
                         'contains_table': chunk.get('contains_table', False),
-                        'table_id': chunk.get('table_id', ''),
-                        'table_content_json': chunk.get('table_content_json', '')[:8000],  # Store table JSON for UI
-                        'table_summary': chunk.get('table_summary', '')[:1000],  # Store table summary for UI
+                        'table_count': chunk.get('table_count', 0),
+                        'table_content_jsons': chunk.get('table_content_jsons', []),
+                        'table_ids': chunk.get('table_ids', []),
+                        'table_summaries': chunk.get('table_summaries', []),
                         
                         'processed_timestamp': chunk.get('processed_timestamp', ''),
-                        'fallback_chunk': chunk.get('fallback_chunk', False),
                         
                         # Store composite text as 'text' field for compatibility
                         'text': composite_text[:10000]  # Store composite text for query access
@@ -1090,21 +1118,21 @@ Summary (2-3 sentences, focus on main content and purpose):"""
                         batch = vectors[i:i + batch_size]
                         
                         try:
-                            self.index.upsert(vectors=batch, namespace=pdf_id)
+                            self.index.upsert(vectors=batch, namespace=document_uuid)
                             stored_count += len(batch)
-                            logger.info(f"Stored batch {i//batch_size + 1}: {len(batch)} vectors in namespace {pdf_id}")
+                            logger.info(f"Stored batch {i//batch_size + 1}: {len(batch)} vectors in namespace {document_uuid}")
                             
                         except Exception as batch_error:
                             logger.error(f"Error storing batch {i//batch_size + 1}: {batch_error}")
                             # Try individual vectors in this batch
                             for vector in batch:
                                 try:
-                                    self.index.upsert(vectors=[vector], namespace=pdf_id)
+                                    self.index.upsert(vectors=[vector], namespace=document_uuid)
                                     stored_count += 1
                                 except Exception as single_error:
                                     logger.error(f"Error storing single vector {vector['id']}: {single_error}")
                     
-                    logger.info(f"Successfully stored {stored_count}/{len(vectors)} composite chunk vectors in Pinecone namespace: {pdf_id}")
+                    logger.info(f"Successfully stored {stored_count}/{len(vectors)} composite chunk vectors in Pinecone namespace: {document_uuid}")
                     
                 except Exception as e:
                     logger.error(f"Critical error during Pinecone upsert: {e}")
@@ -1166,21 +1194,21 @@ Summary (2-3 sentences, focus on main content and purpose):"""
         from config import generate_pdf_id_from_name
         return generate_pdf_id_from_name(pdf_name)
     
-    def _is_pdf_processed(self, pdf_id: str, pdf_name: str = None) -> bool:
+    def _is_pdf_processed(self, document_uuid: str, document_name: str = None) -> bool:
         """Check if PDF has been fully processed by checking BOTH S3 storage AND Pinecone vectors."""
         try:
             # Check Pinecone namespace to see if any content exists
             namespace_stats = self.index.describe_index_stats()
             namespaces = namespace_stats.get('namespaces', {})
             
-            if pdf_id in namespaces:
-                vector_count = namespaces[pdf_id].get('vector_count', 0)
+            if document_uuid in namespaces:
+                vector_count = namespaces[document_uuid].get('vector_count', 0)
                 if vector_count > 0:
-                    logger.info(f"PDF {pdf_id} already processed ({vector_count} vectors in Pinecone)")
+                    logger.info(f"Document {document_uuid} already processed ({vector_count} vectors in Pinecone)")
                     return True
             
-            # If no vectors in Pinecone, PDF is not fully processed regardless of S3 files
-            logger.info(f"PDF {pdf_id} not found in Pinecone namespaces - needs processing")
+            # If no vectors in Pinecone, document is not fully processed 
+            logger.info(f"Document {document_uuid} not found in Pinecone namespaces - needs processing")
             return False
             
         except Exception as e:
@@ -1204,7 +1232,7 @@ Summary (2-3 sentences, focus on main content and purpose):"""
             logger.error(f"Error generating embedding: {e}")
             return [0.0] * 3072
     
-    def _handle_specific_content_requests(self, query: str, pdf_id: str) -> Optional[Dict[str, Any]]:
+    def _handle_specific_content_requests(self, query: str, document_uuid: str) -> Optional[Dict[str, Any]]:
         """Handle specific table/image requests like 'show me table 1' or 'image on page 3'."""
         import re
         query_lower = query.lower().strip()
@@ -1232,7 +1260,7 @@ Summary (2-3 sentences, focus on main content and purpose):"""
             if match:
                 target_number = int(match.group(1))
                 logger.info(f"Detected specific table request: Table {target_number}")
-                return self._find_specific_table(pdf_id, target_number, query)
+                return self._find_specific_table(document_uuid, target_number, query)
         
         # Check for image requests
         for pattern in image_patterns:
@@ -1240,11 +1268,11 @@ Summary (2-3 sentences, focus on main content and purpose):"""
             if match:
                 target_number = int(match.group(1))
                 logger.info(f"Detected specific image request: Image {target_number}")
-                return self._find_specific_image(pdf_id, target_number, query)
+                return self._find_specific_image(document_uuid, target_number, query)
         
         return None
     
-    def _find_specific_table(self, pdf_id: str, table_number: int, query: str) -> Dict[str, Any]:
+    def _find_specific_table(self, document_uuid: str, table_number: int, query: str) -> Dict[str, Any]:
         """Find a specific table by number using metadata search."""
         try:
             # Search for tables with matching table IDs
@@ -1252,7 +1280,7 @@ Summary (2-3 sentences, focus on main content and purpose):"""
             all_chunks = self.index.query(
                 vector=[0] * 3072,  # Dummy vector - we only care about metadata
                 top_k=1000,  # Get all chunks
-                namespace=pdf_id,
+                namespace=document_uuid,
                 include_metadata=True,
                 include_values=False
             )
@@ -1262,20 +1290,26 @@ Summary (2-3 sentences, focus on main content and purpose):"""
             for chunk in all_chunks.matches:
                 metadata = chunk.metadata
                 if metadata.get('contains_table', False):
-                    table_id = metadata.get('table_id', '')
+                    table_ids = metadata.get('table_ids', [])
+                    table_content_jsons = metadata.get('table_content_jsons', [])
+                    table_summaries = metadata.get('table_summaries', [])
                     page_number = metadata.get('page_number', 0)
                     
-                    # Extract table number from table_id (e.g., "doc_p3_table1" -> 1)
-                    table_match = re.search(r'table(\d+)', table_id)
-                    if table_match:
-                        table_num = int(table_match.group(1))
-                        if table_num == table_number:
-                            candidate_tables.append({
-                                'chunk': chunk,
-                                'table_number': table_num,
-                                'page_number': page_number,
-                                'table_id': table_id
-                            })
+                    # Check each table in the arrays
+                    for i, table_id in enumerate(table_ids):
+                        # Extract table number from table_id (e.g., "doc_p3_table1" -> 1)
+                        table_match = re.search(r'table(\d+)', table_id)
+                        if table_match:
+                            table_num = int(table_match.group(1))
+                            if table_num == table_number:
+                                candidate_tables.append({
+                                    'chunk': chunk,
+                                    'table_number': table_num,
+                                    'page_number': page_number,
+                                    'table_id': table_id,
+                                    'table_content_json': table_content_jsons[i] if i < len(table_content_jsons) else '',
+                                    'table_summary': table_summaries[i] if i < len(table_summaries) else ''
+                                })
             
             if not candidate_tables:
                 # Fallback: try to find table by sequence (first table = table 1, etc.)
@@ -1321,12 +1355,18 @@ Summary (2-3 sentences, focus on main content and purpose):"""
                 'page_number': chunk.metadata.get('page_number', 0),
                 'text': f"Here is Table {table_number} from page {page_num}:",  # Minimal text
                 'contains_image': False,  # Force no images
-                'image_url': '',
-                'image_summary': '',
+                'image_s3_urls': [],
+                'image_ids': [],
+                'image_summaries': [],
+                'image_count': 0,
                 'contains_table': True,
-                'table_content_json': chunk.metadata.get('table_content_json', ''),
-                'table_summary': chunk.metadata.get('table_summary', ''),
-                'source_document': chunk.metadata.get('source_document', '')
+                'table_content_jsons': [best_match.get('table_content_json', '')],
+                'table_ids': [best_match.get('table_id', '')],
+                'table_summaries': [best_match.get('table_summary', '')],
+                'table_count': 1,
+                'document_name': chunk.metadata.get('document_name', ''),
+                'document_uuid': chunk.metadata.get('document_uuid', ''),
+                'has_text': True
             }
             
             # Generate response using the inline generator
@@ -1347,14 +1387,14 @@ Summary (2-3 sentences, focus on main content and purpose):"""
                 'performance_metrics': {'query_time': 0.1, 'total_results': 0, 'relevant_chunks': 0, 'search_strategy': 'metadata'}
             }
     
-    def _find_specific_image(self, pdf_id: str, image_number: int, query: str) -> Dict[str, Any]:
+    def _find_specific_image(self, document_uuid: str, image_number: int, query: str) -> Dict[str, Any]:
         """Find a specific image by number using metadata search."""
         try:
             # Similar logic to _find_specific_table but for images
             all_chunks = self.index.query(
                 vector=[0] * 3072,
                 top_k=1000,
-                namespace=pdf_id,
+                namespace=document_uuid,
                 include_metadata=True,
                 include_values=False
             )
@@ -1447,14 +1487,14 @@ Summary (2-3 sentences, focus on main content and purpose):"""
                 'performance_metrics': {'query_time': 0.1, 'total_results': 0, 'relevant_chunks': 0, 'search_strategy': 'metadata'}
             }
 
-    def query_multimodal_content(self, query: str, pdf_id: str, 
+    def query_multimodal_content(self, query: str, document_uuid: str, 
                                max_chunks: int = 5, **kwargs) -> Dict[str, Any]:
         """Query composite chunks using single-pass retrieval with full content."""
         try:
             start_time = time.time()
             
             # Check for specific table/image requests first
-            specific_content_results = self._handle_specific_content_requests(query, pdf_id)
+            specific_content_results = self._handle_specific_content_requests(query, document_uuid)
             if specific_content_results:
                 logger.info(f"Found specific content match for query: {query}")
                 return specific_content_results
@@ -1469,12 +1509,12 @@ Summary (2-3 sentences, focus on main content and purpose):"""
             chunk_results = self.index.query(
                 vector=query_embedding,
                 top_k=search_params['top_k'],
-                namespace=pdf_id,
+                namespace=document_uuid,
                 include_metadata=True,
                 include_values=False
             )
             
-            logger.info(f"Composite chunk query returned {len(chunk_results.matches)} matches for namespace '{pdf_id}'")
+            logger.info(f"Composite chunk query returned {len(chunk_results.matches)} matches for namespace '{document_uuid}'")
             
             # Enhanced filtering with multi-stage intelligent selection
             relevant_chunks = self._filter_chunks_with_enhanced_scoring(
@@ -1635,17 +1675,23 @@ Summary (2-3 sentences, focus on main content and purpose):"""
                     'page_number': match.metadata.get('page_number', 0),
                     'text': match.metadata.get('text', ''),
                     
-                    # Image information
+                    # Image information with arrays
                     'contains_image': match.metadata.get('contains_image', False),
-                    'image_url': match.metadata.get('image_url', ''),
-                    'image_summary': match.metadata.get('image_summary', ''),
+                    'image_count': match.metadata.get('image_count', 0),
+                    'image_s3_urls': match.metadata.get('image_s3_urls', []),
+                    'image_ids': match.metadata.get('image_ids', []),
+                    'image_summaries': match.metadata.get('image_summaries', []),
                     
-                    # Table information
+                    # Table information with arrays
                     'contains_table': match.metadata.get('contains_table', False),
-                    'table_content_json': match.metadata.get('table_content_json', ''),
-                    'table_summary': match.metadata.get('table_summary', ''),
+                    'table_count': match.metadata.get('table_count', 0),
+                    'table_content_jsons': match.metadata.get('table_content_jsons', []),
+                    'table_ids': match.metadata.get('table_ids', []),
+                    'table_summaries': match.metadata.get('table_summaries', []),
                     
-                    'source_document': match.metadata.get('source_document', '')
+                    'document_name': match.metadata.get('document_name', ''),
+                    'document_uuid': match.metadata.get('document_uuid', ''),
+                    'has_text': match.metadata.get('has_text', True)
                 }
                 potential_chunks.append(chunk_data)
         

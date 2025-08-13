@@ -1855,29 +1855,29 @@ RELEVANCE SCORES:
         
         # Apply strategy-specific selection logic
         if selection_strategy == 'comprehensive':
-            # Select more content for comprehensive queries
-            text_limit = content_limits.get('text_sections', [8, 12])[1]  # Use upper bound
-            image_limit = content_limits.get('images', [2, 4])[1]
-            table_limit = content_limits.get('tables', [2, 3])[1]
+            # Select more content for comprehensive queries - Updated fallback limits for smaller chunks
+            text_limit = content_limits.get('text_sections', [25, 40])[1]  # Updated from [8,12] to [25,40]
+            image_limit = content_limits.get('images', [4, 8])[1]          # Updated from [2,4] to [4,8]
+            table_limit = content_limits.get('tables', [3, 6])[1]         # Updated from [2,3] to [3,6]
         elif selection_strategy == 'focused':
-            # Select focused content for specific queries
-            text_limit = content_limits.get('text_sections', [3, 6])[0]  # Use lower bound
-            image_limit = content_limits.get('images', [1, 2])[0]
-            table_limit = content_limits.get('tables', [1, 2])[0]
+            # Select focused content for specific queries - Updated fallback limits for smaller chunks
+            text_limit = content_limits.get('text_sections', [12, 18])[0]  # Updated from [3,6] to [12,18]
+            image_limit = content_limits.get('images', [2, 4])[0]          # Updated from [1,2] to [2,4]
+            table_limit = content_limits.get('tables', [1, 3])[0]         # Updated from [1,2] to [1,3]
         elif selection_strategy == 'visual':
-            # Prioritize visual content
-            text_limit = content_limits.get('text_sections', [2, 4])[0]
-            image_limit = content_limits.get('images', [3, 5])[1]  # More images
-            table_limit = content_limits.get('tables', [2, 3])[1]
+            # Prioritize visual content - Updated fallback limits for smaller chunks
+            text_limit = content_limits.get('text_sections', [8, 15])[0]   # Updated from [2,4] to [8,15]
+            image_limit = content_limits.get('images', [6, 12])[1]         # Updated from [3,5] to [6,12]
+            table_limit = content_limits.get('tables', [2, 4])[1]         # Updated from [2,3] to [2,4]
         elif selection_strategy == 'textual':
-            # Prioritize text content
-            text_limit = content_limits.get('text_sections', [6, 10])[1]  # More text
-            image_limit = content_limits.get('images', [1, 2])[0]
-            table_limit = content_limits.get('tables', [1, 2])[0]
+            # Prioritize text content - Updated fallback limits for smaller chunks
+            text_limit = content_limits.get('text_sections', [20, 35])[1]  # Updated from [6,10] to [20,35]
+            image_limit = content_limits.get('images', [2, 4])[0]          # Updated from [1,2] to [2,4]
+            table_limit = content_limits.get('tables', [2, 4])[0]         # Updated from [1,2] to [2,4]
         else:  # balanced or default
-            text_limit = content_limits.get('text_sections', [4, 6])[1]
-            image_limit = content_limits.get('images', [2, 3])[1]
-            table_limit = content_limits.get('tables', [1, 2])[1]
+            text_limit = content_limits.get('text_sections', [15, 25])[1]  # Updated from [4,6] to [15,25]
+            image_limit = content_limits.get('images', [3, 6])[1]          # Updated from [2,3] to [3,6]
+            table_limit = content_limits.get('tables', [2, 4])[1]         # Updated from [1,2] to [2,4]
         
         # Enhanced sorting: prioritize chunks with relevant images for image-focused queries
         if 'images' in priority_order and priority_order.index('images') <= 1:  # Images are high priority
@@ -1952,8 +1952,121 @@ RELEVANCE SCORES:
         logger.info(f"AI selection strategy '{selection_strategy}' applied: {len(selected_chunks)} chunks selected (Text: {text_selected}, Images: {image_selected}, Tables: {table_selected})")
         logger.debug(f"Selection reasoning: {reasoning}")
         
-        return selected_chunks
+        # Phase 2 Enhancement: Apply semantic clustering to improve coherence
+        clustered_chunks = self._apply_semantic_clustering(selected_chunks, selection_strategy)
+        
+        return clustered_chunks
     
+    def _apply_semantic_clustering(self, selected_chunks: List[Dict], selection_strategy: str) -> List[Dict]:
+        """Phase 2 Enhancement: Apply semantic clustering to group related chunks for better coherence."""
+        if len(selected_chunks) <= 3:
+            return selected_chunks  # No clustering needed for small sets
+        
+        try:
+            # Group chunks by page number to maintain page-based coherence
+            page_groups = {}
+            for chunk in selected_chunks:
+                page_num = chunk.get('page_number', 0)
+                if page_num not in page_groups:
+                    page_groups[page_num] = []
+                page_groups[page_num].append(chunk)
+            
+            # Apply clustering logic based on strategy
+            if selection_strategy in ['comprehensive', 'textual']:
+                # For comprehensive queries, prioritize page-based grouping for narrative flow
+                clustered_chunks = self._cluster_by_page_coherence(page_groups, selected_chunks)
+            elif selection_strategy in ['focused', 'visual']:
+                # For focused queries, prioritize relevance over page grouping
+                clustered_chunks = self._cluster_by_relevance_similarity(selected_chunks)
+            else:  # balanced
+                # Balanced approach: moderate clustering with relevance consideration
+                clustered_chunks = self._cluster_balanced_approach(page_groups, selected_chunks)
+            
+            logger.info(f"Semantic clustering applied ({selection_strategy}): {len(selected_chunks)} → {len(clustered_chunks)} chunks")
+            return clustered_chunks
+            
+        except Exception as e:
+            logger.error(f"Error in semantic clustering: {e}")
+            return selected_chunks  # Fallback to original selection
+    
+    def _cluster_by_page_coherence(self, page_groups: Dict, all_chunks: List[Dict]) -> List[Dict]:
+        """Cluster chunks prioritizing page-based narrative coherence."""
+        clustered_result = []
+        
+        # Sort pages by average relevance score
+        page_scores = {}
+        for page_num, chunks in page_groups.items():
+            avg_score = sum(c['relevance_score'] for c in chunks) / len(chunks)
+            page_scores[page_num] = avg_score
+        
+        # Process pages in order of relevance
+        for page_num in sorted(page_scores.keys(), key=page_scores.get, reverse=True):
+            page_chunks = page_groups[page_num]
+            
+            # Limit chunks per page to avoid over-concentration (Phase 2 improvement)
+            max_chunks_per_page = 4 if len(page_groups) > 3 else 6
+            if len(page_chunks) > max_chunks_per_page:
+                # Keep highest scoring chunks from this page
+                page_chunks = sorted(page_chunks, key=lambda x: x['relevance_score'], reverse=True)[:max_chunks_per_page]
+            
+            clustered_result.extend(page_chunks)
+        
+        return clustered_result
+    
+    def _cluster_by_relevance_similarity(self, chunks: List[Dict]) -> List[Dict]:
+        """Cluster chunks by relevance similarity for focused queries."""
+        if len(chunks) <= 5:
+            return sorted(chunks, key=lambda x: x['relevance_score'], reverse=True)
+        
+        # Apply more aggressive filtering for focused queries
+        threshold_score = sorted([c['relevance_score'] for c in chunks], reverse=True)[len(chunks)//2]
+        
+        high_relevance_chunks = [c for c in chunks if c['relevance_score'] >= threshold_score]
+        
+        # Ensure diversity by limiting chunks from same page
+        page_counts = {}
+        result = []
+        
+        for chunk in sorted(high_relevance_chunks, key=lambda x: x['relevance_score'], reverse=True):
+            page_num = chunk.get('page_number', 0)
+            page_counts[page_num] = page_counts.get(page_num, 0) + 1
+            
+            # Limit to max 2 chunks per page for focused queries
+            if page_counts[page_num] <= 2:
+                result.append(chunk)
+        
+        return result
+    
+    def _cluster_balanced_approach(self, page_groups: Dict, all_chunks: List[Dict]) -> List[Dict]:
+        """Balanced clustering approach combining page coherence and relevance."""
+        if len(all_chunks) <= 8:
+            return sorted(all_chunks, key=lambda x: x['relevance_score'], reverse=True)
+        
+        # Target about 60% of original chunks for better coherence
+        target_count = max(6, int(len(all_chunks) * 0.6))
+        
+        result = []
+        chunks_per_page = {}
+        
+        # Calculate chunks per page limit
+        num_pages = len(page_groups)
+        max_per_page = max(2, target_count // num_pages) if num_pages > 0 else 3
+        
+        # Sort all chunks by relevance first
+        sorted_chunks = sorted(all_chunks, key=lambda x: x['relevance_score'], reverse=True)
+        
+        for chunk in sorted_chunks:
+            if len(result) >= target_count:
+                break
+                
+            page_num = chunk.get('page_number', 0)
+            page_count = chunks_per_page.get(page_num, 0)
+            
+            if page_count < max_per_page:
+                result.append(chunk)
+                chunks_per_page[page_num] = page_count + 1
+        
+        return result
     
     def _should_include_chunk(self, match, include_content: List[str], positive_keywords: List[str]) -> bool:
         """Check if chunk should be included based on conditional instructions."""
@@ -2353,13 +2466,13 @@ Think step-by-step about what the user really wants and how to optimally retriev
                                   is_analytical: bool, is_visual_focused: bool) -> Dict[str, List[int]]:
         """Dynamically determine content limits based on response scope and query characteristics."""
         
-        # Base limits for different response scopes
+        # Base limits for different response scopes (Updated for smaller 600-char chunks vs previous 2000+ char chunks)
         base_limits = {
-            'minimal': {'text': [1, 1], 'images': [0, 1], 'tables': [0, 1]},
-            'concise': {'text': [1, 2], 'images': [0, 1], 'tables': [0, 1]}, 
-            'standard': {'text': [2, 4], 'images': [1, 2], 'tables': [0, 2]},
-            'detailed': {'text': [3, 6], 'images': [1, 3], 'tables': [1, 2]},
-            'comprehensive': {'text': [4, 8], 'images': [2, 4], 'tables': [1, 3]}
+            'minimal': {'text': [3, 6], 'images': [0, 2], 'tables': [0, 1]},         # 3-6x increase for text
+            'concise': {'text': [6, 12], 'images': [1, 2], 'tables': [0, 2]},       # 6x increase for text  
+            'standard': {'text': [12, 20], 'images': [2, 4], 'tables': [1, 3]},     # 6-5x increase for text
+            'detailed': {'text': [18, 30], 'images': [3, 6], 'tables': [2, 4]},     # 6-5x increase for text
+            'comprehensive': {'text': [25, 40], 'images': [4, 8], 'tables': [3, 6]} # 6-5x increase for text
         }
         
         # Get base limits
@@ -2367,20 +2480,20 @@ Think step-by-step about what the user really wants and how to optimally retriev
         
         # Adjust based on query characteristics
         if is_comprehensive and response_scope not in ['minimal', 'concise']:
-            # Increase limits for comprehensive queries (unless explicitly minimal)
-            content_limits['text'][1] = min(content_limits['text'][1] + 2, 10)
-            content_limits['images'][1] = min(content_limits['images'][1] + 1, 5)
-            content_limits['tables'][1] = min(content_limits['tables'][1] + 1, 4)
+            # Increase limits for comprehensive queries (unless explicitly minimal) - Updated caps for smaller chunks
+            content_limits['text'][1] = min(content_limits['text'][1] + 10, 50)  # Increased from 10 to 50
+            content_limits['images'][1] = min(content_limits['images'][1] + 2, 10)  # Increased from 5 to 10
+            content_limits['tables'][1] = min(content_limits['tables'][1] + 2, 8)   # Increased from 4 to 8
             
         elif is_analytical:
-            # Prioritize text and tables for analytical queries
-            content_limits['text'][1] = min(content_limits['text'][1] + 1, 8)
-            content_limits['tables'][1] = min(content_limits['tables'][1] + 1, 3)
+            # Prioritize text and tables for analytical queries - Updated caps for smaller chunks
+            content_limits['text'][1] = min(content_limits['text'][1] + 5, 35)    # Increased from 8 to 35
+            content_limits['tables'][1] = min(content_limits['tables'][1] + 2, 6) # Increased from 3 to 6
             
         elif is_visual_focused:
-            # Prioritize images for visual queries
-            content_limits['images'][0] = max(content_limits['images'][0], 1)
-            content_limits['images'][1] = min(content_limits['images'][1] + 2, 6)
+            # Prioritize images for visual queries - Updated caps for smaller chunks
+            content_limits['images'][0] = max(content_limits['images'][0], 2)     # Increased minimum from 1 to 2
+            content_limits['images'][1] = min(content_limits['images'][1] + 3, 12) # Increased from 6 to 12
             
         # Ensure minimums don't exceed maximums
         for content_type in content_limits:
@@ -2853,9 +2966,10 @@ Think step-by-step about what the user really wants and how to optimally retriev
             return selected[:8]
     
     def _add_visual_content_to_response(self, chunks: List[Dict], inline_elements: List[Dict], used_content_ids: set, query: str):
-        """Add visual content to response with smart content type prioritization."""
-        added_images = set()  # Track unique images by URL
-        added_tables = set()  # Track unique tables by content hash
+        """Phase 2 Enhanced: Add visual content with improved deduplication for smaller chunks."""
+        added_images = set()  # Track unique images by URL and ID
+        added_tables = set()  # Track unique tables by content hash and ID
+        processed_chunk_ids = set()  # Track processed chunks to avoid double processing
         
         # Determine if this is a table-focused query
         table_keywords = ['table', 'data', 'chart', 'graph', 'figure', 'statistics', 'numbers', 'values', 'columns', 'rows']
@@ -2869,10 +2983,20 @@ Think step-by-step about what the user really wants and how to optimally retriev
         show_all_keywords = ['show all', 'all the', 'every', 'complete', 'entire', 'full', 'comprehensive']
         is_show_all_query = any(keyword in query_lower for keyword in show_all_keywords)
         
-        # Determine chunk limit based on query type
-        chunk_limit = len(chunks) if is_show_all_query else 3
+        # Phase 2 Enhancement: Determine chunk limit based on query type with better scaling
+        if is_show_all_query:
+            chunk_limit = len(chunks)
+        elif is_table_query:
+            chunk_limit = min(6, len(chunks))  # More chunks for table queries
+        else:
+            chunk_limit = min(4, len(chunks))  # Slightly increased default limit
         
         for chunk in chunks[:chunk_limit]:  # Use dynamic limit
+            # Skip if we've already processed this chunk to avoid duplicates
+            chunk_id = chunk.get('chunk_id', f"chunk_{chunk.get('page_number', 0)}")
+            if chunk_id in processed_chunk_ids:
+                continue
+            processed_chunk_ids.add(chunk_id)
             # For table queries, prioritize tables over images
             if is_table_query and chunk['contains_table'] and chunk.get('table_content_json'):
                 table_id = chunk.get('table_id', '')
@@ -2895,39 +3019,56 @@ Think step-by-step about what the user really wants and how to optimally retriev
                 else:
                     logger.info(f"Skipped duplicate table: {table_id}")
             
-            # For non-table queries, add images
+            # For non-table queries, add images (Phase 2 enhanced deduplication)
             elif not is_table_query and chunk['contains_image']:
-                image_url = chunk.get('image_url', '')
+                # Handle both single image_url and multiple image URLs
+                image_urls = []
+                image_summaries = []
+                image_ids = []
                 
-                if image_url and image_url not in added_images:
-                    inline_elements.append({
-                        'type': 'image',
-                        'data': {
-                            'display_url': image_url,
-                            's3_url': image_url,  # Use image_url as S3 URL
-                            'local_path': '',  # No longer stored in metadata
-                            'page_number': chunk['page_number'],
-                            'relevance_score': chunk['relevance_score'],
-                            'image_summary': chunk.get('image_summary', ''),  # Use stored summary
-                            'ocr_text': '',  # Will be retrieved from original data if needed
-                            'image_id': chunk.get('image_id', ''),
-                            'pdf_id': chunk.get('pdf_id', '')
-                        }
-                    })
-                    added_images.add(image_url)
-                    page_num = chunk['page_number']
-                    # Convert page number to integer if it's a number
-                    if isinstance(page_num, (int, float)):
-                        page_num = int(page_num)
-                    logger.info(f"Added image to response: {image_url} from page {page_num}")
-                elif image_url in added_images:
-                    logger.info(f"Skipped duplicate image: {image_url}")
-                else:
-                    page_num = chunk['page_number']
-                    # Convert page number to integer if it's a number
-                    if isinstance(page_num, (int, float)):
-                        page_num = int(page_num)
-                    logger.warning(f"Chunk contains image but no URL found for page {page_num}")
+                # Check for single image format (legacy)
+                if chunk.get('image_url'):
+                    image_urls = [chunk.get('image_url')]
+                    image_summaries = [chunk.get('image_summary', '')]
+                    image_ids = [chunk.get('image_id', f"img_{chunk.get('page_number', 0)}")]
+                
+                # Check for multiple images format (new)
+                elif chunk.get('image_s3_urls'):
+                    image_urls = chunk.get('image_s3_urls', [])
+                    image_summaries = chunk.get('image_summaries', [])
+                    image_ids = chunk.get('image_ids', [])
+                
+                # Process each image with enhanced deduplication
+                for i, image_url in enumerate(image_urls):
+                    if not image_url:
+                        continue
+                        
+                    image_summary = image_summaries[i] if i < len(image_summaries) else ''
+                    image_id = image_ids[i] if i < len(image_ids) else f"img_{chunk.get('page_number', 0)}_{i}"
+                    
+                    # Create unique key combining URL and ID for better deduplication
+                    unique_image_key = f"{image_url}_{image_id}_{chunk.get('page_number', 0)}"
+                    
+                    if unique_image_key not in added_images:
+                        inline_elements.append({
+                            'type': 'image',
+                            'data': {
+                                'display_url': image_url,
+                                's3_url': image_url,
+                                'local_path': '',
+                                'page_number': chunk['page_number'],
+                                'relevance_score': chunk['relevance_score'],
+                                'image_summary': image_summary,
+                                'image_id': image_id,
+                                'ocr_text': '',
+                                'pdf_id': chunk.get('pdf_id', '')
+                            }
+                        })
+                        added_images.add(unique_image_key)
+                        page_num = int(chunk['page_number']) if isinstance(chunk['page_number'], (int, float)) else chunk['page_number']
+                        logger.info(f"Added unique image to response: {image_id} from page {page_num}")
+                    else:
+                        logger.info(f"Skipped duplicate image: {image_id} (key: {unique_image_key})")
             
             # For non-table queries, also add tables if available
             elif not is_table_query and chunk['contains_table'] and chunk.get('table_content_json'):

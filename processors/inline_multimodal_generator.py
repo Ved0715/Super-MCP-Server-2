@@ -175,6 +175,25 @@ class InlineMultimodalGenerator:
         show_all_keywords = ['show all', 'all the', 'every', 'complete', 'entire', 'full', 'comprehensive']
         is_show_all_query = any(keyword in query_lower for keyword in show_all_keywords)
         
+        # Remove duplicate images by image_id and URL (Phase 2 enhancement)
+        unique_images = []
+        seen_image_ids = set()
+        
+        for image in sorted(filtered_content['images'], key=lambda x: x.get('relevance_score', 0), reverse=True):
+            image_id = image.get('image_id', '')
+            s3_url = image.get('s3_url', '')
+            page_number = image.get('page_number', 0)
+            
+            # Create a unique identifier using multiple criteria for better deduplication
+            unique_key = f"{image_id}_{page_number}" if image_id else f"{s3_url}_{page_number}" if s3_url else f"page_{page_number}_image_{len(unique_images)}"
+            
+            if unique_key not in seen_image_ids:
+                unique_images.append(image)
+                seen_image_ids.add(unique_key)
+                logger.debug(f"Added unique image: {unique_key}")
+            else:
+                logger.debug(f"Skipped duplicate image: {unique_key}")
+
         # Remove duplicate tables by table_id
         unique_tables = []
         seen_table_ids = set()
@@ -189,6 +208,9 @@ class InlineMultimodalGenerator:
             if unique_key not in seen_table_ids:
                 unique_tables.append(table)
                 seen_table_ids.add(unique_key)
+                logger.debug(f"Added unique table: {unique_key}")
+            else:
+                logger.debug(f"Skipped duplicate table: {unique_key}")
         
         # Create unified content list for better inline integration
         unified_content = []
@@ -203,8 +225,8 @@ class InlineMultimodalGenerator:
                 'section_id': f"TEXT_SECTION_{i+1}"
             })
         
-        # Add image content with type identifier
-        for i, img_item in enumerate(filtered_content['images']):
+        # Add image content with type identifier (using unique_images to prevent duplicates)
+        for i, img_item in enumerate(unique_images):
             unified_content.append({
                 'type': 'image',
                 'data': img_item,
@@ -333,8 +355,8 @@ class InlineMultimodalGenerator:
         if text_content_sections:
             text_content_prompt = f"\nDOCUMENT TEXT CONTENT (USE THIS FULL CONTENT IN YOUR RESPONSE):\n{chr(10).join(text_content_sections)}\n"
         
-        # Enhanced prompt with strong inline placement instructions
-        system_prompt = f"""You are an expert AI assistant. Your specialized function is to answer a user's question by transforming provided source documents and media summaries into a single, perfectly formatted, and easy-to-understand explanation.
+        # MERGED: Enhanced prompt combining original structure with regeneration focus
+        system_prompt = f"""You are an expert AI assistant that creates perfectly integrated multimodal responses.
 
 AVAILABLE CONTENT:
 {', '.join(context_parts)}
@@ -348,68 +370,74 @@ MULTIMEDIA REFERENCES:
 
 USER'S QUESTION: "{query}"
 
-CRITICAL FORMATTING REQUIREMENTS - YOU MUST FOLLOW THESE EXACTLY:
+CRITICAL REQUIREMENTS - FOLLOW THESE EXACTLY:
 
-STRUCTURED FORMATTING (ChatGPT/Claude Style):
+1. MULTIMEDIA INTEGRATION (HIGHEST PRIORITY):
+You MUST create contextual references to multimedia throughout your response using these REQUIRED phrases:
 
-USE PROFESSIONAL MARKDOWN FORMATTING: Structure your response with clean, professional markdown to ensure clarity and readability.
-Use ## for main section headers (with blank lines before and after).
-Use ### for subsection headers (with blank lines before and after).
-Use bold text for key terms and important concepts.
-Use italic text for subtle emphasis or titles.
-Use code formatting for technical terms, specific values, formulas, or file names.
-Use bullet points (* or -) for unordered lists (with a blank line before the list).
-Use numbered lists (1., 2.) for sequences or steps (with a blank line before the list).
-Use > blockquotes for important notes, definitions, or key findings.
-ORGANIZE THE CONTENT LOGICALLY: Your goal is to tell a clear story that answers the user's question.
-Start with a brief introductory paragraph that sets the stage.
-Use clear section headers (##) to organize the information into logical blocks.
-End with a concluding summary when appropriate.
-Ensure a smooth, logical flow between sections using transitional phrases.
-Write in complete, connected paragraphs—avoid single-sentence fragments.
-USE ONLY PROVIDED CONTENT: Synthesize and incorporate the full text content provided. Your knowledge is strictly limited to the source material. Do not invent facts or use any outside knowledge.
-CREATE DESCRIPTIVE CONTEXTUAL REFERENCES: You must write complete, descriptive references that explain what the multimedia shows, using the provided summaries.
-For Images: "Refer to the following image which shows [use the actual image summary from the content details]."
-For Images: "As illustrated in the image below, [describe the visual content using the image summary]."
-For Tables: "As shown in the table below which contains [use the actual table summary or describe the data structure], ..."
-For Tables: "The following table presents [use key information from the table summary]."
-WRITE COMPLETE SENTENCES: All contextual references must be part of a complete, natural-sounding sentence.
-PLACE REFERENCES INLINE: Place these contextual references DIRECTLY within your text flow where they are most relevant to support your explanation.
-INTEGRATE REFERENCES NATURALLY: Weave the references smoothly into your paragraphs. They should feel like a natural part of the text, not an interruption.
-WRITE A COMPREHENSIVE RESPONSE: Use the detailed text content to provide a thorough, well-supported answer to the user's question.
-AVOID REDUNDANCY: Do NOT repeat the same reference multiple times or add redundant text after the reference placeholder.
-EXAMPLE OF CORRECT STRUCTURED RESPONSE:
+FOR IMAGES - USE THESE EXACT PHRASES:
+• "As illustrated in the image below"
+• "The image shows" 
+• "As shown in the figure"
+• "The diagram illustrates"
+• "As depicted in the image"
+• "Referring to the image"
 
-Research Methodology Overview
-The study employed a three-phase experimental design to investigate the research question. Each phase built upon the previous findings to create a comprehensive analysis framework that ensured data integrity and reproducibility.
+FOR TABLES - USE THESE EXACT PHRASES:
+• "As shown in the table below"
+• "The table shows"
+• "According to the data"
+• "The following table"
+• "As presented in the table"
+• "Referring to the table"
 
-Phase 1: Experimental Setup
-The initial phase focused on establishing the experimental parameters. Refer to the following image which shows the experimental setup used in Phase 1, demonstrating the key components and their arrangement. This configuration allowed for precise control of variables while maintaining optimal measurement conditions.
+DISTRIBUTION REQUIREMENT (CRITICAL):
+• Start your answer with text content first
+• Integrate image and table references naturally in the MIDDLE sections of your response  
+• Do NOT cluster all references at the beginning or end
+• Spread references throughout different paragraphs
+• Each multimedia element should be referenced EXACTLY ONCE
 
-Results and Analysis
-The collected data revealed significant improvements across all measured parameters. As shown in the table below which contains species probability data and taxonomic classifications, the results demonstrate a 15% improvement in classification accuracy.
+2. PROFESSIONAL FORMATTING:
+• Use ## for main headers, ### for subsections
+• Use **bold** for key terms and concepts
+• Use > blockquotes for important findings
+• Create logical paragraph flow with transitions
 
-Key Finding: The integrated approach yielded consistently better results than traditional methods, highlighting the benefits of a multi-faceted strategy.
-Conclusion
-The three-phase methodology successfully addressed the research objectives and provided valuable insights for future investigations.
+3. CONTENT SYNTHESIS:
+• Use ONLY the provided text content - no external knowledge
+• Create seamless narrative flow between sections
+• Synthesize information from multiple sources into coherent themes
+• Write complete, connected paragraphs
 
-EXAMPLE OF INCORRECT REFERENCE (DO NOT DO THIS):
-"The study methodology involved three main phases. Refer to the following image which shows the experimental setup (refer to the following image which shows the experimental setup). The results from the table below (as shown in the table below which contains data)."
+CORRECT FORMAT EXAMPLE (DO THIS):
+## Research Methodology Overview
+The study employed a three-phase experimental design to investigate the research question. Each phase built upon the previous findings to create a comprehensive framework.
 
-RESPONSE SCOPE INSTRUCTIONS:
+### Phase 1: Experimental Setup  
+The initial phase focused on establishing experimental parameters. As illustrated in the image below, the experimental setup demonstrates key components and their spatial arrangement. This configuration enabled precise control of variables.
+
+### Results and Analysis
+The collected data revealed significant improvements across all measured parameters. As shown in the table below, the species probability data and taxonomic classifications demonstrate a 15% improvement in accuracy.
+
+> **Key Finding**: The integrated approach yielded consistently better results than traditional methods.
+
+INCORRECT FORMAT (DO NOT DO THIS):
+"Here are the images: {{IMAGE_1}} shows setup. {{TABLE_1}} shows results. The methodology involved..."
+
 {self._get_scope_instructions(response_scope)}
 
 FINAL INSTRUCTIONS:
-Answer the user's question naturally and helpfully using only the provided document content. Structure your response with perfect markdown formatting as demonstrated in the example. Create descriptive, contextual references for all images and tables, and integrate them seamlessly into your paragraphs to support your statements.
+Write your response using the exact required phrases for multimedia references. Distribute references throughout different paragraphs - NOT all at the beginning or end. Use the provided text content to create a comprehensive, well-structured answer.
 
-Your detailed, structured answer:"""
+Your integrated multimodal response:"""
 
         try:
             response = self.openai_client.chat.completions.create(
                 model=self.chat_model,
                 messages=[{"role": "user", "content": system_prompt}],
-                max_tokens=3000,  # Further increased for more comprehensive responses
-                temperature=0.2  # Lower for more focused, factual responses
+                max_tokens=2500,  # Optimal balance for comprehensive responses
+                temperature=0.1  # Very low temperature for predictable multimedia placement (matches regeneration)
             )
             
             generated_response = response.choices[0].message.content

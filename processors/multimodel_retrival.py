@@ -34,18 +34,18 @@ class ServerMultimodalRetrieval:
     async def search_multimodal_content(self, 
                                       query: str, 
                                       paper_id: str,
-                                      max_images: int = 3,
-                                      max_tables: int = 3, 
-                                      max_text_chunks: int = 8) -> Dict[str, Any]:
+                                      max_images: int = 6,        # Increased from 3 to 6 for smaller chunks
+                                      max_tables: int = 4,        # Increased from 3 to 4 for smaller chunks  
+                                      max_text_chunks: int = 25) -> Dict[str, Any]:  # Increased from 8 to 25 for smaller chunks
         """
         Search for multimodal content (images, tables, text) in a processed paper.
         
         Args:
             query: Search query for finding relevant multimodal content
             paper_id: ID of the processed paper to search within
-            max_images: Maximum number of images to return (default: 3)
-            max_tables: Maximum number of tables to return (default: 3)
-            max_text_chunks: Maximum number of text chunks to return (default: 8)
+            max_images: Maximum number of images to return (default: 6, updated for smaller chunks)
+            max_tables: Maximum number of tables to return (default: 4, updated for smaller chunks)
+            max_text_chunks: Maximum number of text chunks to return (default: 25, updated for smaller chunks)
             
         Returns:
             Dict containing multimodal search results with inline elements
@@ -254,13 +254,13 @@ async def server_search_example(query: str, paper_id: str) -> Dict[str, Any]:
     # Initialize the retrieval system (do this once in your server startup)
     retrieval_system = ServerMultimodalRetrieval()
     
-    # Perform the search
+    # Perform the search with updated defaults for smaller chunks
     results = await retrieval_system.search_multimodal_content(
         query=query,
         paper_id=paper_id,
-        max_images=3,
-        max_tables=3,
-        max_text_chunks=8
+        max_images=6,        # Updated from 3 to 6
+        max_tables=4,        # Updated from 3 to 4
+        max_text_chunks=25   # Updated from 8 to 25
     )
     
     return results

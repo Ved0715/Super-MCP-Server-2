@@ -16,6 +16,8 @@ import logging
 import time
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import zipfile
+import io
 
 # Third-party imports
 import pinecone
@@ -1856,9 +1858,12 @@ RELEVANCE SCORES:
         # Apply strategy-specific selection logic
         if selection_strategy == 'comprehensive':
             # Select more content for comprehensive queries - Updated fallback limits for smaller chunks
-            text_limit = content_limits.get('text_sections', [25, 40])[1]  # Updated from [8,12] to [25,40]
-            image_limit = content_limits.get('images', [4, 8])[1]          # Updated from [2,4] to [4,8]
-            table_limit = content_limits.get('tables', [3, 6])[1]         # Updated from [2,3] to [3,6]
+            text_limit = content_limits.get('text_sections', [15, 25])[1]  # Reduced from [25,40] to [15,25]
+            image_limit = content_limits.get('images', [2, 4])[1]          # Reduced from [4,8] to [2,4]
+            table_limit = content_limits.get('tables', [2, 3])[1]         # Reduced from [3,6] to [2,3]
+            
+            # Filter out invalid tables before selection
+            sorted_chunks = self._filter_invalid_tables_from_chunks(sorted_chunks)
         elif selection_strategy == 'focused':
             # Select focused content for specific queries - Updated fallback limits for smaller chunks
             text_limit = content_limits.get('text_sections', [12, 18])[0]  # Updated from [3,6] to [12,18]
@@ -3425,6 +3430,86 @@ Create a high-quality, informative response that provides real value to the user
             if image_relevance_boost > 0.1:
                 logger.debug(f"Image relevance boost applied: {image_relevance_boost:.3f} for chunk with {len(image_summaries)} images")
         
+        # Table relevance enhancement using new metadata arrays
+        table_relevance_boost = 0.0
+        if match.metadata.get('contains_table') and match.metadata.get('table_summaries'):
+            table_summaries = match.metadata.get('table_summaries', [])
+            table_content_jsons = match.metadata.get('table_content_jsons', [])
+            query_text = ' '.join(query_keywords).lower()
+            
+            # Calculate semantic similarity between query and table summaries
+            for i, table_summary in enumerate(table_summaries):
+                if table_summary:
+                    table_summary_lower = table_summary.lower()
+                    
+                    # Direct keyword matching in table summary
+                    summary_keyword_matches = sum(1 for kw in query_keywords if kw in table_summary_lower)
+                    if summary_keyword_matches > 0:
+                        table_relevance_boost += (summary_keyword_matches / len(query_keywords)) * 0.18
+                    
+                    # Semantic concept matching in table summaries
+                    summary_concept_matches = sum(1 for concept in semantic_concepts if concept.lower() in table_summary_lower)
+                    if summary_concept_matches > 0:
+                        table_relevance_boost += (summary_concept_matches / max(len(semantic_concepts), 1)) * 0.12
+                    
+                    # Intent keyword matching in table summaries
+                    summary_intent_matches = sum(1 for intent_kw in intent_keywords if intent_kw.lower() in table_summary_lower)
+                    if summary_intent_matches > 0:
+                        table_relevance_boost += (summary_intent_matches / max(len(intent_keywords), 1)) * 0.1
+                    
+                    # Data content type indicators boost
+                    data_indicators = ['data', 'table', 'statistics', 'results', 'values', 'numbers', 'measurements', 'comparison', 'analysis', 'findings']
+                    data_matches = sum(1 for indicator in data_indicators if indicator in table_summary_lower)
+                    if data_matches > 0 and any(kw in query_text for kw in ['data', 'table', 'statistics', 'results', 'analysis', 'comparison', 'values']):
+                        table_relevance_boost += min(data_matches * 0.06, 0.25)
+                    
+                    # Table content quality assessment using JSON data
+                    if i < len(table_content_jsons) and table_content_jsons[i]:
+                        try:
+                            import json
+                            table_data = json.loads(table_content_jsons[i])
+                            
+                            # Assess table data richness
+                            metadata = table_data.get('_metadata', {})
+                            total_rows = metadata.get('total_rows', 0)
+                            total_columns = metadata.get('total_columns', 0)
+                            
+                            # Boost for data-rich tables
+                            if total_rows >= 3 and total_columns >= 2:
+                                table_relevance_boost += 0.08
+                            
+                            # Boost for tables with meaningful data (not exercise tables)
+                            table_keys = [k for k in table_data.keys() if not k.startswith('_')]
+                            non_empty_columns = 0
+                            for key in table_keys[:5]:  # Check first 5 columns
+                                column_data = table_data.get(key, [])
+                                if isinstance(column_data, list) and len(column_data) > 1:
+                                    # Check if column has substantial non-empty data
+                                    non_empty_cells = sum(1 for cell in column_data if str(cell).strip() and len(str(cell).strip()) > 1)
+                                    if non_empty_cells >= 2:
+                                        non_empty_columns += 1
+                            
+                            # Substantial data boost
+                            if non_empty_columns >= 2:
+                                table_relevance_boost += 0.12
+                            elif non_empty_columns >= 1:
+                                table_relevance_boost += 0.06
+                            
+                            # Penalty for likely exercise/worksheet tables
+                            exercise_indicators = ['exercise', 'practice', 'worksheet', 'assignment', 'homework', 'question']
+                            if any(indicator in table_summary_lower for indicator in exercise_indicators):
+                                table_relevance_boost *= 0.7
+                                
+                        except (json.JSONDecodeError, TypeError, KeyError) as e:
+                            logger.debug(f"Error parsing table content JSON for relevance scoring: {e}")
+            
+            # Cap table relevance boost
+            table_relevance_boost = min(table_relevance_boost, 0.35)
+            
+            # Log significant table relevance boosts for debugging
+            if table_relevance_boost > 0.1:
+                logger.debug(f"Table relevance boost applied: {table_relevance_boost:.3f} for chunk with {len(table_summaries)} tables")
+        
         # Strategy-specific adjustments
         strategy_multiplier = 1.0
         if strategy == 'precision':
@@ -3436,13 +3521,14 @@ Create a high-quality, informative response that provides real value to the user
             if concept_matches > 0:
                 strategy_multiplier = 1.15
         
-        # Combine all signals with better balance, including image relevance
+        # Combine all signals with better balance, including image and table relevance
         # Ensure base score dominates to prevent over-penalization
         final_score = (
-            base_score * 0.65 +  # Slightly reduced base score to accommodate image boost
-            keyword_score * 0.2 +  # Reduced keyword weight
-            quality_score * 0.1 +   # Reduced quality weight
-            image_relevance_boost * 0.05  # Image relevance enhancement
+            base_score * 0.6 +  # Reduced base score to accommodate both image and table boosts
+            keyword_score * 0.2 +  # Keyword weight
+            quality_score * 0.1 +   # Quality weight
+            image_relevance_boost * 0.05 +  # Image relevance enhancement
+            table_relevance_boost * 0.05    # Table relevance enhancement
         ) * content_type_boost * strategy_multiplier
         
         # Ensure minimum score is not too low
@@ -4084,3 +4170,130 @@ Create a high-quality, informative response that provides real value to the user
             
         except Exception as e:
             logger.error(f"Error logging debug info: {e}")
+    
+    def _filter_invalid_tables_from_chunks(self, chunks: List[Dict]) -> List[Dict]:
+        """Filter out chunks with invalid tables before content selection."""
+        try:
+            filtered_chunks = []
+            
+            for chunk in chunks:
+                # If chunk has tables, validate them
+                if chunk.get('contains_table') and chunk.get('table_content_jsons'):
+                    table_jsons = chunk.get('table_content_jsons', [])
+                    valid_tables = []
+                    
+                    for table_json in table_jsons:
+                        if self._is_table_valid_for_selection(table_json):
+                            valid_tables.append(table_json)
+                    
+                    # Update chunk with only valid tables
+                    if valid_tables:
+                        chunk['table_content_jsons'] = valid_tables
+                        chunk['table_count'] = len(valid_tables)
+                        filtered_chunks.append(chunk)
+                    else:
+                        # Remove table flags if no valid tables
+                        chunk['contains_table'] = False
+                        chunk['table_count'] = 0
+                        filtered_chunks.append(chunk)
+                else:
+                    filtered_chunks.append(chunk)
+            
+            logger.info(f"Table validation: {len(chunks)} chunks processed, {len(filtered_chunks)} chunks retained")
+            return filtered_chunks
+            
+        except Exception as e:
+            logger.error(f"Error filtering invalid tables: {e}")
+            return chunks
+    
+    def _is_table_valid_for_selection(self, table_json: str) -> bool:
+        """Validate table content for selection (lighter validation than display validation)."""
+        try:
+            import json
+            
+            # Parse table JSON
+            if isinstance(table_json, str):
+                table_data = json.loads(table_json)
+            else:
+                table_data = table_json
+            
+            if not isinstance(table_data, dict):
+                return False
+            
+            # Get non-metadata keys
+            keys = [k for k in table_data.keys() if not k.startswith('_')]
+            if not keys:
+                return False
+            
+            # Check for empty columns
+            empty_columns = 0
+            total_columns = len(keys)
+            
+            for key in keys:
+                values = table_data.get(key, [])
+                if isinstance(values, list):
+                    # Count non-empty cells in this column
+                    non_empty_cells = sum(1 for v in values if v and str(v).strip() and len(str(v).strip()) > 1)
+                    
+                    # If more than 80% of cells are empty, consider column empty (stricter threshold)
+                    if len(values) > 0 and (non_empty_cells / len(values)) < 0.2:
+                        empty_columns += 1
+            
+            # If more than 50% of columns are empty, table is invalid
+            if empty_columns / total_columns > 0.5:
+                return False
+            
+            # Check for very small tables (less than 2x2)
+            if '_metadata' in table_data:
+                metadata = table_data['_metadata']
+                total_rows = metadata.get('total_rows', 0)
+                total_cols = metadata.get('total_columns', 0)
+                
+                if total_rows < 2 or total_cols < 2:
+                    return False
+            
+            # NEW: Check for tables that are just lists without meaningful structure
+            meaningful_data_count = 0
+            total_cells = 0
+            
+            for key in keys:
+                values = table_data.get(key, [])
+                if isinstance(values, list):
+                    total_cells += len(values)
+                    for value in values:
+                        if value and str(value).strip() and len(str(value).strip()) > 2:
+                            meaningful_data_count += 1
+            
+            # If less than 30% of cells have meaningful data, table is invalid
+            if total_cells > 0 and (meaningful_data_count / total_cells) < 0.3:
+                return False
+            
+            # NEW: Check for tables with suspicious patterns (all empty cells in certain rows)
+            if '_metadata' in table_data:
+                metadata = table_data['_metadata']
+                total_rows = metadata.get('total_rows', 0)
+                
+                if total_rows > 0:
+                    completely_empty_rows = 0
+                    for row_idx in range(total_rows):
+                        row_has_data = False
+                        for key in keys:
+                            values = table_data.get(key, [])
+                            if isinstance(values, list) and row_idx < len(values):
+                                cell_value = values[row_idx]
+                                if cell_value and str(cell_value).strip() and len(str(cell_value).strip()) > 1:
+                                    row_has_data = True
+                                    break
+                        
+                        if not row_has_data:
+                            completely_empty_rows += 1
+                    
+                    # If more than 60% of rows are completely empty, table is invalid
+                    if (completely_empty_rows / total_rows) > 0.6:
+                        return False
+            
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Error validating table for selection: {e}")
+            return False

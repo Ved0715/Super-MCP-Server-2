@@ -72,15 +72,29 @@ class ServerMultimodalRetrieval:
                 tables = []
                 text_chunks = []
                 
+                # Collect all elements by type first
+                all_images = []
+                all_tables = []
+                all_text_chunks = []
+                
                 for element in inline_elements:
                     element_type = element.get('type', '').lower()
                     
-                    if element_type == 'image' and len(images) < max_images:
-                        images.append(element)
-                    elif element_type == 'table' and len(tables) < max_tables:
-                        tables.append(element)
-                    elif element_type in ['text', 'composite'] and len(text_chunks) < max_text_chunks:
-                        text_chunks.append(element)
+                    if element_type == 'image':
+                        all_images.append(element)
+                    elif element_type == 'table':
+                        all_tables.append(element)
+                    elif element_type in ['text', 'composite']:
+                        all_text_chunks.append(element)
+                
+                # Apply intelligent selection for images (existing behavior)
+                images = all_images[:max_images]
+                
+                # Apply intelligent table selection with quality filtering
+                tables = self._select_best_tables(all_tables, query, max_tables)
+                
+                # Apply basic selection for text chunks
+                text_chunks = all_text_chunks[:max_text_chunks]
                 
                 # Rebuild filtered inline elements
                 filtered_elements = images + tables + text_chunks
@@ -244,6 +258,139 @@ class ServerMultimodalRetrieval:
                 "success": False,
                 "error": str(e)
             }
+    
+    def _select_best_tables(self, all_tables: list, query: str, max_tables: int) -> list:
+        """Intelligently select the best tables based on content quality and relevance."""
+        if not all_tables:
+            return []
+        
+        if len(all_tables) <= max_tables:
+            return all_tables
+        
+        # Score each table for intelligent selection
+        scored_tables = []
+        query_lower = query.lower()
+        query_keywords = set(query_lower.split())
+        
+        for table in all_tables:
+            score = 0.0
+            
+            # Base relevance score from table structure (not nested under 'data')
+            base_relevance = table.get('relevance_score', 0.0)
+            score += base_relevance * 0.4
+            
+            # Table content quality assessment - access directly from table, not nested
+            table_content_json = table.get('table_content_json', '')
+            if table_content_json:
+                try:
+                    import json
+                    table_content = json.loads(table_content_json)
+                    metadata = table_content.get('_metadata', {})
+                    
+                    # Data richness scoring
+                    total_rows = metadata.get('total_rows', 0)
+                    total_columns = metadata.get('total_columns', 0)
+                    
+                    # Boost for larger, data-rich tables
+                    if total_rows >= 4 and total_columns >= 3:
+                        score += 0.3
+                    elif total_rows >= 3 and total_columns >= 2:
+                        score += 0.2
+                    elif total_rows >= 2:
+                        score += 0.1
+                    
+                    # Content density scoring
+                    table_keys = [k for k in table_content.keys() if not k.startswith('_')]
+                    non_empty_columns = 0
+                    total_data_points = 0
+                    
+                    for key in table_keys:
+                        column_data = table_content.get(key, [])
+                        if isinstance(column_data, list):
+                            non_empty_cells = sum(1 for cell in column_data if str(cell).strip() and len(str(cell).strip()) > 1)
+                            total_data_points += len(column_data)
+                            if non_empty_cells >= 2:
+                                non_empty_columns += 1
+                    
+                    # Boost for content density
+                    if non_empty_columns >= 3:
+                        score += 0.25
+                    elif non_empty_columns >= 2:
+                        score += 0.15
+                    elif non_empty_columns >= 1:
+                        score += 0.08
+                    
+                except (json.JSONDecodeError, TypeError, KeyError):
+                    # Fallback: minimal boost for having table content
+                    score += 0.05
+            
+            # Summary relevance scoring using backend-generated summaries
+            table_id = table.get('table_id', '')
+            # Use enhanced table summary extraction for relevance scoring
+            summary_text = self._get_table_summary_for_scoring(table).lower()
+            
+            if summary_text and len(summary_text) > 5:
+                # Keyword matching in summary
+                keyword_matches = sum(1 for kw in query_keywords if kw in summary_text)
+                if keyword_matches > 0:
+                    score += (keyword_matches / len(query_keywords)) * 0.2
+                
+                # Data-related keyword boosts
+                data_keywords = ['data', 'statistics', 'results', 'analysis', 'comparison', 'values', 'measurements']
+                data_matches = sum(1 for kw in data_keywords if kw in summary_text)
+                if data_matches > 0 and any(kw in query_lower for kw in data_keywords):
+                    score += min(data_matches * 0.05, 0.15)
+                
+                # Penalty for exercise/worksheet tables
+                exercise_indicators = ['exercise', 'practice', 'worksheet', 'assignment', 'homework', 'question']
+                if any(indicator in summary_text for indicator in exercise_indicators):
+                    score *= 0.6
+            
+            # Page context scoring (prefer tables from relevant pages)
+            page_number = table.get('page_number', 0)
+            if page_number:
+                # Slight boost for tables (assuming they're already contextually retrieved)
+                score += 0.05
+            
+            scored_tables.append((score, table))
+        
+        # Sort by score (descending) and select top tables
+        scored_tables.sort(key=lambda x: x[0], reverse=True)
+        selected_tables = [table for score, table in scored_tables[:max_tables]]
+        
+        # Log selection for debugging
+        if len(all_tables) > max_tables:
+            selected_scores = [score for score, table in scored_tables[:max_tables]]
+            logger.info(f"Selected {len(selected_tables)} best tables from {len(all_tables)} available. Top scores: {selected_scores[:3]}")
+        
+        return selected_tables
+    
+    def _get_table_summary_for_scoring(self, table: dict) -> str:
+        """Extract table summary for relevance scoring."""
+        # Try different possible summary fields in order of preference
+        summary_fields = ['summary', 'table_summary', 'description', 'title']
+        
+        for field in summary_fields:
+            if field in table and table[field]:
+                summary = str(table[field]).strip()
+                if len(summary) > 5:
+                    return summary
+        
+        # Fallback: try to extract from table content if available
+        table_content_json = table.get('table_content_json', '')
+        if table_content_json:
+            try:
+                import json
+                table_data = json.loads(table_content_json)
+                metadata = table_data.get('_metadata', {})
+                rows = metadata.get('total_rows', 0)
+                cols = metadata.get('total_columns', 0)
+                if rows > 0 and cols > 0:
+                    return f"Data table with {rows} rows and {cols} columns"
+            except (json.JSONDecodeError, TypeError, KeyError):
+                pass
+        
+        return "structured data"
 
 # Example usage function for your server controller
 async def server_search_example(query: str, paper_id: str) -> Dict[str, Any]:

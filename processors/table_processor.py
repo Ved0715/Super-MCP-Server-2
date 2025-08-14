@@ -98,7 +98,109 @@ class TableProcessor:
             
         except Exception as e:
             logger.error(f"Error in table processing: {e}")
-            raise
+            return {
+                'processed_tables': [],
+                'saved_count': 0,
+                'pinecone_stored': 0,
+                'processing_time': time.time() - start_time,
+                'error': str(e)
+            }
+    
+    def _identify_table_type(self, table_data: List, columns: List) -> str:
+        """Identify the type and purpose of the table based on content and structure."""
+        try:
+            if not table_data or not columns:
+                return "unknown"
+            
+            # Check for exercise/worksheet patterns
+            exercise_indicators = ['exercise', 'question', 'answer', 'fill', 'blank', 'true', 'false', 'practice']
+            column_text = ' '.join(str(col) for col in columns).lower()
+            if any(indicator in column_text for indicator in exercise_indicators):
+                return "exercise_worksheet"
+            
+            # Check for data/comparison patterns
+            data_indicators = ['data', 'result', 'analysis', 'comparison', 'measurement', 'statistic', 'value']
+            if any(indicator in column_text for indicator in data_indicators):
+                return "data_analysis"
+            
+            # Check for reference/index patterns
+            if len(columns) == 2:
+                ref_indicators = ['page', 'number', 'reference', 'index']
+                if any(indicator in column_text for indicator in ref_indicators):
+                    return "reference_index"
+            
+            # Check for classification/matching patterns
+            if len(columns) == 2:
+                class_indicators = ['column', 'type', 'category', 'match']
+                if any(indicator in column_text for indicator in class_indicators):
+                    return "classification_matching"
+            
+            # Check for financial/statistical patterns
+            financial_indicators = ['cost', 'price', 'amount', 'percentage', 'rate', 'total']
+            if any(indicator in column_text for indicator in financial_indicators):
+                return "financial_statistical"
+            
+            return "general_data"
+            
+        except Exception as e:
+            logger.warning(f"Error identifying table type: {e}")
+            return "unknown"
+    
+    def _assess_content_quality(self, table_data: List, columns: List) -> Dict:
+        """Assess the quality and completeness of table content."""
+        try:
+            if not table_data or not columns:
+                return {"quality_score": 0, "issues": ["empty_table"]}
+            
+            total_cells = len(table_data) * len(columns)
+            non_empty_cells = 0
+            issues = []
+            
+            # Count non-empty cells
+            for row in table_data:
+                if isinstance(row, list):
+                    for cell in row:
+                        if cell and str(cell).strip() and len(str(cell).strip()) > 1:
+                            non_empty_cells += 1
+            
+            # Calculate quality metrics
+            if total_cells > 0:
+                fill_rate = non_empty_cells / total_cells
+                
+                if fill_rate < 0.3:
+                    issues.append("mostly_empty")
+                elif fill_rate < 0.6:
+                    issues.append("partially_empty")
+                
+                # Check for very small tables
+                if len(table_data) < 2 or len(columns) < 2:
+                    issues.append("too_small")
+                
+                # Check for distorted content
+                for row in table_data:
+                    if isinstance(row, list):
+                        for cell in row:
+                            if isinstance(cell, str) and len(cell) > 500:
+                                issues.append("distorted_content")
+                                break
+                
+                quality_score = min(1.0, fill_rate * 0.8 + (0.2 if not issues else 0.0))
+                
+            else:
+                quality_score = 0
+                issues.append("no_content")
+            
+            return {
+                "quality_score": quality_score,
+                "fill_rate": fill_rate if total_cells > 0 else 0,
+                "total_cells": total_cells,
+                "non_empty_cells": non_empty_cells,
+                "issues": issues
+            }
+            
+        except Exception as e:
+            logger.warning(f"Error assessing table quality: {e}")
+            return {"quality_score": 0, "issues": ["assessment_error"]}
     
     def _detect_all_tables_from_json(self, json_objs: List[Dict], pdf_id: str) -> List[Dict]:
         """Detect tables using multiple methods from LlamaParse JSON structure."""

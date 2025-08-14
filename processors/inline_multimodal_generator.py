@@ -70,7 +70,7 @@ class InlineMultimodalGenerator:
                             'relevance_score': chunk.get('relevance_score', 0)
                         })
                 
-                # Add table content from arrays
+                # Add table content from arrays with validation
                 if chunk.get('contains_table') and chunk.get('table_content_jsons'):
                     table_jsons = chunk.get('table_content_jsons', [])
                     table_summaries = chunk.get('table_summaries', [])
@@ -81,12 +81,21 @@ class InlineMultimodalGenerator:
                         table_summary = table_summaries[i] if i < len(table_summaries) else ''
                         table_id = table_ids[i] if i < len(table_ids) else f'table_{i}'
                         
-                        filtered_content['tables'].append({
-                            'table_content_json': table_json,
-                            'table_id': table_id,
-                            'page_number': chunk.get('page_number', 0),
-                            'relevance_score': chunk.get('relevance_score', 0)
-                        })
+                        # Validate table before adding
+                        if self._is_table_valid(table_json):
+                            # Check if table has meaningful content and relevance
+                            if self._has_meaningful_table_content(table_json, query):
+                                filtered_content['tables'].append({
+                                    'table_content_json': table_json,
+                                    'table_id': table_id,
+                                    'page_number': chunk.get('page_number', 0),
+                                    'relevance_score': chunk.get('relevance_score', 0)
+                                })
+                                logger.info(f"Added valid table {table_id} from page {chunk.get('page_number', 0)}")
+                            else:
+                                logger.info(f"Filtered out low-relevance table {table_id} from page {chunk.get('page_number', 0)} - insufficient meaningful content")
+                        else:
+                            logger.info(f"Filtered out invalid table {table_id} from page {chunk.get('page_number', 0)} - failed validation checks")
             
             # Use the existing response generation logic
             return self.generate_inline_response(query, filtered_content, conditional_instructions, response_scope)
@@ -322,7 +331,7 @@ class InlineMultimodalGenerator:
         
         # Analyze tables with structure and content preview
         for i, table in enumerate(content_map['tables']):
-            table_summary = table.get('summary', 'Structured data')
+            table_summary = self._get_enhanced_table_summary(table)
             page_num = table['page_number']
             # Convert page number to integer if it's a number
             if isinstance(page_num, (int, float)):
@@ -391,6 +400,22 @@ FOR TABLES - USE THESE EXACT PHRASES:
 • "As presented in the table"
 • "Referring to the table"
 
+TABLE CONTEXT REQUIREMENTS (CRITICAL):
+• NEVER generate fake tables - only use the retrieved tables from the document
+• For each table you reference, EXPLAIN what it shows and WHY it's relevant to the user's question
+• If you can't explain a table's relevance, DO NOT include it
+• Always connect table data to the user's specific query
+• Use phrases like "This table is relevant because..." or "This table shows..."
+                • CRITICAL: If ANY column in a table has ANY empty cells, DO NOT display that table
+                • CRITICAL: If ANY column has a header but ALL cells in that column are empty, DO NOT display that table
+                • CRITICAL: If a table contains only one row of data after the header, DO NOT display it
+                • CRITICAL: DO NOT display exercise/worksheet tables, matching exercises, or practice activities
+                • CRITICAL: Only show tables with actual data, results, or meaningful information relevant to the query
+                • Only show tables that have clear, structured data with meaningful content in ALL columns and at least 2 rows of data
+                • Even one empty cell in any column makes the entire table invalid
+• If a table appears distorted, has empty rows/columns, or lacks meaningful content, DO NOT display it
+• Validate table quality before referencing - if data looks meaningless or unusable, skip it entirely
+
 DISTRIBUTION REQUIREMENT (CRITICAL):
 • Start your answer with text content first
 • Integrate image and table references naturally in the MIDDLE sections of your response  
@@ -429,6 +454,23 @@ INCORRECT FORMAT (DO NOT DO THIS):
 
 FINAL INSTRUCTIONS:
 Write your response using the exact required phrases for multimedia references. Distribute references throughout different paragraphs - NOT all at the beginning or end. Use the provided text content to create a comprehensive, well-structured answer.
+
+SPECIAL TABLE HANDLING INSTRUCTIONS:
+• NEVER generate fake tables - only use the retrieved tables from the document
+• For each table you reference, EXPLAIN what it shows and WHY it's relevant to the user's question
+• If you can't explain a table's relevance, DO NOT include it
+• Always connect table data to the user's specific query
+• Use phrases like "This table is relevant because..." or "This table shows..."
+                • CRITICAL: Before referencing any table, validate its quality:
+                  - Check if ALL columns contain meaningful, readable data
+                  - If ANY column has ANY empty cells, DO NOT display that table
+                  - If ANY column has a header but ALL cells in that column are empty, DO NOT display that table
+                  - If a table contains only one row of data after the header, DO NOT display it
+                  - DO NOT display exercise/worksheet tables, matching exercises, or practice activities
+                  - Only reference tables with actual data, results, or meaningful information relevant to the query
+                  - Only reference tables with clear, structured, and meaningful data and at least 2 rows of data
+                  - Even one empty cell in any column makes the entire table invalid
+• Quality over quantity - it's better to show fewer high-quality tables than many poor-quality ones
 
 Your integrated multimodal response:"""
 
@@ -478,7 +520,7 @@ Your integrated multimodal response:"""
                 # Integrate tables with contextual references  
                 for i in range(min(table_count, 2)):  # Limit to 2 tables for fallback
                     table_data = content_map['tables'][i]
-                    table_summary = table_data.get('summary', 'structured data')[:100]
+                    table_summary = self._get_enhanced_table_summary(table_data)[:100]
                     fallback_parts.append(f"Refer to the following table which contains {table_summary}.")
             
             return " ".join(fallback_parts)
@@ -528,361 +570,98 @@ Your integrated multimodal response:"""
         return scope_instructions.get(response_scope, scope_instructions['standard'])
     
     def _create_inline_elements(self, response_structure: str, content_map: Dict) -> List[Dict]:
-        """Convert response structure with contextual references into seamlessly integrated inline elements."""
+        """LLM-driven inline placement - Let the AI handle the positioning naturally."""
+        logger.info("Using LLM-driven inline placement - AI handles positioning")
+        
+        # Simple approach: Let the AI's response structure guide placement
+        # Split the response into logical sections and place multimedia content naturally
+        
         inline_elements = []
-        used_table_ids = set()  # Track used tables to prevent duplicates
-        used_image_ids = set()  # Track used images to prevent duplicates
+        used_table_ids = set()
+        used_image_ids = set()
         
-        # First, identify where images and tables should be placed based on contextual references
-        image_mentions = []
-        table_mentions = []
+        # Get available multimedia content
+        available_images = content_map.get('images', [])
+        available_tables = content_map.get('tables', [])
         
-        # Find ALL contextual references in the text first
-        import re
+        # Split response into paragraphs
+        paragraphs = response_structure.split('\n\n')
         
-        # Find all image references with their positions
-        image_patterns = [
-            r'(?:refer to the )?(?:following )?image(?:\s+below)?(?:\s+which shows [^.]*)?',
-            r'as (?:illustrated|shown) in the image(?:\s+below)?',
-            r'the image (?:shows?|illustrates?|demonstrates?)'
-        ]
-        
-        # Collect all image references first
-        all_image_matches = []
-        for pattern in image_patterns:
-            matches = list(re.finditer(pattern, response_structure, re.IGNORECASE))
-            for match in matches:
-                all_image_matches.append((match.start(), match.group()))
-        
-        # Sort by position and assign to images sequentially
-        all_image_matches.sort(key=lambda x: x[0])
-        for i, (pos, match_text) in enumerate(all_image_matches):
-            if i < len(content_map['images']):
-                img = content_map['images'][i]
-                image_mentions.append((pos, i + 1, img))
-                logger.info(f"Detected image reference: '{match_text}' at position {pos}")
-        
-        # Find all table references with their positions
-        table_patterns = [
-            r'(?:refer to the )?(?:following )?table(?:\s+below)?(?:\s+which (?:shows?|contains?|presents?) [^.]*)?',
-            r'as (?:shown|presented) in the table(?:\s+below)?',
-            r'the table (?:shows?|contains?|presents?)'
-        ]
-        
-        # Collect all table references first
-        all_table_matches = []
-        for pattern in table_patterns:
-            matches = list(re.finditer(pattern, response_structure, re.IGNORECASE))
-            for match in matches:
-                all_table_matches.append((match.start(), match.group()))
-        
-        # Sort by position and assign to tables sequentially
-        all_table_matches.sort(key=lambda x: x[0])
-        for i, (pos, match_text) in enumerate(all_table_matches):
-            if i < len(content_map['tables']):
-                table = content_map['tables'][i]
-                table_mentions.append((pos, i + 1, table))
-                logger.info(f"Detected table reference: '{match_text}' at position {pos}")
-        
-        # If no specific references found, try to place multimedia content at natural break points
-        if not image_mentions and not table_mentions:
-            logger.info("No specific contextual references detected, using fallback placement at paragraph breaks")
-            
-            # Check if there are any mentions of images or tables in the text
-            has_image_mentions = any(word in response_structure.lower() for word in ['image', 'illustrated', 'shown', 'visual'])
-            has_table_mentions = any(word in response_structure.lower() for word in ['table', 'data', 'results', 'statistics'])
-            
-            logger.info(f"General mentions detected - Images: {has_image_mentions}, Tables: {has_table_mentions}")
-            
-            # Place images and tables at paragraph breaks or sentence endings
-            text_parts = response_structure.split('\n\n')
-            current_pos = 0
-            
-            for i, text_part in enumerate(text_parts):
-                if text_part.strip():
-                    # Add text part
-                    inline_elements.append({
-                        'type': 'text',
-                        'content': text_part.strip()
-                    })
-                    current_pos += len(text_part) + 2  # +2 for \n\n
-                    
-                    # Add multimedia content after text parts if available and if there are general mentions
-                    if has_image_mentions and i < len(content_map['images']) and len(content_map['images']) > 0:
-                        img_data = content_map['images'][i]
-                        img_id = f"page_{img_data['page_number']}_img_{i+1}"
-                        if img_id not in used_image_ids:
-                            used_image_ids.add(img_id)
-                            inline_elements.append({
-                                'type': 'image',
-                                'data': img_data,
-                                'context': self._extract_image_context(img_data, content_map)
-                            })
-                            logger.info(f"Added image via fallback placement: {img_id}")
-                    
-                    if has_table_mentions and i < len(content_map['tables']) and len(content_map['tables']) > 0:
-                        table_data = content_map['tables'][i]
-                        table_id = table_data.get('table_id', '')
-                        page_number = table_data.get('page_number', 0)
-                        unique_key = f"{table_id}_{page_number}" if table_id else f"page_{page_number}_table_{i+1}"
-                        
-                        if unique_key not in used_table_ids:
-                            used_table_ids.add(unique_key)
-                            inline_elements.append({
-                                'type': 'table',
-                                'data': table_data,
-                                'context': self._extract_table_context(table_data, content_map)
-                            })
-                            logger.info(f"Added table via fallback placement: {unique_key}")
-            
-            # Post-process elements for better flow
-            inline_elements = self._optimize_element_flow(inline_elements)
-            
-            # Ensure proper interleaving of content
-            inline_elements = self._ensure_content_interleaving(inline_elements, content_map)
-            
-            # If still no multimedia content was added, add all available content at the end
-            if not any(elem['type'] in ['image', 'table'] for elem in inline_elements):
-                logger.info("No multimedia content added via fallback, adding all available content at the end")
+        for paragraph in paragraphs:
+            if not paragraph.strip():
+                continue
                 
-                # Add all available images
-                for i, img_data in enumerate(content_map['images']):
-                    img_id = f"page_{img_data['page_number']}_img_{i+1}"
-                    if img_id not in used_image_ids:
-                        used_image_ids.add(img_id)
-                        inline_elements.append({
-                            'type': 'image',
-                            'data': img_data,
-                            'context': self._extract_image_context(img_data, content_map)
-                        })
-                        logger.info(f"Added image at end: {img_id}")
-                
-                # Add all available tables
-                for i, table_data in enumerate(content_map['tables']):
-                    table_id = table_data.get('table_id', '')
-                    page_number = table_data.get('page_number', 0)
-                    unique_key = f"{table_id}_{page_number}" if table_id else f"page_{page_number}_table_{i+1}"
-                    
-                    if unique_key not in used_table_ids:
-                        used_table_ids.add(unique_key)
-                        inline_elements.append({
-                            'type': 'table',
-                            'data': table_data,
-                            'context': self._extract_table_context(table_data, content_map)
-                        })
-                        logger.info(f"Added table at end: {unique_key}")
+            # Add the text paragraph
+            inline_elements.append({
+                'type': 'text',
+                'content': paragraph.strip()
+            })
             
-            return inline_elements
-        else:
-            logger.info(f"Detected {len(image_mentions)} image mentions and {len(table_mentions)} table mentions")
-        
-        # Sort mentions by position in the text
-        image_mentions.sort(key=lambda x: x[0])
-        table_mentions.sort(key=lambda x: x[0])
-        
-        # Combine and sort all mentions
-        all_mentions = [(pos, 'image', num, data) for pos, num, data in image_mentions] + \
-                      [(pos, 'table', num, data) for pos, num, data in table_mentions]
-        all_mentions.sort(key=lambda x: x[0])
-        
-        # Split the text and insert multimedia elements at appropriate positions
-        current_pos = 0
-        current_text = ""
-        
-        for mention_pos, content_type, content_num, content_data in all_mentions:
-            # Find a natural break point after the contextual reference (end of sentence)
-            reference_start = mention_pos
-            
-            # Look for the next sentence ending after the reference
-            reference_end = mention_pos + 50  # Start looking after the reference
-            while reference_end < len(response_structure):
-                char = response_structure[reference_end]
-                # Look for end of sentence
-                if char in ['.', '!', '?']:
-                    # Look ahead to see if this is truly end of sentence
-                    next_pos = reference_end + 1
-                    while next_pos < len(response_structure) and response_structure[next_pos] in [' ', '\n', '\t']:
-                        next_pos += 1
-                    
-                    # If next character is uppercase or end of text, this is sentence end
-                    if (next_pos >= len(response_structure) or 
-                        response_structure[next_pos].isupper() or 
-                        response_structure[next_pos] in ['\n']):
-                        reference_end = next_pos
-                        break
-                reference_end += 1
-            
-            # Include text up to the reference point plus the complete sentence
-            if reference_end > current_pos:
-                text_chunk = response_structure[current_pos:reference_end].strip()
-                if text_chunk:
-                    current_text += " " + text_chunk if current_text else text_chunk
-            
-            # Add the multimedia element if not already used
-            if content_type == 'image':
-                img_id = f"page_{content_data['page_number']}_img_{content_num}"
-                if img_id not in used_image_ids:
-                    used_image_ids.add(img_id)
-                    
-                    # Add accumulated text as a text element (complete sentence with reference)
-                    if current_text.strip():
-                        inline_elements.append({
-                            'type': 'text',
-                            'content': current_text.strip()
-                        })
-                        current_text = ""
-                    
-                    # Add the image
-                    inline_elements.append({
-                        'type': 'image',
-                        'data': content_data,
-                        'context': self._extract_image_context(content_data, content_map)
-                    })
-                    logger.info(f"Added image with contextual reference: {img_id}")
-            
-            elif content_type == 'table':
-                table_id = content_data.get('table_id', '')
-                page_number = content_data.get('page_number', 0)
-                unique_key = f"{table_id}_{page_number}" if table_id else f"page_{page_number}_table_{content_num}"
+            # Check if this paragraph mentions tables and we have tables available
+            if available_tables and any(word in paragraph.lower() for word in ['table', 'below', 'shown', 'following']):
+                table_data = available_tables[0]
+                table_id = table_data.get('table_id', '')
+                page_number = table_data.get('page_number', 0)
+                unique_key = f"{table_id}_{page_number}" if table_id else f"page_{page_number}_table_1"
                 
                 if unique_key not in used_table_ids:
                     used_table_ids.add(unique_key)
-                    
-                    # Add accumulated text as a text element (complete sentence with reference)
-                    if current_text.strip():
-                        inline_elements.append({
-                            'type': 'text',
-                            'content': current_text.strip()
-                        })
-                        current_text = ""
-                    
-                    # Add the table
                     inline_elements.append({
                         'type': 'table',
-                        'data': content_data,
-                        'context': self._extract_table_context(content_data, content_map)
+                        'data': table_data,
+                        'context': self._extract_table_context(table_data, content_map)
                     })
-                    logger.info(f"Added table with contextual reference: {unique_key}")
+                    logger.info(f"Added table after paragraph: {unique_key}")
+                    available_tables = available_tables[1:]  # Remove used table
             
-            # Move to the end of the processed text
-            current_pos = reference_end
+            # Check if this paragraph mentions images and we have images available
+            elif available_images and any(word in paragraph.lower() for word in ['image', 'figure', 'shown', 'illustrated']):
+                img_data = available_images[0]
+                img_id = f"page_{img_data['page_number']}_img_1"
+                if img_id not in used_image_ids:
+                    used_image_ids.add(img_id)
+                    inline_elements.append({
+                        'type': 'image',
+                        'data': img_data,
+                        'context': self._extract_image_context(img_data, content_map)
+                    })
+                    logger.info(f"Added image after paragraph: {img_id}")
+                    available_images = available_images[1:]  # Remove used image
         
-        # Add any remaining text
-        if current_pos < len(response_structure):
-            remaining_text = response_structure[current_pos:].strip()
-            if remaining_text:
-                current_text += " " + remaining_text if current_text else remaining_text
-        
-        if current_text.strip():
+        # Add any remaining multimedia content at the end if not placed inline
+        if available_tables or available_images:
             inline_elements.append({
                 'type': 'text',
-                'content': current_text.strip()
+                'content': "Additional supporting data:"
             })
-        
-        # Post-process elements for better flow
-        inline_elements = self._optimize_element_flow(inline_elements)
-        
-        # Ensure proper interleaving of content
-        inline_elements = self._ensure_content_interleaving(inline_elements, content_map)
-        
-        return inline_elements
-    
-    def _ensure_content_interleaving(self, inline_elements: List[Dict], content_map: Dict) -> List[Dict]:
-        """Ensure proper interleaving of content types to avoid clustering."""
-        if not inline_elements:
-            return inline_elements
-        
-        # Check if we have the problematic clustering pattern (all images/tables together)
-        element_types = [elem['type'] for elem in inline_elements]
-        
-        # Look for clustering patterns (consecutive elements of same type > 2)
-        has_clustering = False
-        consecutive_count = 1
-        for i in range(1, len(element_types)):
-            if element_types[i] == element_types[i-1] and element_types[i] != 'text':
-                consecutive_count += 1
-                if consecutive_count > 2:  # More than 2 consecutive non-text elements
-                    has_clustering = True
-                    break
-            else:
-                consecutive_count = 1
-        
-        if not has_clustering:
-            return inline_elements  # Already properly distributed
-        
-        logger.info("Detected content clustering, redistributing for better interleaving")
-        
-        # Separate elements by type
-        text_elements = [elem for elem in inline_elements if elem['type'] == 'text']
-        image_elements = [elem for elem in inline_elements if elem['type'] == 'image']
-        table_elements = [elem for elem in inline_elements if elem['type'] == 'table']
-        
-        # Create a new well-interleaved structure
-        redistributed = []
-        
-        # Start with first text block
-        if text_elements:
-            redistributed.append(text_elements[0])
-            text_elements = text_elements[1:]
-        
-        # Distribute multimedia content between text blocks
-        multimedia_queue = image_elements + table_elements
-        multimedia_queue.sort(key=lambda x: x.get('context', {}).get('relevance', 0), reverse=True)
-        
-        multimedia_index = 0
-        text_index = 0
-        
-        # Interleave multimedia with text
-        while multimedia_index < len(multimedia_queue) and text_index < len(text_elements):
-            # Add 1-2 multimedia items
-            for _ in range(min(2, len(multimedia_queue) - multimedia_index)):
-                if multimedia_index < len(multimedia_queue):
-                    redistributed.append(multimedia_queue[multimedia_index])
-                    multimedia_index += 1
             
-            # Add next text block
-            if text_index < len(text_elements):
-                redistributed.append(text_elements[text_index])
-                text_index += 1
+            # Add remaining tables
+            for table_data in available_tables:
+                table_id = table_data.get('table_id', '')
+                page_number = table_data.get('page_number', 0)
+                unique_key = f"{table_id}_{page_number}" if table_id else f"page_{page_number}_table_1"
+                
+                if unique_key not in used_table_ids:
+                    inline_elements.append({
+                        'type': 'table',
+                        'data': table_data,
+                        'context': self._extract_table_context(table_data, content_map)
+                    })
+                    logger.info(f"Added remaining table at end: {unique_key}")
+            
+            # Add remaining images
+            for img_data in available_images:
+                img_id = f"page_{img_data['page_number']}_img_1"
+                if img_id not in used_image_ids:
+                    inline_elements.append({
+                        'type': 'image',
+                        'data': img_data,
+                        'context': self._extract_image_context(img_data, content_map)
+                    })
+                    logger.info(f"Added remaining image at end: {img_id}")
         
-        # Add remaining multimedia at the end if any
-        while multimedia_index < len(multimedia_queue):
-            redistributed.append(multimedia_queue[multimedia_index])
-            multimedia_index += 1
-        
-        # Add remaining text at the end if any
-        while text_index < len(text_elements):
-            redistributed.append(text_elements[text_index])
-            text_index += 1
-        
-        logger.info(f"Redistributed {len(inline_elements)} elements with better interleaving")
-        return redistributed
-    
-    def _merge_consecutive_text_parts(self, parts: List[str]) -> List[str]:
-        """Merge consecutive text parts to avoid fragmentation while preserving placeholders."""
-        merged_parts = []
-        current_text = ""
-    
-        for part in parts:
-            if part.startswith('{IMAGE_') or part.startswith('{TABLE_') or part.startswith('{TEXT_SECTION_'):
-                # This is a placeholder
-                if current_text.strip():
-                    merged_parts.append(current_text.strip())
-                    current_text = ""
-                merged_parts.append(part)
-            else:
-                # This is text content - accumulate it
-                if current_text:
-                    # Add a space between text parts to avoid word concatenation
-                    current_text += " " + part
-                else:
-                    current_text = part
-    
-        # Add any remaining text
-        if current_text.strip():
-            merged_parts.append(current_text.strip())
-    
-        return merged_parts
+        logger.info(f"LLM-driven inline placement complete: {len(inline_elements)} elements")
+        return inline_elements
     
     def _extract_image_context(self, img_data: Dict, content_map: Dict) -> Dict:
         """Extract contextual information for image placement."""
@@ -893,7 +672,7 @@ Your integrated multimodal response:"""
         }
     
     def _extract_table_context(self, table_data: Dict, content_map: Dict) -> Dict:
-        """Extract contextual information for table placement."""
+        """Extract enhanced contextual information for table placement."""
         context = {
             'page': table_data.get('page_number', 0),
             'relevance': table_data.get('relevance_score', 0),
@@ -909,10 +688,470 @@ Your integrated multimodal response:"""
                     metadata = table_json['_metadata']
                     context['rows'] = metadata.get('total_rows', 0)
                     context['columns'] = metadata.get('total_columns', 0)
-            except:
-                pass
+                    
+                    # Enhanced context extraction
+                    context['table_type'] = self._identify_table_type(table_json)
+                    context['content_summary'] = self._generate_table_summary(table_json)
+                    context['relevance_explanation'] = self._explain_table_relevance(table_data, content_map)
+                    
+            except Exception as e:
+                logger.warning(f"Error extracting enhanced table context: {e}")
                 
         return context
+    
+    def _identify_table_type(self, table_json: Dict) -> str:
+        """Identify the type and purpose of the table."""
+        try:
+            # Check for common table patterns
+            keys = [k for k in table_json.keys() if not k.startswith('_')]
+            
+            if not keys:
+                return "unknown"
+            
+            # Extract all text content for better pattern detection
+            all_text = " ".join([str(k) for k in keys]).lower()
+            
+            # Check for exercise/worksheet patterns (HIGH PRIORITY - should be filtered out)
+            exercise_indicators = [
+                'exercise', 'question', 'answer', 'fill', 'blank', 'true', 'false',
+                'match', 'matching', 'connect', 'draw', 'label', 'identify', 'choose',
+                'select', 'write', 'complete', 'worksheet', 'activity', 'practice',
+                'test', 'quiz', 'homework', 'column i', 'column ii', 'a)', 'b)', 'c)',
+                'i)', 'ii)', 'iii)', 'iv)', 'v)', 'vi)', 'vii)'
+            ]
+            
+            if any(indicator in all_text for indicator in exercise_indicators):
+                return "exercise_worksheet"
+            
+            # Check for simple matching/classification exercises
+            if len(keys) == 2 and any('column' in k.lower() for k in keys):
+                # Look for exercise-like content in the values
+                for key in keys:
+                    values = table_json.get(key, [])
+                    if isinstance(values, list):
+                        for value in values:
+                            if value and str(value).strip():
+                                value_str = str(value).strip().lower()
+                                # Check for exercise patterns like "(a)", "(b)", "(i)", "(ii)"
+                                if re.match(r'^\([a-z]\)|^\([ivx]+\)', value_str):
+                                    return "exercise_worksheet"
+            
+            # Check for data/comparison patterns (GOOD - should be included)
+            data_indicators = ['data', 'result', 'analysis', 'comparison', 'measurement', 'statistic', 'information', 'detail']
+            if any(indicator in all_text for indicator in data_indicators):
+                return "data_analysis"
+            
+            # Check for reference/index patterns (LOW PRIORITY)
+            if len(keys) == 2 and any('page' in k.lower() or 'number' in k.lower() for k in keys):
+                return "reference_index"
+            
+            # Check for classification/matching patterns (GOOD - if not exercise)
+            if len(keys) == 2 and any('type' in k.lower() or 'category' in k.lower() for k in keys):
+                return "classification_matching"
+            
+            # Check for content-based classification
+            if len(keys) == 2:
+                # Look at the actual content to determine if it's meaningful data
+                has_meaningful_content = False
+                for key in keys:
+                    values = table_json.get(key, [])
+                    if isinstance(values, list):
+                        for value in values:
+                            if value and str(value).strip() and len(str(value).strip()) > 3:
+                                # Check if it's not just exercise markers
+                                if not re.match(r'^\([a-z]\)|^\([ivx]+\)', str(value).strip()):
+                                    has_meaningful_content = True
+                                    break
+                
+                if has_meaningful_content:
+                    return "classification_matching"
+                else:
+                    return "exercise_worksheet"
+            
+            return "general_data"
+            
+        except Exception as e:
+            logger.warning(f"Error identifying table type: {e}")
+            return "unknown"
+    
+    def _generate_table_summary(self, table_json: Dict) -> str:
+        """Generate a meaningful summary of the table content."""
+        try:
+            keys = [k for k in table_json.keys() if not k.startswith('_')]
+            if not keys:
+                return "Empty table structure"
+            
+            # Count meaningful data points
+            total_cells = 0
+            non_empty_cells = 0
+            
+            for key in keys:
+                values = table_json.get(key, [])
+                if isinstance(values, list):
+                    total_cells += len(values)
+                    non_empty_cells += sum(1 for v in values if v and str(v).strip())
+            
+            if total_cells == 0:
+                return "Empty table"
+            
+            # Generate descriptive summary
+            if len(keys) == 2:
+                return f"Comparison table with {len(keys)} columns and {non_empty_cells} data points"
+            elif len(keys) > 2:
+                return f"Multi-column data table with {len(keys)} categories and {non_empty_cells} data points"
+            else:
+                return f"Data table with {non_empty_cells} data points"
+                
+        except Exception as e:
+            logger.warning(f"Error generating table summary: {e}")
+            return "Structured data table"
+    
+    def _explain_table_relevance(self, table_data: Dict, content_map: Dict) -> str:
+        """Explain why this table is relevant to the current context."""
+        try:
+            page_num = table_data.get('page_number', 0)
+            relevance = table_data.get('relevance_score', 0)
+            
+            # Generate relevance explanation based on score and context
+            if relevance > 0.8:
+                relevance_level = "highly relevant"
+            elif relevance > 0.6:
+                relevance_level = "relevant"
+            elif relevance > 0.4:
+                relevance_level = "moderately relevant"
+            else:
+                relevance_level = "contextually related"
+            
+            return f"This table is {relevance_level} to your query and appears on page {page_num}. It provides structured information that supports the text content."
+            
+        except Exception as e:
+            logger.warning(f"Error explaining table relevance: {e}")
+            return "This table provides relevant structured data for your query."
+    
+    def _is_table_valid(self, table_json: str) -> bool:
+        """Validate table content to filter out empty or distorted tables."""
+        try:
+            import json
+            
+            # Parse table JSON
+            if isinstance(table_json, str):
+                table_data = json.loads(table_json)
+            else:
+                table_data = table_json
+            
+            if not isinstance(table_data, dict):
+                return False
+            
+            # Get non-metadata keys
+            keys = [k for k in table_data.keys() if not k.startswith('_')]
+            if not keys:
+                return False
+            
+            # Check for empty columns - STRICTER: Even one empty column makes table invalid
+            for key in keys:
+                values = table_data.get(key, [])
+                if isinstance(values, list):
+                    # Count non-empty cells in this column
+                    non_empty_cells = sum(1 for v in values if v and str(v).strip() and len(str(v).strip()) > 1)
+                    
+                    # NEW: If ANY column has empty cells, reject the entire table
+                    if len(values) > 0 and non_empty_cells == 0:
+                        logger.info(f"Column '{key}' has header but ALL cells are empty - rejecting table")
+                        return False
+                    # If more than 50% of cells in a column are empty, reject the table
+                    elif len(values) > 0 and (non_empty_cells / len(values)) < 0.5:
+                        logger.info(f"Column '{key}' has too many empty cells ({non_empty_cells}/{len(values)}) - rejecting table")
+                        return False
+            
+            # All columns passed validation
+            logger.info("All columns passed empty cell validation")
+            
+            # Check for empty rows (if table has row structure)
+            if '_metadata' in table_data:
+                metadata = table_data['_metadata']
+                total_rows = metadata.get('total_rows', 0)
+                total_cols = metadata.get('total_columns', 0)
+                
+                # NEW: Check if table has insufficient rows (only header + 1 data row)
+                if total_rows <= 1:
+                    logger.info(f"Table rejected: Only {total_rows} row(s) - insufficient data for meaningful table")
+                    return False
+                
+                # If table has very few columns, it might be invalid
+                if total_cols < 2:
+                    return False
+                
+                # Check if most rows are empty
+                empty_rows = 0
+                for key in keys:
+                    values = table_data.get(key, [])
+                    if isinstance(values, list):
+                        for row_idx in range(min(total_rows, len(values))):
+                            if row_idx < len(values):
+                                cell_value = values[row_idx]
+                                if not cell_value or not str(cell_value).strip() or len(str(cell_value).strip()) <= 1:
+                                    empty_rows += 1
+                                    break
+                
+                # If more than 70% of rows are empty, table is invalid
+                if total_rows > 0 and (empty_rows / total_rows) > 0.7:
+                    return False
+            
+            
+            
+            # NEW: Check for tables that are just lists without meaningful structure
+            meaningful_data_count = 0
+            total_cells = 0
+            
+            for key in keys:
+                values = table_data.get(key, [])
+                if isinstance(values, list):
+                    total_cells += len(values)
+                    for value in values:
+                        if value and str(value).strip() and len(str(value).strip()) > 2:
+                            meaningful_data_count += 1
+            
+            # If less than 30% of cells have meaningful data, table is invalid
+            if total_cells > 0 and (meaningful_data_count / total_cells) < 0.3:
+                return False
+            
+            # NEW: Check for tables with suspicious patterns (all empty cells in certain rows)
+            if '_metadata' in table_data:
+                metadata = table_data['_metadata']
+                total_rows = metadata.get('total_rows', 0)
+                
+                if total_rows > 0:
+                    completely_empty_rows = 0
+                    for row_idx in range(total_rows):
+                        row_has_data = False
+                        for key in keys:
+                            values = table_data.get(key, [])
+                            if isinstance(values, list) and row_idx < len(values):
+                                cell_value = values[row_idx]
+                                if cell_value and str(cell_value).strip() and len(str(cell_value).strip()) > 1:
+                                    row_has_data = True
+                                    break
+                        
+                        if not row_has_data:
+                            completely_empty_rows += 1
+                    
+                    # If more than 60% of rows are completely empty, table is invalid
+                    if (completely_empty_rows / total_rows) > 0.6:
+                        return False
+            
+            # NEW: Check for tables that are just metadata or index without actual content
+            if len(keys) <= 2 and total_cells < 4:
+                # Check if it's just a simple index or reference table
+                has_meaningful_content = False
+                for key in keys:
+                    values = table_data.get(key, [])
+                    if isinstance(values, list):
+                        for value in values:
+                            if value and str(value).strip() and len(str(value).strip()) > 3:
+                                has_meaningful_content = True
+                                break
+                
+                if not has_meaningful_content:
+                    return False
+            
+            # NEW: Fallback check for tables without metadata - ensure we have at least 2 rows of data
+            if '_metadata' not in table_data:
+                # Count actual data rows by checking the length of the first column
+                first_key = keys[0] if keys else None
+                if first_key:
+                    first_column_values = table_data.get(first_key, [])
+                    if isinstance(first_column_values, list):
+                        actual_data_rows = len([v for v in first_column_values if v and str(v).strip() and len(str(v).strip()) > 1])
+                        if actual_data_rows <= 1:
+                            logger.info(f"Table rejected: Only {actual_data_rows} data row(s) - insufficient data for meaningful table")
+                            return False
+            
+            
+            
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Error validating table: {e}")
+            return False
+    
+    def _has_meaningful_table_content(self, table_json: str, query: str) -> bool:
+        """Check if table has meaningful content relevant to the user's query."""
+        try:
+            import json
+            
+            # Parse table JSON
+            if isinstance(table_json, str):
+                table_data = json.loads(table_json)
+            else:
+                table_data = table_json
+            
+            if not isinstance(table_data, dict):
+                return False
+            
+            # Get non-metadata keys
+            keys = [k for k in table_data.keys() if not k.startswith('_')]
+            if not keys:
+                return False
+            
+            # NEW: Check if table is semantically relevant to the query
+            if not self._is_table_semantically_relevant(table_data, query):
+                logger.info(f"Table rejected due to low semantic relevance to query: '{query}'")
+                return False
+            
+            # Check if table has substantial content
+            total_cells = 0
+            meaningful_cells = 0
+            
+            for key in keys:
+                values = table_data.get(key, [])
+                if isinstance(values, list):
+                    total_cells += len(values)
+                    
+                    # Check if this column has any meaningful content at all
+                    column_has_content = False
+                    for value in values:
+                        if value and str(value).strip() and len(str(value).strip()) > 2:
+                            meaningful_cells += 1
+                            column_has_content = True
+                    
+                    # If column has header but no meaningful content, log it
+                    if not column_has_content and len(values) > 0:
+                        logger.info(f"Column '{key}' has header but no meaningful content")
+            
+            # Table must have at least 50% meaningful cells (stricter threshold)
+            if total_cells > 0 and (meaningful_cells / total_cells) < 0.5:
+                logger.info(f"Table rejected due to low meaningful content: {meaningful_cells}/{total_cells} cells meaningful")
+                return False
+            
+            # Check if table has enough data to be useful (at least 6 meaningful data points)
+            if meaningful_cells < 6:
+                logger.info(f"Table rejected due to insufficient meaningful data: {meaningful_cells} meaningful cells")
+                return False
+            
+            # Check if table structure is meaningful (not just a simple list)
+            if len(keys) < 2:
+                logger.info(f"Table rejected due to insufficient columns: {len(keys)} columns")
+                return False
+            
+            # Check if table has sufficient data rows (at least 2 rows of actual data)
+            if total_cells > 0:
+                # Calculate average rows per column to estimate total data rows
+                estimated_rows = total_cells / len(keys)
+                if estimated_rows <= 1:
+                    logger.info(f"Table rejected due to insufficient rows: estimated {estimated_rows:.1f} rows - need at least 2 rows of data")
+                    return False
+            
+            logger.info(f"Table passed content validation: {meaningful_cells}/{total_cells} meaningful cells, {len(keys)} columns")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Error checking table content relevance: {e}")
+            return False
+    
+    def _is_table_semantically_relevant(self, table_data: Dict, query: str) -> bool:
+        """Check if table is semantically relevant to the user's query."""
+        try:
+            # Get non-metadata keys
+            keys = [k for k in table_data.keys() if not k.startswith('_')]
+            if not keys:
+                return False
+            
+            # Extract all text content from the table for semantic analysis
+            table_text_content = []
+            
+            # Add column headers
+            table_text_content.extend(keys)
+            
+            # Add cell values
+            for key in keys:
+                values = table_data.get(key, [])
+                if isinstance(values, list):
+                    for value in values:
+                        if value and str(value).strip():
+                            table_text_content.append(str(value).strip())
+            
+            # Combine all text content
+            combined_table_text = " ".join(table_text_content).lower()
+            
+            # Check if table is an exercise/worksheet (should be filtered out)
+            exercise_indicators = [
+                'exercise', 'question', 'answer', 'fill', 'blank', 'true', 'false',
+                'match', 'matching', 'column', 'row', 'complete', 'worksheet',
+                'activity', 'practice', 'test', 'quiz', 'homework'
+            ]
+            
+            if any(indicator in combined_table_text for indicator in exercise_indicators):
+                logger.info(f"Table identified as exercise/worksheet - filtering out for relevance")
+                return False
+            
+            # Check if table is just a simple index or reference (low relevance)
+            index_indicators = ['page', 'number', 'reference', 'index', 'list']
+            if any(indicator in combined_table_text for indicator in index_indicators) and len(keys) <= 2:
+                logger.info(f"Table identified as simple index/reference - low relevance")
+                return False
+            
+            # Calculate semantic similarity between table content and query
+            query_words = set(query.lower().split())
+            table_words = set(combined_table_text.split())
+            
+            # Remove common stop words that don't add semantic value
+            stop_words = {
+                'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+                'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+                'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+                'should', 'may', 'might', 'can', 'this', 'that', 'these', 'those'
+            }
+            
+            query_words = query_words - stop_words
+            table_words = table_words - stop_words
+            
+            # Calculate word overlap
+            if query_words:
+                overlap = len(query_words & table_words)
+                overlap_ratio = overlap / len(query_words)
+                
+                # Require at least 20% word overlap for relevance
+                if overlap_ratio < 0.2:
+                    logger.info(f"Table has low semantic overlap with query: {overlap}/{len(query_words)} words ({overlap_ratio:.2%})")
+                    return False
+                
+                logger.info(f"Table has good semantic overlap with query: {overlap}/{len(query_words)} words ({overlap_ratio:.2%})")
+            
+            # Check for domain-specific relevance
+            query_lower = query.lower()
+            
+            # If query is about nutrition, check if table contains nutrition-related terms
+            if any(word in query_lower for word in ['nutrition', 'food', 'diet', 'eating']):
+                nutrition_terms = ['food', 'nutrition', 'diet', 'eating', 'digestion', 'nutrients', 'proteins', 'carbohydrates', 'fats', 'vitamins']
+                if not any(term in combined_table_text for term in nutrition_terms):
+                    logger.info(f"Query about nutrition but table lacks nutrition-related terms")
+                    return False
+            
+            # If query is about animals/plants, check if table contains biology terms
+            if any(word in query_lower for word in ['animal', 'plant', 'biology', 'organism']):
+                biology_terms = ['animal', 'plant', 'organism', 'species', 'biology', 'cell', 'tissue', 'organ', 'system']
+                if not any(term in combined_table_text for term in biology_terms):
+                    logger.info(f"Query about animals/plants but table lacks biology-related terms")
+                    return False
+            
+            # Check if table appears to be meaningful data vs. just exercise content
+            meaningful_data_indicators = ['data', 'result', 'analysis', 'comparison', 'measurement', 'statistic', 'information', 'detail']
+            exercise_content_indicators = ['match', 'connect', 'draw', 'label', 'identify', 'choose', 'select', 'write']
+            
+            meaningful_score = sum(1 for indicator in meaningful_data_indicators if indicator in combined_table_text)
+            exercise_score = sum(1 for indicator in exercise_content_indicators if indicator in combined_table_text)
+            
+            if exercise_score > meaningful_score:
+                logger.info(f"Table appears to be exercise content rather than meaningful data")
+                return False
+            
+            logger.info(f"Table passed semantic relevance check for query: '{query}'")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Error in semantic relevance check: {e}")
+            # If we can't determine relevance, err on the side of caution and reject
+            return False
     
     def _enhance_text_formatting(self, text: str) -> str:
         """Enhance text formatting for better presentation."""
@@ -952,17 +1191,23 @@ Your integrated multimodal response:"""
                 logger.info(f"Seamlessly integrating element {i+1}: {element_type}")
                 
                 if element_type == 'text':
-                    if element['content']:
+                    if element['content'] and element['content'].strip() != "---":
                         # Enhanced text display with better formatting
                         self._display_text_seamlessly(element['content'])
                 
                 elif element_type == 'image':
                     # Display image with contextual integration
                     self._display_image_seamlessly(element['data'], element.get('context', {}))
+                    
+                    # Add small spacing after image for better flow
+                    st.markdown("")  # Empty line for spacing
                 
                 elif element_type == 'table':
                     # Display table with contextual integration
                     self._display_table_seamlessly(element['data'], element.get('context', {}))
+                    
+                    # Add small spacing after table for better flow
+                    st.markdown("")  # Empty line for spacing
                 
                 # Note: spacing elements are now filtered out in _optimize_element_flow
             
@@ -1015,7 +1260,18 @@ Your integrated multimodal response:"""
             page_num = int(page_num)
         logger.info(f"Seamlessly displaying table from page {page_num}")
         
-        # Remove redundant table summary - let data speak for itself
+        # Display enhanced table context
+        if context and context.get('table_type') and context.get('content_summary'):
+            table_type = context.get('table_type', 'data')
+            content_summary = context.get('content_summary', '')
+            relevance_explanation = context.get('relevance_explanation', '')
+            
+            # Create contextual header for the table
+            context_header = f"**{table_type.replace('_', ' ').title()}** - {content_summary}"
+            if relevance_explanation:
+                context_header += f"\n\n{relevance_explanation}"
+            
+            st.markdown(context_header)
         
         table_displayed = False
         
@@ -1169,7 +1425,7 @@ Your integrated multimodal response:"""
             response_parts.append("The data shows:")
             for i in range(min(table_count, 3)):  # Include up to 3 tables
                 table_data = content_map['tables'][i]
-                table_summary = table_data.get('summary', 'structured information')[:150]
+                table_summary = self._get_enhanced_table_summary(table_data)[:150]
                 response_parts.append(f"{{{{TABLE_{i+1}}}}} {table_summary}")
         
         if text_count > 0:
@@ -1196,7 +1452,7 @@ Your integrated multimodal response:"""
             # Convert page number to integer if it's a number
             if isinstance(page_num, (int, float)):
                 page_num = int(page_num)
-            summary = table.get('summary', 'Data table')[:150]
+            summary = self._get_enhanced_table_summary(table)[:150]
             placeholder_details.append(f"TABLE_{i+1} - Page {page_num}: {summary}")
         
         if placeholder_details:
@@ -1449,7 +1705,8 @@ IMPORTANT: Create proper contextual references that describe what each image and
         
         table_summaries = []
         for i, table in enumerate(content_map['tables']):
-            summary = table.get('summary', 'Structured data')[:200]
+            # Use enhanced table summary extraction with backend data
+            summary = self._get_enhanced_table_summary(table)[:200]
             table_summaries.append(f"Table {i+1}: {summary}")
         
         # Create a more aggressive prompt for contextual references
@@ -1667,6 +1924,93 @@ Use the image and table summaries provided above to create meaningful contextual
         except Exception as e:
             logger.warning(f"Error in response cleaning: {e}. Using original response.")
             return response
+    
+    def _get_enhanced_table_summary(self, table: dict) -> str:
+        """Extract enhanced table summary using backend data and content analysis."""
+        try:
+            # Priority 1: Use backend-generated table summaries if available
+            # These come directly from the table structure, not nested under 'data'
+            for summary_field in ['table_summary', 'enhanced_summary', 'ai_summary', 'summary']:
+                if summary_field in table and table[summary_field]:
+                    summary = table[summary_field]
+                    if isinstance(summary, str) and len(summary.strip()) > 10:
+                        return summary.strip()
+            
+            # Priority 2: Analyze table content JSON for intelligent summary
+            table_content_json = table.get('table_content_json', '')
+            
+            if table_content_json:
+                try:
+                    import json
+                    table_content = json.loads(table_content_json)
+                    
+                    # Extract metadata for context
+                    metadata = table_content.get('_metadata', {})
+                    total_rows = metadata.get('total_rows', 0)
+                    total_columns = metadata.get('total_columns', 0)
+                    
+                    # Analyze table content to create meaningful summary
+                    table_keys = [k for k in table_content.keys() if not k.startswith('_')]
+                    
+                    # Create content-aware summary
+                    if len(table_keys) >= 2 and total_rows >= 2:
+                        # Try to identify the nature of the data
+                        sample_columns = table_keys[:3]  # First 3 columns
+                        column_descriptions = []
+                        
+                        for col in sample_columns:
+                            column_data = table_content.get(col, [])
+                            if isinstance(column_data, list) and len(column_data) > 0:
+                                # Analyze column content type
+                                sample_values = [str(val).strip() for val in column_data[:3] if str(val).strip()]
+                                if sample_values:
+                                    # Check if numeric data
+                                    numeric_count = sum(1 for val in sample_values if val.replace('.', '').replace('-', '').replace('+', '').isdigit())
+                                    if numeric_count >= len(sample_values) * 0.7:
+                                        column_descriptions.append(f"{col} (numerical data)")
+                                    else:
+                                        column_descriptions.append(f"{col}")
+                        
+                        if column_descriptions:
+                            content_desc = ", ".join(column_descriptions[:2])
+                            if len(column_descriptions) > 2:
+                                content_desc += f" and {len(column_descriptions) - 2} more columns"
+                            
+                            return f"Table with {total_rows} rows containing {content_desc}"
+                    
+                    # Fallback: Basic structure description
+                    if total_rows > 0 and total_columns > 0:
+                        return f"Data table with {total_rows} rows and {total_columns} columns"
+                        
+                except (json.JSONDecodeError, TypeError, KeyError) as e:
+                    logger.debug(f"Error parsing table content for summary: {e}")
+            
+            # Priority 3: Use existing summary field
+            if 'summary' in table and table['summary']:
+                return str(table['summary']).strip()
+            
+            # Priority 4: Use context information
+            if 'context' in table and table['context']:
+                context = table['context']
+                if isinstance(context, dict):
+                    # Extract useful context information
+                    page = context.get('page', '')
+                    table_type = context.get('type', '')
+                    if page and table_type:
+                        return f"Structured data from page {page}"
+                elif isinstance(context, str) and len(context.strip()) > 5:
+                    return context.strip()[:100]
+            
+            # Priority 5: Final fallback
+            page_number = table.get('page_number', '')
+            if page_number:
+                return f"Table from page {page_number} with structured data"
+            
+            return "Structured data table"
+            
+        except Exception as e:
+            logger.warning(f"Error extracting enhanced table summary: {e}")
+            return table.get('summary', 'Structured data table')
 
 
 print("InlineMultimodalGenerator created successfully")

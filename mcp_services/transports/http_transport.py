@@ -380,6 +380,7 @@ class MCPHTTPTransport:
                 arguments.setdefault("similarity_threshold", 0.7)
                 arguments.setdefault("focus_sections", [])
                 arguments.setdefault("max_chunks", 15)
+                arguments.setdefault("conversation_context", None)
                 result = await self.mcp_server._handle_multimodel_paper_search(**arguments)
             elif tool_name == "document_qa":
                 result = await self.mcp_server._handle_document_qa(**arguments)
@@ -550,7 +551,19 @@ class MCPHTTPTransport:
                     {
                         "name": "multimodel_paper_search",
                         "description": "Perform semantic search within papers using advanced analysis and multimodal configuration to answer queries including images and tables",
-                        "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}}
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string"},
+                                "user_id": {"type": "string"},
+                                "document_uuid": {"type": "string"},
+                                "search_type": {"type": "array", "items": {"type": "string"}, "default": ["general"]},
+                                "similarity_threshold": {"type": "number", "default": 0.7},
+                                "max_chunks": {"type": "integer", "default": 15},
+                                "conversation_context": {"type": "string", "description": "Optional string of last conversational turns, e.g., 'Q: ... A: ...'"}
+                            },
+                            "required": ["query", "user_id", "document_uuid"]
+                        }
                     },
                     {
                         "name": "document_qa",

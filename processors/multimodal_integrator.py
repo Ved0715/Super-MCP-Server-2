@@ -1495,32 +1495,66 @@ Summary (2-3 sentences, focus on main content and purpose):"""
         try:
             start_time = time.time()
             
+            # Extract optional conversation context (string of last turns)
+            conversation_context: Optional[str] = kwargs.get("conversation_context")
+
             # Check for specific table/image requests first
             specific_content_results = self._handle_specific_content_requests(query, document_uuid)
             if specific_content_results:
                 logger.info(f"Found specific content match for query: {query}")
                 return specific_content_results
             
-            # Generate query embedding
+            # Generate query embedding (primary, query-only)
             query_embedding = self._get_embedding(query)
-            
-            # Enhanced vector search with adaptive parameters
-            search_params = self._get_adaptive_search_params(query)
-            
-            # Single-pass retrieval of relevant page-chunks
-            chunk_results = self.index.query(
+
+            # Enhanced vector search with adaptive parameters (include context hints)
+            search_params = self._get_adaptive_search_params(query, conversation_context=conversation_context)
+
+            # Primary retrieval: query-only
+            primary_results = self.index.query(
                 vector=query_embedding,
                 top_k=search_params['top_k'],
                 namespace=document_uuid,
                 include_metadata=True,
                 include_values=False
             )
-            
-            logger.info(f"Composite chunk query returned {len(chunk_results.matches)} matches for namespace '{document_uuid}'")
+
+            # Optional secondary retrieval: lightly augmented with top context keywords
+            combined_matches = list(primary_results.matches)
+            if conversation_context:
+                try:
+                    intent = search_params.get('query_intent', {})
+                    context_keywords = intent.get('intent_keywords', [])
+                    if context_keywords:
+                        import os
+                        max_kw = int(os.getenv('CTX_AUGMENT_KEYWORDS', '3'))
+                        aug_keywords = context_keywords[:max_kw]
+                        if aug_keywords:
+                            augmented_query = f"{query} {' '.join(aug_keywords)}".strip()
+                            aug_emb = self._get_embedding(augmented_query)
+                            secondary_top_k = min(max(int(search_params['top_k'] * 0.5), 10), search_params['top_k'])
+                            secondary_results = self.index.query(
+                                vector=aug_emb,
+                                top_k=secondary_top_k,
+                                namespace=document_uuid,
+                                include_metadata=True,
+                                include_values=False
+                            )
+                            # Union by id, preserve primary ordering preference
+                            seen_ids = {m.id for m in combined_matches}
+                            for m in secondary_results.matches:
+                                if m.id not in seen_ids:
+                                    combined_matches.append(m)
+                                    seen_ids.add(m.id)
+                except Exception as _:
+                    # Fail open to primary results only
+                    pass
+
+            logger.info(f"Composite chunk query returned {len(combined_matches)} combined matches for namespace '{document_uuid}'")
             
             # Enhanced filtering with multi-stage intelligent selection
             relevant_chunks = self._filter_chunks_with_enhanced_scoring(
-                chunk_results.matches, query, search_params
+                combined_matches, query, search_params
             )
             
             if not search_params.get('query_intent'):
@@ -1539,7 +1573,7 @@ Summary (2-3 sentences, focus on main content and purpose):"""
             
             response_data['performance_metrics'] = {
                 'query_time': time.time() - start_time,
-                'total_results': len(chunk_results.matches),
+                'total_results': len(combined_matches),
                 'relevant_chunks': len(relevant_chunks),
                 'search_strategy': search_params['strategy']
             }
@@ -1555,10 +1589,68 @@ Summary (2-3 sentences, focus on main content and purpose):"""
                 'error': str(e)
             }
     
-    def _get_adaptive_search_params(self, query: str) -> Dict[str, Any]:
-        """Get intelligent search parameters using enhanced dynamic query intent analysis."""
+    def _get_adaptive_search_params(self, query: str, conversation_context: Optional[str] = None) -> Dict[str, Any]:
+        """Get intelligent search parameters using enhanced dynamic query intent analysis.
+        The conversation_context is a plain string; it is used only to enrich intent keywords and conditional instructions.
+        Retrieval embeddings remain based on the original query only.
+        """
         # Use enhanced AI-powered query intent detection
         query_intent = self._analyze_query_intent_with_cot(query)
+
+        # If a string context is provided, derive lightweight keywords, page hints, and focus cues
+        if isinstance(conversation_context, str) and conversation_context.strip():
+            try:
+                context_text = conversation_context.strip()
+
+                # 1) Parse latest Q/A blocks (simple heuristic)
+                qa_blocks = re.findall(r"(?is)Q:\s*(.+?)(?:\n\s*A:\s*(.+?))?(?=(?:\n\s*Q:)|\Z)", context_text)
+                recent_qs = [q.strip() for q, _ in qa_blocks[-5:]] if qa_blocks else []
+                last_q = recent_qs[-1] if recent_qs else ""
+
+                # 2) Extract page hints from context
+                page_numbers = [int(n) for n in re.findall(r"page\s*(\d+)", context_text, flags=re.I)]
+                preferred_pages = sorted(list({p for p in page_numbers}))[:5]
+
+                # 3) Extract lightweight keywords from last ~500 chars
+                context_slice = context_text[-500:]
+                words = re.findall(r"[A-Za-z][A-Za-z0-9_-]+", context_slice.lower())
+                stop = {
+                    'the','and','for','with','that','this','from','have','has','were','been','into','your','their','about','also','only','over','when','which','while','will','would','could','should','there','here','such','than','then','them','they','what','how','why','where','does','did','now','next','please','more','less','very','much','like'
+                }
+                keywords = [w for w in words if len(w) > 3 and w not in stop]
+                seen = set()
+                context_keywords = [w for w in keywords if not (w in seen or seen.add(w))][:25]
+
+                # 4) Detect advantage/disadvantage focus cues from last question
+                pos_kw, neg_kw = [], []
+                if last_q:
+                    lq = last_q.lower()
+                    if any(t in lq for t in ["disadvantage","limitations","drawbacks","cons","weaknesses"]):
+                        pos_kw.extend(["limitation","drawback","disadvantage","challenge","cost","memory","latency","quadratic","n2","compute","bottleneck"])
+                        neg_kw.extend(["advantage","benefit","pro"])
+                    elif any(t in lq for t in ["advantage","benefits","pros","strengths"]):
+                        pos_kw.extend(["advantage","benefit","strength","parallel","scalable","efficient","accuracy","bleu","speed"])
+                        neg_kw.extend(["limitation","drawback"])
+
+                # Merge into intent
+                query_intent.setdefault("intent_keywords", [])
+                query_intent["intent_keywords"].extend([k for k in context_keywords if k not in query_intent["intent_keywords"]])
+
+                query_intent.setdefault("conditional_instructions", {})
+                ci = query_intent["conditional_instructions"]
+                ci["context_guidance"] = "Prioritize content aligned with recent conversational topics and terminology."
+                if preferred_pages:
+                    ci["preferred_pages"] = preferred_pages
+                if pos_kw:
+                    existing_pos = set(ci.get("positive_keywords", []))
+                    ci["positive_keywords"] = list(existing_pos.union(set(pos_kw)))
+                if neg_kw:
+                    existing_neg = set(ci.get("negative_keywords", []))
+                    ci["negative_keywords"] = list(existing_neg.union(set(neg_kw)))
+
+                query_intent.setdefault("content_preferences", ["text", "images", "tables"])
+            except Exception:
+                pass
         
         # Extract search parameters from intent analysis
         search_params = query_intent.get('search_parameters', {})
@@ -2684,8 +2776,34 @@ Think step-by-step about what the user really wants and how to optimally retriev
                     'inline_elements': [{"type": "text", "content": f"No relevant content found for '{query}'. Try rephrasing your question or using different keywords."}]
                 }
             
+            # Strengthen final generation with lightweight guardrails without changing pipeline logic
+            guardrails = (
+                "FINAL RESPONSE GUARDRAILS\n"
+                "You must answer ONLY the current question using the retrieved evidence as the sole source of facts.\n\n"
+                "ConversationIntent (non-factual): Use conversation context only to clarify scope/tone and focus (e.g., page cues like 'see page X', or focus like 'advantages'/'disadvantages'). Do NOT add facts from it.\n\n"
+                "Grounding and page fidelity:\n"
+                "- If the question includes 'see page X', prioritize evidence from page X.\n"
+                "- If page X is not present in retrieved evidence, say so briefly and use the best nearby pages; mark clearly.\n"
+                "- Cite inline as [Page N] after the sentences they support.\n\n"
+                "Follow-up discipline:\n"
+                "- If asked for 'advantages' or 'disadvantages', focus strictly on that and avoid the other unless explicitly requested.\n"
+                "- If asked 'what were the previous questions?', list ONLY the last few questions (no answers), do not invent details.\n\n"
+                "Tables and images:\n"
+                "- Include a table/image only if it directly supports the answer and exists in retrieved evidence.\n"
+                "- At most 1 table and 1 image; ensure headers/values are complete and readable.\n"
+                "- If the referenced artifact is missing, do not show it—summarize instead.\n\n"
+                "Output quality:\n"
+                "- Start with a 1–2 sentence direct answer, then supporting details.\n"
+                "- Keep to \u2264180 words unless asked otherwise.\n"
+                "- Every claim must be supported by retrieved chunks; if support is insufficient, ask one brief clarification question.\n"
+            )
+
+            # Merge guardrails into conditional instructions for the inline generator
+            merged_conditionals = dict(conditional_instructions or {})
+            merged_conditionals["final_response_guardrails"] = guardrails
+
             # Use the inline generator directly - it handles all content extraction and organization
-            response_data = self.inline_generator.generate_inline_response_from_chunks(query, relevant_chunks, conditional_instructions, response_scope)
+            response_data = self.inline_generator.generate_inline_response_from_chunks(query, relevant_chunks, merged_conditionals, response_scope)
             
             logger.debug(f"Inline generator response type: {type(response_data)}")
             logger.debug(f"Inline generator response: {response_data}")

@@ -523,7 +523,8 @@ Use [Page X] format and bullet points where necessary.
     async def search_multimodal_content(self, 
                                       query: str, 
                                       paper_id: str,
-                                      max_chunks: int = 15) -> Dict[str, Any]:
+                                      max_chunks: int = 15,
+                                      conversation_context: Optional[str] = None) -> Dict[str, Any]:
         """
         Search for multimodal content (images, tables, text) in a processed paper.
         
@@ -544,7 +545,8 @@ Use [Page X] format and bullet points where necessary.
             results = self.multimodal_integrator.query_multimodal_content(
                 query=query,
                 document_uuid=paper_id,
-                max_chunks= max_chunks
+                max_chunks= max_chunks,
+                conversation_context=conversation_context
             )
 
             logger.debug(f"Multimodal integrator returned: {type(results)}")

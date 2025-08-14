@@ -296,7 +296,8 @@ class PerfectMCPServer:
                             "document_uuid": {"type": "string", "description": "Document UUID for specific paper"},
                             "search_type": {"type": "array", "items": {"type": "string"}, "enum": ["general", "methodology", "results", "discussion", "conclusion", "statistical", "citations"], "default": ["general"]},
                             "similarity_threshold": {"type": "number", "default": 0.7, "minimum": 0.0, "maximum": 1.0},
-                            "max_chunks": {"type": "integer", "default": 15, "minimum": 1, "maximum": 50, "description": "Maximum number of chunks to return"}
+                            "max_chunks": {"type": "integer", "default": 15, "minimum": 1, "maximum": 50, "description": "Maximum number of chunks to return"},
+                            "conversation_context": {"type": "string", "description": "Optional conversation history string, e.g., 'Q: ... A: ...' used only to enrich intent; not used as evidence"}
                         },
                         "required": ["query", "user_id", "document_uuid"]
                     }
@@ -3819,7 +3820,7 @@ The operation has been successfully cancelled and will stop as soon as possible.
 
     async def _handle_multimodel_paper_search(self, query: str, user_id: str, 
                                     document_uuid: str, search_type: List[str], similarity_threshold: float, 
-                                    max_chunks: int, focus_sections: List[str] = []):
+                                    max_chunks: int, focus_sections: List[str] = [], conversation_context: Optional[str] = None):
         """Handle multimodel paper search with rich multimodal response formatting."""
         import json
         
@@ -3840,10 +3841,36 @@ The operation has been successfully cancelled and will stop as soon as possible.
         # namespace = "llms_survey_and_challenges"
         namespace = f"user_{user_id}_doc_{document_uuid}"
 
+        # Normalize conversation context: keep last N Q/A blocks (configurable) with optional char cap
+        normalized_context = conversation_context
+        try:
+            if isinstance(conversation_context, str):
+                import os, re
+                # configurable limits
+                max_blocks = int(os.getenv("CONTEXT_MAX_QA_BLOCKS", "5"))  # number of Q/A blocks
+                max_chars = int(os.getenv("CONTEXT_MAX_CHARS", "2000"))     # final char cap
+
+                text = conversation_context.strip()
+                # Split by Q: markers (keep marker with block)
+                parts = re.split(r"(?m)(?=^\s*Q:\s*)", text)
+                blocks = [p.strip() for p in parts if p and p.strip()]
+                if blocks:
+                    blocks = blocks[-max_blocks:]
+                    trimmed = "\n\n".join(blocks)
+                else:
+                    trimmed = text
+
+                if len(trimmed) > max_chars:
+                    trimmed = trimmed[-max_chars:]
+                normalized_context = trimmed
+        except Exception:
+            normalized_context = None
+
         result = await self.paper_retriever.search_multimodal_content( 
             query=query,
             paper_id=namespace,
-            max_chunks=max_chunks
+            max_chunks=max_chunks,
+            conversation_context=normalized_context
         )
         
         # Convert multimodal elements to a seamless markdown response for UI

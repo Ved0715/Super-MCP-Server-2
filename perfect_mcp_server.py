@@ -479,7 +479,7 @@ class PerfectMCPServer:
                 
                 Tool(
                     name="search_knowledge_base",
-                    description="Search knowledge base content with enhanced retrieval capabilities",
+                    description="Search knowledge base content with enhanced retrieval capabilities and conversational context support",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -488,7 +488,12 @@ class PerfectMCPServer:
                             "max_results": {"type": "integer", "default": 5, "minimum": 1, "maximum": 20},
                             "namespace": {"type": "string", "default": "knowledge-base"},
                             "index_name": {"type": "string", "default": "optimized-kb-index"},
-                            "use_chain_of_thought": {"type": "boolean", "description": "Enable Chain of Thought reasoning", "default": False}
+                            "use_chain_of_thought": {"type": "boolean", "description": "Enable Chain of Thought reasoning", "default": False},
+                            "conversation_context": {
+                                "type": "string", 
+                                "description": "Conversation history in structured format with session metadata and last 3 turns: ---SESSION METADATA--- ... ---END METADATA--- ---TURN 1 START--- ... ---TURN 1 END--- etc.",
+                                "default": None
+                            }
                         },
                         "required": ["query"]
                     }
@@ -2707,7 +2712,8 @@ The operation has been successfully cancelled and will stop as soon as possible.
     async def _handle_search_knowledge_base(self, query: str, search_type: str = "enhanced",
                                           max_results: int = 5, namespace: str = "knowledge-base",
                                           index_name: str = "optimized-kb-index",
-                                          use_chain_of_thought: bool = False, **kwargs) -> List[TextContent]:
+                                          use_chain_of_thought: bool = False, 
+                                          conversation_context: str = None, **kwargs) -> List[TextContent]:
         """
         Handle knowledge base search using HybridRetriever with intelligent query routing
         
@@ -2724,8 +2730,8 @@ The operation has been successfully cancelled and will stop as soon as possible.
             logger.info(f"🧠 Using Chain of Thought retrieval for: '{query[:100]}...'")
         
             try:
-                cot_result = await self.cot_retriever.answer_question_with_cot(query, max_results)
-                
+                cot_result = await self.cot_retriever.answer_question_with_cot(query, max_results, conversation_context)
+                print(cot_result)
                 # Format the CoT response
                 response_data = {
                     "success": cot_result["success"],
@@ -2783,7 +2789,7 @@ The operation has been successfully cancelled and will stop as soon as possible.
                 # Use specialized content search for special queries
                 if any(indicator in query_lower for indicator in special_indicators):
                     logger.info(f"🎯 Detected special query type, using search_knowledge_base_contents")
-                    response_text = self.hybrid_retriever.search_knowledge_base_contents(query)
+                    response_text = self.hybrid_retriever.search_knowledge_base_contents(query, max_results, conversation_context)
                     
                     response_data = {
                         "success": True,
@@ -2797,7 +2803,8 @@ The operation has been successfully cancelled and will stop as soon as possible.
                 else:
                     # For regular queries, use the answer_question method with enhanced retrieval
                     logger.info(f"🔍 Regular query, using enhanced answer_question method")
-                    response_text = await self._run_hybrid_retriever_async(query, max_results)
+                    response_text = await self._run_hybrid_retriever_async(query, max_results, conversation_context)
+
                     
                     response_data = {
                         "success": True,
@@ -2824,15 +2831,15 @@ The operation has been successfully cancelled and will stop as soon as possible.
             # Fallback to basic search on any error
             return await self._fallback_basic_search(query, search_type, max_results, namespace, index_name)
     
-    async def _run_hybrid_retriever_async(self, query: str, max_results: int) -> str:
+    async def _run_hybrid_retriever_async(self, query: str, max_results: int, conversation_context: str = None) -> str:
         """Run HybridRetriever answer_question in async context"""
         try:
             # Run the synchronous method in a thread pool to avoid blocking
             import asyncio
             import functools
             
-            # Create a partial function with the query
-            answer_func = functools.partial(self.hybrid_retriever.answer_question, query, max_results)
+            # Create a partial function with the query and conversation context
+            answer_func = functools.partial(self.hybrid_retriever.answer_question, query, max_results, conversation_context)
             
             # Run in thread pool
             loop = asyncio.get_event_loop()

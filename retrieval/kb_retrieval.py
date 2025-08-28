@@ -32,11 +32,116 @@ class SearchResult:
     confidence: float = 0.0
 
 class QueryProcessor:
-    """Advanced query understanding and expansion"""
+    """Advanced query understanding and expansion with conversation context"""
     
     def __init__(self, openai_client: OpenAI):
         self.openai_client = openai_client
         self.encoding = tiktoken.encoding_for_model("gpt-4")
+    
+    def rewrite_query_with_context(self, user_query: str, conversation_context: Optional[str] = None) -> str:
+        """
+        Rewrite query using conversation context to resolve ambiguities and references.
+        Returns the rewritten query or the original if no rewriting needed.
+        """
+        if not conversation_context:
+            return user_query
+        
+        try:
+            rewrite_prompt = f"""SYSTEM: You are a query rewriter used before retrieval. You will receive a pre-built conversation_context that uses clear delimiters and optional session metadata. Parse that context to resolve references.
+
+INPUT FORMAT NOTES:
+- conversation_context uses these markers:
+  ---SESSION METADATA--- ... ---END METADATA---
+  ---TURN 1 START--- ... ---TURN 1 END---
+  ... (up to last K turns)
+- Session metadata may include keys like current_topic and last_doc used to resolve pronouns.
+
+TASK:
+Convert the latest user utterance into a single, self-contained question suitable for embedding and sending to a vector DB.
+
+RULES:
+1. Output EXACTLY ONE of the following and NOTHING else:
+   - A single rewritten self-contained question (one sentence).
+   - "CLARIFY: <short clarifying question>" — when history lacks info needed to disambiguate.
+   - "NO_CHANGE" — when the latest user query is already self-contained.
+2. If returning a rewritten query: remove pronouns/vague references and preserve intent & entities (document titles, section numbers, dates).
+3. If returning CLARIFY: ask a single short clarifying question that directly asks for the missing info.
+4. NEVER hallucinate details not present in conversation_context or session metadata.
+5. Keep rewritten questions concise (<= 30–40 words).
+6. Do not output explanations, reasons, or extra text.
+
+FEW-SHOT EXAMPLES:
+
+Conversation so far:
+---SESSION METADATA---
+Session metadata: current_topic=Machine Learning; last_doc=ML_Report_2025;
+---END METADATA---
+---TURN 1 START---
+Previous Q: What is machine learning ?
+Previous A: Machine learning is a field of study that uses algorithms to learn patterns from data.
+---TURN 1 END---
+---TURN 2 START---
+Previous Q: What are its sub section ?
+Previous A: Subsections include supervised learning, unsupervised learning, reinforcement learning, and deep learning.
+---TURN 2 END---
+Latest user query:
+What does deep learning?
+=> NO_CHANGE
+
+Conversation so far:
+User: Read the "Onboarding Guide".
+Assistant: Done — I summarized section 1 and 2.
+User: What does section 2 contain?
+Latest user query:
+What does section 2 contain?
+=> What does Section 2 of the "Onboarding Guide" describe?
+
+Conversation so far:
+User: I want the refund policy.
+Assistant: It's in the Billing doc.
+Latest user query:
+Any exceptions?
+=> What exceptions to the refund policy are listed in the Billing document?
+
+Conversation so far:
+User: I need help with yesterday's deployment.
+Latest user query:
+Which servers failed?
+=> CLARIFY: Which deployment do you mean by "yesterday's deployment" (provide a deployment ID or environment)?
+
+Now rewrite:
+Conversation so far:
+{conversation_context}
+Latest user query:
+{user_query}
+"""
+            
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "user", "content": rewrite_prompt}
+                ],
+                max_tokens=100,
+                temperature=0.1
+            )
+            
+            rewritten_query = response.choices[0].message.content.strip()
+            
+            # Handle different response types
+            if rewritten_query == "NO_CHANGE":
+                return user_query
+            elif rewritten_query.startswith("CLARIFY:"):
+                # For now, return original query if clarification needed
+                # In a production system, you might want to handle this differently
+                return user_query
+            else:
+                # Return the rewritten query
+                print(f"🔄 Query rewritten: '{user_query}' → '{rewritten_query}'")
+                return rewritten_query
+                
+        except Exception as e:
+            print(f"⚠️ Query rewriting failed: {e}")
+            return user_query
     
     def understand_query(self, query: str) -> Dict[str, Any]:
         """Analyze query intent and type"""
@@ -127,6 +232,9 @@ class HybridRetriever:
         self.cross_encoder = None
         self.bm25_index = None
         self.chunks_data = {}
+        
+        # Initialize query processor for context-aware queries
+        self.query_processor = QueryProcessor(self.openai_client)
         
         self.setup_models()
         self.setup_pinecone()
@@ -338,13 +446,16 @@ class HybridRetriever:
             'has_content': has_content
         }
 
-    def enhanced_search(self, query: str, top_k: int = 10) -> List[SearchResult]:
-        """Enhanced search with query processing"""
-        print(f"🔍 Searching for: '{query}'")
+    def enhanced_search(self, query: str, top_k: int = 10, conversation_context: Optional[str] = None) -> List[SearchResult]:
+        """Enhanced search with query processing and conversation context"""
+        # Rewrite query using conversation context if available
+        processed_query = self.query_processor.rewrite_query_with_context(query, conversation_context)
+        
+        print(f"🔍 Searching for: '{processed_query}'")
         
         try:
-            # Generate query embedding
-            query_embedding = self.generate_embedding(query)
+            # Generate query embedding for the processed query
+            query_embedding = self.generate_embedding(processed_query)
             if not query_embedding:
                 return []
             
@@ -377,9 +488,12 @@ class HybridRetriever:
             print(f"❌ Search failed: {e}")
             return []
     
-    def search_with_context(self, query: str, top_k: int = 10) -> str:
+    def search_with_context(self, query: str, top_k: int = 10, conversation_context: Optional[str] = None) -> str:
         """Search and format results with context using AI processing"""
-        results = self.enhanced_search(query, top_k)
+        # Rewrite query using conversation context if available
+        processed_query = self.query_processor.rewrite_query_with_context(query, conversation_context)
+        
+        results = self.enhanced_search(processed_query, top_k, conversation_context)
         
         if not results:
             return "No relevant information found."
@@ -395,11 +509,11 @@ class HybridRetriever:
         
         return "\n\n".join(context_parts)
     
-    def answer_question(self, question: str, max_results: int = 10) -> str:
+    def answer_question(self, question: str, max_results: int = 10, conversation_context: Optional[str] = None) -> str:
         """Generate an answer using retrieved context"""
         try:
             # Check if this is a question about knowledge base contents, study plans, or topic locations
-            context = self.search_knowledge_base_contents(question, max_results)
+            context = self.search_knowledge_base_contents(question, max_results, conversation_context)
             
             # If it's a special query (meta, study plan, topic location, or comprehensive analysis), return directly
             special_indicators = [
@@ -427,20 +541,30 @@ class HybridRetriever:
             print(f"🧠 Detected query type: {query_type}")
             print(f"🎯 Using specialized prompt template")
             
-            # Generate answer using specialized prompt with strict constraints
+            # Generate answer using specialized prompt with strict constraints and conversation context
+            conversation_context_section = ""
+            if conversation_context:
+                conversation_context_section = f"""
+            CONVERSATION CONTEXT:
+            {conversation_context}
+            
+            NOTE: Use the conversation context above to better understand the user's query and provide more relevant responses, but still base your answer ONLY on the knowledge base content below.
+            """
+            
             strict_system_prompt = f"""
-            Quary: {question}
+            Query: {question}
             CRITICAL INSTRUCTIONS - FOLLOW EXACTLY:
             
             1. ONLY use information provided in the context below.
             2. DO NOT reference books, authors, or page numbers if not mentioned in the context
             3. DO NOT generate general knowledge about the topic beyond what's in the context. But use what ever in the context to the answer quary.
-            4. Give more detailed description based on the Quary given and the context provided below.
+            4. Give more detailed description based on the Query given and the context provided below.
             5. Always start your response with: "Based on the available knowledge base content:"
             6. Only cite books and page numbers if available in the context.
             7. If the context doesn't contain enough information, say: "Based on the available knowledge base content, I have limited information about this topic."
-            8. Be create about the structure of the content, the way it Apperance and Readability. You can change the little wording if necessary.
-            9. It should look like you are answering the quary.
+            8. Be creative about the structure of the content, the way it Appearance and Readability. You can change the little wording if necessary.
+            9. It should look like you are answering the query.
+            {conversation_context_section}
             CONTEXT:
             {context}
             
@@ -1202,7 +1326,7 @@ class HybridRetriever:
         
         return False
     
-    def search_knowledge_base_contents(self, query: str, max_results: int = 5) -> str:
+    def search_knowledge_base_contents(self, query: str, max_results: int = 5, conversation_context: Optional[str] = None) -> str:
         """Search for questions about knowledge base contents"""
         
         # Check for study plan queries
@@ -1456,7 +1580,7 @@ class HybridRetriever:
         
         else:
             # Regular search
-            return self.search_with_context(query)
+            return self.search_with_context(query, conversation_context=conversation_context)
     
     def find_books_covering_topic(self, topic: str) -> List[str]:
         """Find which books cover a specific topic"""

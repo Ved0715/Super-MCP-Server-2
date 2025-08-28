@@ -74,6 +74,111 @@ class ChainOfThoughtKBRetriever:
         
         print("✅ Chain of Thought KB Retriever initialized with cost optimization")
     
+    def rewrite_query_with_context(self, user_query: str, conversation_context: Optional[str] = None) -> str:
+        """
+        Rewrite query using conversation context to resolve ambiguities and references.
+        Returns the rewritten query or the original if no rewriting needed.
+        """
+        if not conversation_context:
+            return user_query
+        
+        try:
+            rewrite_prompt = f"""SYSTEM: You are a query rewriter used before retrieval. You will receive a pre-built conversation_context that uses clear delimiters and optional session metadata. Parse that context to resolve references.
+
+INPUT FORMAT NOTES:
+- conversation_context uses these markers:
+  ---SESSION METADATA--- ... ---END METADATA---
+  ---TURN 1 START--- ... ---TURN 1 END---
+  ... (up to last K turns)
+- Session metadata may include keys like current_topic and last_doc used to resolve pronouns.
+
+TASK:
+Convert the latest user utterance into a single, self-contained question suitable for embedding and sending to a vector DB.
+
+RULES:
+1. Output EXACTLY ONE of the following and NOTHING else:
+   - A single rewritten self-contained question (one sentence).
+   - "CLARIFY: <short clarifying question>" — when history lacks info needed to disambiguate.
+   - "NO_CHANGE" — when the latest user query is already self-contained.
+2. If returning a rewritten question: remove pronouns/vague references and preserve intent & entities (document titles, section numbers, dates).
+3. If returning CLARIFY: ask a single short clarifying question that directly asks for the missing info.
+4. NEVER hallucinate details not present in conversation_context or session metadata.
+5. Keep rewritten questions concise (<= 30–40 words).
+6. Do not output explanations, reasons, or extra text.
+
+FEW-SHOT EXAMPLES:
+
+Conversation so far:
+---SESSION METADATA---
+Session metadata: current_topic=Machine Learning; last_doc=ML_Report_2025;
+---END METADATA---
+---TURN 1 START---
+Previous Q: What is machine learning ?
+Previous A: Machine learning is a field of study that uses algorithms to learn patterns from data.
+---TURN 1 END---
+---TURN 2 START---
+Previous Q: What are its sub section ?
+Previous A: Subsections include supervised learning, unsupervised learning, reinforcement learning, and deep learning.
+---TURN 2 END---
+Latest user query:
+What is deep learning?
+=> NO_CHANGE
+
+Conversation so far:
+User: Read the "Onboarding Guide".
+Assistant: Done — I summarized section 1 and 2.
+User: What does section 2 contain?
+Latest user query:
+What does section 2 contain?
+=> What does Section 2 of the "Onboarding Guide" describe?
+
+Conversation so far:
+User: I want the refund policy.
+Assistant: It's in the Billing doc.
+Latest user query:
+Any exceptions?
+=> What exceptions to the refund policy are listed in the Billing document?
+
+Conversation so far:
+User: I need help with yesterday's deployment.
+Latest user query:
+Which servers failed?
+=> CLARIFY: Which deployment do you mean by "yesterday's deployment" (provide a deployment ID or environment)?
+
+Now rewrite:
+Conversation so far:
+{conversation_context}
+Latest user query:
+{user_query}
+"""
+            
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "user", "content": rewrite_prompt}
+                ],
+                max_tokens=100,
+                temperature=0.1
+            )
+            
+            rewritten_query = response.choices[0].message.content.strip()
+            
+            # Handle different response types
+            if rewritten_query == "NO_CHANGE":
+                return user_query
+            elif rewritten_query.startswith("CLARIFY:"):
+                # For now, return original query if clarification needed
+                # In a production system, you might want to handle this differently
+                return user_query
+            else:
+                # Return the rewritten query
+                print(f"🔄 CoT Query rewritten: '{user_query}' → '{rewritten_query}'")
+                return rewritten_query
+                
+        except Exception as e:
+            print(f"⚠️ CoT Query rewriting failed: {e}")
+            return user_query
+    
     def setup_models(self):
         """Initialize cross-encoder for reranking"""
         if config.cross_encoder_reranking:
@@ -349,7 +454,7 @@ class ChainOfThoughtKBRetriever:
         
         return strategy
     
-    async def execute_retrieval_cot(self, query: str, query_analysis: Dict, strategy: Dict) -> List[CoTSearchResult]:
+    async def execute_retrieval_cot(self, query: str, query_analysis: Dict, strategy: Dict, conversation_context: Optional[str] = None) -> List[CoTSearchResult]:
         """
         Step 3: Execute the planned retrieval strategy
         Optimized to minimize API calls
@@ -389,12 +494,12 @@ class ChainOfThoughtKBRetriever:
                 expected_chunks = strategy.get('expected_chunks', 5)
                 
                 # Primary search
-                primary_results = await self.vector_search(search_terms[0], expected_chunks)
+                primary_results = await self.vector_search(search_terms[0], expected_chunks, conversation_context)
                 search_results.extend(primary_results)
                 
                 # Secondary search if needed and strategy allows
                 if len(search_results) < expected_chunks and len(search_terms) > 1:
-                    secondary_results = await self.vector_search(search_terms[1], 2)
+                    secondary_results = await self.vector_search(search_terms[1], 2, conversation_context)
                     search_results.extend(secondary_results)
             
             await self.add_cot_step(
@@ -420,16 +525,20 @@ class ChainOfThoughtKBRetriever:
             
             return []
     
-    async def vector_search(self, query: str, top_k: int) -> List[CoTSearchResult]:
-        """Perform vector search with CoT reasoning"""
+    async def vector_search(self, query: str, top_k: int, conversation_context: Optional[str] = None) -> List[CoTSearchResult]:
+        """Perform vector search with CoT reasoning and conversation context"""
         if not self.index:
             return []
         
+        # Rewrite query using conversation context if available
+        processed_query = self.rewrite_query_with_context(query, conversation_context)
+       
+        
         try:
-            # Generate embedding
+            # Generate embedding for the processed query
             embedding_response = await asyncio.to_thread(
                 self.openai_client.embeddings.create,
-                input=query,
+                input=processed_query,
                 model=config.embedding_model,
                 dimensions=config.embedding_dimension
             )
@@ -467,7 +576,7 @@ class ChainOfThoughtKBRetriever:
             print(f"❌ Vector search failed: {e}")
             return []
     
-    async def enhanced_synthesis_with_quality_check_cot(self, search_results: List[CoTSearchResult], query: str, comprehensive_result: Dict) -> str:
+    async def enhanced_synthesis_with_quality_check_cot(self, search_results: List[CoTSearchResult], query: str, comprehensive_result: Dict, conversation_context: Optional[str] = None) -> str:
         """
         COMPREHENSIVE Step 4: Enhanced synthesis with sequential question answering and quality check
         Combines multiple phases in single API call for cost efficiency
@@ -507,13 +616,22 @@ class ChainOfThoughtKBRetriever:
         combined_context = "\n".join(context_chunks)
         
         # Create comprehensive synthesis prompt with all phases
+        conversation_context_section = ""
+        if conversation_context:
+            conversation_context_section = f"""
+        **CONVERSATION CONTEXT:**
+        {conversation_context}
+        
+        NOTE: Use the conversation context above to better understand the user's query and provide more contextually relevant responses, but still base your answer ONLY on the knowledge base content below.
+        """
+        
         comprehensive_synthesis_prompt = f"""
         **COMPREHENSIVE CHAIN OF THOUGHT SYNTHESIS WITH QUALITY CHECK**
         
         Original Query: "{query}"
         Query Type: {query_analysis.get('query_type', 'concept_explanation')}
         Complexity Level: {query_analysis.get('complexity', 'intermediate')}
-        
+        {conversation_context_section}
         **AVAILABLE KNOWLEDGE BASE SOURCES:**
         From books: {', '.join(source_books)}
         Total relevant chunks found: {len(search_results)}
@@ -686,7 +804,7 @@ class ChainOfThoughtKBRetriever:
         
         return enhanced_response
     
-    async def answer_question_with_cot(self, question: str, max_results: int = 5) -> Dict[str, Any]:
+    async def answer_question_with_cot(self, question: str, max_results: int = 5, conversation_context: Optional[str] = None) -> Dict[str, Any]:
         """
         Main method: Answer question using comprehensive Chain of Thought reasoning
         Optimized for cost while maintaining thoroughness
@@ -706,13 +824,13 @@ class ChainOfThoughtKBRetriever:
             strategy = await self.plan_retrieval_strategy_cot(query_analysis)
             
             # Step 5: Execute retrieval with CoT
-            search_results = await self.execute_retrieval_cot(question, query_analysis, strategy)
+            search_results = await self.execute_retrieval_cot(question, query_analysis, strategy, conversation_context)
             
             # Step 6: Enhanced synthesis with quality check using CoT
-            synthesis_response = await self.enhanced_synthesis_with_quality_check_cot(search_results, question, comprehensive_result)
+            synthesis_response = await self.enhanced_synthesis_with_quality_check_cot(search_results, question, comprehensive_result, conversation_context)
             
             # Step 7: Generate final enhanced response based on all CoT analysis
-            final_response = await self.generate_final_enhanced_response_cot(synthesis_response, comprehensive_result, search_results, question)
+            final_response = await self.generate_final_enhanced_response_cot(synthesis_response, comprehensive_result, search_results, question, conversation_context)
             
             execution_time = time.time() - start_time
             
@@ -780,7 +898,7 @@ class ChainOfThoughtKBRetriever:
                 }
             }
     
-    async def generate_final_enhanced_response_cot(self, synthesis_response: str, comprehensive_result: Dict, search_results: List[CoTSearchResult], query: str) -> str:
+    async def generate_final_enhanced_response_cot(self, synthesis_response: str, comprehensive_result: Dict, search_results: List[CoTSearchResult], query: str, conversation_context: Optional[str] = None) -> str:
         """
         FINAL Step 7: Generate the ultimate enhanced response considering all CoT analysis
         """
@@ -804,11 +922,21 @@ class ChainOfThoughtKBRetriever:
         **Reasoning Approach:** {thinking_phase.get('reasoning_approach', 'Systematic analysis')}
         """
         
+        # Add conversation context section
+        conversation_context_section = ""
+        if conversation_context:
+            conversation_context_section = f"""
+        **CONVERSATION CONTEXT:**
+        {conversation_context}
+        
+        NOTE: Use the conversation context above to better understand the user's query and provide more contextually relevant responses, but still base your answer ONLY on the knowledge base content.
+        """
+        
         final_enhancement_prompt = f"""
         **FINAL CHAIN OF THOUGHT RESPONSE ENHANCEMENT**
         
         Original Query: "{query}"
-        
+        {conversation_context_section}
         **CONTEXT FROM COMPREHENSIVE ANALYSIS:**
         {analysis_context}
         

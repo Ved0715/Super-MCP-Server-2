@@ -89,13 +89,13 @@ class DocumentTopics:
         total_chars = sum(len(chunk.content) for chunk in chunks)
         avg_chunk_size = total_chars / len(chunks) if chunks else 0
         
-        # Aim for ~100K characters per batch (roughly 25K tokens)
+        # Aim for ~200K characters per batch (roughly 50K tokens)
         # Leave room for prompt and response
-        target_chars_per_batch = 100000
+        target_chars_per_batch = 200000
         optimal_batch_size = max(10, int(target_chars_per_batch / avg_chunk_size)) if avg_chunk_size > 0 else 50
         
         # Cap at reasonable limits
-        return min(optimal_batch_size, 100)
+        return min(optimal_batch_size, 275)
 
     def _process_batch(self, batch: List[DocumentChunk]) -> Dict:
         """Send a batch of chunks to OpenAI to extract broader, main topics."""
@@ -104,7 +104,7 @@ class DocumentTopics:
             
             prompt = f"""
             You are an expert in document analysis.
-            Analyze the following text and extract only the **topics/sections** in the exact order they appear.
+            Analyze the following text and extract only the **IMPORTANT topics/sections** in the exact order they appear.
             
             For each major topic, write a VERY COMPREHENSIVE and DETAILED summary that captures EVERYTHING covered in that topic section. The summary should be extensive and include:
             - All key concepts, definitions, and explanations
@@ -146,7 +146,7 @@ class DocumentTopics:
             )
             
             content = resp.choices[0].message.content.strip()
-            logging.info(f"Batch response content: {content[:200]}...")
+            # logging.info(f"Batch response content: {content[:200]}...")
             
             # Handle markdown code blocks
             if content.startswith("```json"):
@@ -224,7 +224,7 @@ class DocumentTopics:
             )
             
             content = resp.choices[0].message.content.strip()
-            logging.info(f"Merge response content: {content[:200]}...")
+            # logging.info(f"Merge response content: {content[:200]}...")
             
             # Handle markdown code blocks
             if content.startswith("```json"):

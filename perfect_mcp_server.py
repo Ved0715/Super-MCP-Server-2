@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 try:
     from retrieval.paper.paper_compare import PDFComparator
     from retrieval.paper.paper_compare_qa import DocumentQA
+    from retrieval.paper.paper_topics import DocumentTopics
     PDF_COMPARATOR_AVAILABLE = True
     logger.debug("PDF Comparator imported successfully")
 except ImportError as e:
@@ -95,6 +96,7 @@ class PerfectMCPServer:
         # Initialize all components
         self.comparator = PDFComparator()
         self.qa_system = DocumentQA()
+        self.document_topics = DocumentTopics(self.config)
         self.pdf_processor = EnhancedPDFProcessor(self.config)
         self.vector_storage = AdvancedVectorStorage(self.config)
         self.research_analyzer = ResearchPaperAnalyzer(self.config)
@@ -524,6 +526,7 @@ class PerfectMCPServer:
                         "required": ["topic"]
                     }
                 ),
+                
                 Tool(
                     name="generate_paper_quiz",
                     description="Generate MCQ quiz from research paper",
@@ -553,8 +556,20 @@ class PerfectMCPServer:
                         },
                         "required": ["topic_description", "search_query"]
                     }
+                ),
+
+                Tool(
+                    name="extract_paper_topics",
+                    description="Extract important topics and their summaries from a research paper using user ID and document UUID",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "user_id": {"type": "string", "description": "User ID (e.g., '44')"},
+                            "document_uuid": {"type": "string", "description": "Document UUID (e.g., '4109a094-a6a0-4ec1-bba7-9ce5eb8dcace')"}
+                        },
+                        "required": ["user_id", "document_uuid"]
+                    }
                 )
-                 
             ]
 
         # ============================================================================
@@ -592,6 +607,9 @@ class PerfectMCPServer:
                 
                 elif name == "generate_knowledge_base_quiz":
                     return await self._handle_generate_knowledge_base_quiz(**arguments)
+                
+                elif name == "extract_paper_topics":
+                    return await self._handle_extract_paper_topics(**arguments)
                 
                 elif name == "compare_research_papers":
                     return await self._handle_compare_papers(**arguments)
@@ -2280,6 +2298,32 @@ CONTENT TO ENRICH:
             return [TextContent(
                 type="text", 
                 text=json.dumps({"success": False, "error": str(e)}, indent=2)
+            )]
+
+    async def _handle_extract_paper_topics(self, user_id: str, document_uuid: str) -> List[TextContent]:
+        """Handle paper topics extraction"""
+        try:
+            logger.info(f"🔍 Extracting topics for user {user_id}, document {document_uuid}")
+            
+            # Use the DocumentTopics instance to extract topics
+            result = self.document_topics.extract_topics(user_id, document_uuid)
+            
+            topics_count = len(result.get('topics', []))
+            if 'error' in result:
+                logger.warning(f"⚠️ {result['error']}")
+            else:
+                logger.info(f"✅ Successfully extracted {topics_count} topics from paper")
+            
+            return [TextContent(
+                type="text",
+                text=json.dumps(result, indent=2)
+            )]
+            
+        except Exception as e:
+            logger.error(f"❌ Error extracting paper topics: {e}")
+            return [TextContent(
+                type="text",
+                text=json.dumps({"success": False, "error": str(e), "topics": []}, indent=2)
             )]
 
     async def _handle_system_status(self, include_config: bool = False, 

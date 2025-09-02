@@ -384,6 +384,8 @@ class MCPHTTPTransport:
                 result = await self.mcp_server._handle_multimodel_paper_search(**arguments)
             elif tool_name == "document_qa":
                 result = await self.mcp_server._handle_document_qa(**arguments)
+            elif tool_name == "extract_paper_topics":
+                result = await self.mcp_server._handle_extract_paper_topics(**arguments)
             else:
                 raise ValueError(f"Unknown tool: {tool_name}")
             
@@ -569,6 +571,18 @@ class MCPHTTPTransport:
                         "name": "document_qa",
                         "description": "Ask questions about two documents and get comprehensive answers using both documents",
                         "input_schema": {"type": "object", "properties": {"user_id": {"type": "string"}, "doc1_uuid": {"type": "string"}, "doc2_uuid": {"type": "string"}, "question": {"type": "string"}}}
+                    },
+                    {
+                        "name": "extract_paper_topics",
+                        "description": "Extract important topics and their summaries from a research paper using user ID and document UUID",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "user_id": {"type": "string", "description": "User ID (e.g., '44')"},
+                                "document_uuid": {"type": "string", "description": "Document UUID (e.g., '4109a094-a6a0-4ec1-bba7-9ce5eb8dcace')"}
+                            },
+                            "required": ["user_id", "document_uuid"]
+                        }
                     }
                 ]
                 

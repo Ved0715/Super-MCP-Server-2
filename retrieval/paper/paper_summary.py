@@ -23,7 +23,7 @@ class DocumentSummarizer:
             config.openai_api_key: OpenAI API key
             config.pinecone_api_key: Pinecone API key
             config.response_model: Chat model name (e.g. "gpt-4")
-            config.index_name: Pinecone index name (default "all-pdfs-index")
+            config.index_name: Pinecone index name (default "test")
         """
         logging.basicConfig(level=logging.INFO)
         self.openai = OpenAI(api_key=config.openai_api_key)

@@ -89,9 +89,9 @@ class DocumentTopics:
         total_chars = sum(len(chunk.content) for chunk in chunks)
         avg_chunk_size = total_chars / len(chunks) if chunks else 0
         
-        # Aim for ~80K characters per batch (roughly 20K tokens)
+        # Aim for ~100K characters per batch (roughly 25K tokens)
         # Leave room for prompt and response
-        target_chars_per_batch = 80000
+        target_chars_per_batch = 100000
         optimal_batch_size = max(10, int(target_chars_per_batch / avg_chunk_size)) if avg_chunk_size > 0 else 50
         
         # Cap at reasonable limits
@@ -220,7 +220,7 @@ class DocumentTopics:
             resp = self.openai.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
+                temperature=0.2,
             )
             
             content = resp.choices[0].message.content.strip()
@@ -292,7 +292,7 @@ class DocumentTopics:
                 batch_idx = future_to_batch[future]
                 batch_result = future.result()
                 if batch_result and "topics" in batch_result:
-                    logging.info(f"Batch {batch_idx} completed with {len(batch_result['topics'])} topics")
+                    # logging.info(f"Batch {batch_idx} completed with {len(batch_result['topics'])} topics")
                     results.extend(batch_result["topics"])
 
         if not results:

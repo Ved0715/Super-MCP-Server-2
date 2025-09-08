@@ -49,6 +49,7 @@ try:
     from retrieval.paper.paper_compare import PDFComparator
     from retrieval.paper.paper_compare_qa import DocumentQA
     from retrieval.paper.paper_topics import DocumentTopics
+    from retrieval.paper.question_paper_analysis import QuestionPaperAnalysis
     PDF_COMPARATOR_AVAILABLE = True
     logger.debug("PDF Comparator imported successfully")
 except ImportError as e:
@@ -569,6 +570,23 @@ class PerfectMCPServer:
                         },
                         "required": ["user_id", "document_uuid"]
                     }
+                ),
+
+                Tool(
+                    name="question_paper_analysis",
+                    description="Analyze question papers by parsing numbered questions and providing detailed answers with key topics and page references",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "questions_text": {
+                                "type": "string", 
+                                "description": "Text containing numbered questions in formats like 'Q1. Question?', '1. Question?', etc."
+                            },
+                            "user_id": {"type": "string", "description": "User ID for namespace identification"},
+                            "document_uuid": {"type": "string", "description": "Document UUID for namespace identification"}
+                        },
+                        "required": ["questions_text", "user_id", "document_uuid"]
+                    }
                 )
             ]
 
@@ -610,6 +628,9 @@ class PerfectMCPServer:
                 
                 elif name == "extract_paper_topics":
                     return await self._handle_extract_paper_topics(**arguments)
+                
+                elif name == "question_paper_analysis":
+                    return await self._handle_question_paper_analysis(**arguments)
                 
                 elif name == "compare_research_papers":
                     return await self._handle_compare_papers(**arguments)
@@ -2324,6 +2345,45 @@ CONTENT TO ENRICH:
             return [TextContent(
                 type="text",
                 text=json.dumps({"success": False, "error": str(e), "topics": []}, indent=2)
+            )]
+
+    async def _handle_question_paper_analysis(self, questions_text: str, user_id: str, document_uuid: str) -> List[TextContent]:
+        """Handle question paper analysis"""
+        try:
+            logger.info(f"🔍 Analyzing question paper for user {user_id}, document {document_uuid}")
+            
+            if not PDF_COMPARATOR_AVAILABLE:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({"success": False, "error": "Question paper analysis module not available"}, indent=2)
+                )]
+            
+            # Create analyzer instance
+            analyzer = QuestionPaperAnalysis(self.config)
+            
+            # Analyze the questions
+            result = analyzer.analyze_question_paper(questions_text, user_id, document_uuid)
+            
+            if 'error' in result:
+                logger.warning(f"⚠️ {result['error']}")
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({"success": False, "error": result['error']}, indent=2)
+                )]
+            else:
+                questions_count = len(result.get('question_paper_analysis', []))
+                logger.info(f"✅ Successfully analyzed {questions_count} questions from question paper")
+                
+                return [TextContent(
+                    type="text",
+                    text=json.dumps(result, indent=2)
+                )]
+            
+        except Exception as e:
+            logger.error(f"❌ Error analyzing question paper: {e}")
+            return [TextContent(
+                type="text",
+                text=json.dumps({"success": False, "error": str(e)}, indent=2)
             )]
 
     async def _handle_system_status(self, include_config: bool = False, 

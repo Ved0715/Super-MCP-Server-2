@@ -386,6 +386,8 @@ class MCPHTTPTransport:
                 result = await self.mcp_server._handle_document_qa(**arguments)
             elif tool_name == "extract_paper_topics":
                 result = await self.mcp_server._handle_extract_paper_topics(**arguments)
+            elif tool_name == "question_paper_analysis":
+                result = await self.mcp_server._handle_question_paper_analysis(**arguments)
             else:
                 raise ValueError(f"Unknown tool: {tool_name}")
             
@@ -582,6 +584,22 @@ class MCPHTTPTransport:
                                 "document_uuid": {"type": "string", "description": "Document UUID (e.g., '4109a094-a6a0-4ec1-bba7-9ce5eb8dcace')"}
                             },
                             "required": ["user_id", "document_uuid"]
+                        }
+                    },
+                    {
+                        "name": "question_paper_analysis",
+                        "description": "Analyze question papers by parsing numbered questions and providing detailed answers with key topics and page references",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "questions_text": {
+                                    "type": "string", 
+                                    "description": "Text containing numbered questions in formats like 'Q1. Question?', '1. Question?', etc."
+                                },
+                                "user_id": {"type": "string", "description": "User ID for namespace identification"},
+                                "document_uuid": {"type": "string", "description": "Document UUID for namespace identification"}
+                            },
+                            "required": ["questions_text", "user_id", "document_uuid"]
                         }
                     }
                 ]

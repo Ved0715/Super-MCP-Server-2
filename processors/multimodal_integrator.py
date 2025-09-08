@@ -120,19 +120,16 @@ class MultimodalIntegrator:
                 self.openai_client, 
                 self.pinecone_client, 
                 self.index
-            )
-            
+            )  
             self.table_processor = TableProcessor(
                 self.openai_client, 
                 self.pinecone_client, 
                 self.index
             )
-            
             self.inline_generator = InlineMultimodalGenerator(
                 self.openai_client, 
                 self.chat_model
             )
-            
             logger.info("Specialized processors initialized")
             
         except Exception as e:
@@ -1707,102 +1704,93 @@ Summary (2-3 sentences, focus on main content and purpose):"""
             'cross_content_boost': search_params.get('cross_content_boost', True)
         }
     
-    def _filter_chunks_with_enhanced_scoring(self, matches, query: str, search_params: Dict) -> List[Dict]:
-        """Enhanced filtering with intelligent content scoring and preference-based selection."""
-        relevant_chunks = []
-        query_keywords = set(query.lower().split())
-        
-        # Extract enhanced query intent information
+    def _score_and_filter_match(self, match, query_keywords: set, search_params: Dict) -> Optional[Dict]:
+        """Scores and filters a single chunk based on relevance and search parameters."""
         query_intent = search_params.get('query_intent', {})
         conditional_instructions = query_intent.get('conditional_instructions', {})
         content_preferences = query_intent.get('content_preferences', ['text', 'images', 'tables'])
         semantic_concepts = query_intent.get('semantic_concepts', [])
         intent_keywords = query_intent.get('intent_keywords', [])
-        
-        # Extract conditional parameters
+
         include_content = conditional_instructions.get('include_content', [])
         exclude_content = conditional_instructions.get('exclude_content', [])
         positive_keywords = conditional_instructions.get('positive_keywords', [])
         negative_keywords = conditional_instructions.get('negative_keywords', [])
-        
-        # Content type preference weights
+
         content_type_weights = {
             'text': 1.0 if 'text' in content_preferences else 0.7,
             'images': 1.2 if 'images' in content_preferences else 0.8,
             'tables': 1.1 if 'tables' in content_preferences else 0.8
         }
-        
-        # First pass: collect all potentially relevant chunks with enhanced scoring
+
+        if match.score < search_params['min_score']:
+            return None
+
+        if self._should_exclude_chunk(match, exclude_content, negative_keywords):
+            return None
+
+        if include_content and not self._should_include_chunk(match, include_content, positive_keywords):
+            return None
+
+        chunk_content_types = self._identify_chunk_content_types(match)
+        content_type_boost = self._calculate_content_type_boost(chunk_content_types, content_type_weights)
+
+        enhanced_score = self._calculate_enhanced_relevance_score_advanced(
+            match, query_keywords, search_params['strategy'],
+            positive_keywords, negative_keywords, semantic_concepts,
+            intent_keywords, content_type_boost
+        )
+
+        if enhanced_score > 0.01:
+            return {
+                'chunk_id': match.metadata.get('chunk_id', ''),
+                'relevance_score': enhanced_score,
+                'original_score': match.score,
+                'page_number': match.metadata.get('page_number', 0),
+                'text': match.metadata.get('text', ''),
+                'contains_image': match.metadata.get('contains_image', False),
+                'image_count': match.metadata.get('image_count', 0),
+                'image_s3_urls': match.metadata.get('image_s3_urls', []),
+                'image_ids': match.metadata.get('image_ids', []),
+                'image_summaries': match.metadata.get('image_summaries', []),
+                'contains_table': match.metadata.get('contains_table', False),
+                'table_count': match.metadata.get('table_count', 0),
+                'table_content_jsons': match.metadata.get('table_content_jsons', []),
+                'table_ids': match.metadata.get('table_ids', []),
+                'table_summaries': match.metadata.get('table_summaries', []),
+                'document_name': match.metadata.get('document_name', ''),
+                'document_uuid': match.metadata.get('document_uuid', ''),
+                'has_text': match.metadata.get('has_text', True)
+            }
+        return None
+
+    def _filter_chunks_with_enhanced_scoring(self, matches, query: str, search_params: Dict) -> List[Dict]:
+        """Enhanced filtering with intelligent content scoring and preference-based selection, processed in parallel."""
+        query_keywords = set(query.lower().split())
+
         potential_chunks = []
-        
-        filtered_count = 0
-        for match in matches:
-            if match.score < search_params['min_score']:
-                filtered_count += 1
-                continue
-            
-            # Check conditional content exclusions
-            if self._should_exclude_chunk(match, exclude_content, negative_keywords):
-                filtered_count += 1
-                continue
-                
-            # Check conditional content inclusions
-            if include_content and not self._should_include_chunk(match, include_content, positive_keywords):
-                filtered_count += 1
-                continue
-            
-            # Apply content type preference filtering
-            chunk_content_types = self._identify_chunk_content_types(match)
-            content_type_boost = self._calculate_content_type_boost(chunk_content_types, content_type_weights)
-            
-            # Enhanced relevance scoring with multiple signals
-            enhanced_score = self._calculate_enhanced_relevance_score_advanced(
-                match, query_keywords, search_params['strategy'], 
-                positive_keywords, negative_keywords, semantic_concepts, 
-                intent_keywords, content_type_boost
-            )
-            
-            if enhanced_score > 0.01:  # Further lowered minimum enhanced score threshold
-                chunk_data = {
-                    'chunk_id': match.metadata.get('chunk_id', ''),
-                    'relevance_score': enhanced_score,
-                    'original_score': match.score,
-                    'page_number': match.metadata.get('page_number', 0),
-                    'text': match.metadata.get('text', ''),
-                    
-                    # Image information with arrays
-                    'contains_image': match.metadata.get('contains_image', False),
-                    'image_count': match.metadata.get('image_count', 0),
-                    'image_s3_urls': match.metadata.get('image_s3_urls', []),
-                    'image_ids': match.metadata.get('image_ids', []),
-                    'image_summaries': match.metadata.get('image_summaries', []),
-                    
-                    # Table information with arrays
-                    'contains_table': match.metadata.get('contains_table', False),
-                    'table_count': match.metadata.get('table_count', 0),
-                    'table_content_jsons': match.metadata.get('table_content_jsons', []),
-                    'table_ids': match.metadata.get('table_ids', []),
-                    'table_summaries': match.metadata.get('table_summaries', []),
-                    
-                    'document_name': match.metadata.get('document_name', ''),
-                    'document_uuid': match.metadata.get('document_uuid', ''),
-                    'has_text': match.metadata.get('has_text', True)
-                }
-                potential_chunks.append(chunk_data)
-        
-        # Log filtering results for debugging
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_match = {
+                executor.submit(self._score_and_filter_match, match, query_keywords, search_params): match
+                for match in matches
+            }
+
+            for future in as_completed(future_to_match):
+                result = future.result()
+                if result:
+                    potential_chunks.append(result)
+
+        filtered_count = len(matches) - len(potential_chunks)
         logger.info(f"Enhanced filtering results: {len(matches)} initial matches, {filtered_count} filtered out, {len(potential_chunks)} potential chunks")
-        
-        # AI-powered content selection
+
         if potential_chunks:
             relevant_chunks = self._ai_powered_content_selection(query, potential_chunks, search_params)
         else:
             logger.warning("No potential chunks found after enhanced filtering - using fallback with original scores")
-            # Fallback: use original scoring if enhanced filtering is too strict
             fallback_chunks = []
-            for match in matches[:10]:  # Take top 10 by original score
+            for match in matches[:10]:
                 if match.score >= search_params['min_score']:
-                    chunk_data = {
+                    fallback_chunks.append({
                         'chunk_id': match.metadata.get('chunk_id', ''),
                         'relevance_score': match.score,
                         'original_score': match.score,
@@ -1815,10 +1803,9 @@ Summary (2-3 sentences, focus on main content and purpose):"""
                         'table_content_json': match.metadata.get('table_content_json', ''),
                         'table_summary': match.metadata.get('table_summary', ''),
                         'source_document': match.metadata.get('source_document', '')
-                    }
-                    fallback_chunks.append(chunk_data)
+                    })
             relevant_chunks = fallback_chunks
-        
+
         logger.info(f"Final selection: {len(relevant_chunks)} chunks after AI selection")
         return relevant_chunks
     

@@ -33,7 +33,10 @@ from research_intelligence import ResearchPaperAnalyzer
 from perfect_ppt_generator import PerfectPPTGenerator
 from search_client import SerpAPIClient
 from processors.universal_document_processor import UniversalDocumentProcessor
-from retrieval.paper_retriver import PaperRetriever, ResearchQuery
+# UPDATED: Use the enhanced ServerMultimodalRetrieval with lesson plan support
+# from retrieval.paper_retriver import PaperRetriever, ResearchQuery
+from processors.multimodel_retrival import ServerMultimodalRetrieval, get_retrieval_instance
+from retrieval.paper_retriver import ResearchQuery  # Keep ResearchQuery for compatibility
 from retrieval.paper.paper_compare import PDFComparator
 import pinecone
 from pinecone import Pinecone, ServerlessSpec
@@ -126,13 +129,14 @@ class PerfectMCPServer:
             self.cot_retriever = None
 
 
-         # Initialize Research Paper Retriever
+         # Initialize Enhanced Multimodal Retriever with Lesson Plan support
         try:
-            logger.info("🔧 Initializing Research Paper Retriever...")
-            self.paper_retriever = PaperRetriever()
-            logger.info("✅ Research Paper Retriever initialized successfully")
+            logger.info("🔧 Initializing Enhanced Multimodal Retriever with Lesson Plan support...")
+            self.paper_retriever = ServerMultimodalRetrieval()
+            logger.info("✅ Enhanced Multimodal Retriever initialized successfully")
+            logger.info("📚 Universal Lesson Plan Generator is now active!")
         except Exception as e:
-            logger.error(f"❌ Failed to initialize Research Paper Retriever: {e}")
+            logger.error(f"❌ Failed to initialize Enhanced Multimodal Retriever: {e}")
             logger.error(f"Error type: {type(e).__name__}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
@@ -4089,8 +4093,13 @@ The operation has been successfully cancelled and will stop as soon as possible.
         """Handle multimodel paper search with rich multimodal response formatting."""
         import json
         
-        logger.debug(f"Multimodel paper search: {query}")
+        logger.debug(f"Enhanced multimodel paper search: {query}")
         logger.debug(f"Target namespace: user_{user_id}_doc_{document_uuid}")
+        
+        # Check if this is a lesson plan request (for debugging)
+        if hasattr(self.paper_retriever, 'lesson_plan_generator'):
+            is_lesson_plan = self.paper_retriever.lesson_plan_generator.is_lesson_plan_request(query)
+            logger.info(f"📚 Lesson plan detection: {is_lesson_plan} for query: '{query}'")
 
         # Check if paper_retriever is available
         if self.paper_retriever is None:
@@ -4131,15 +4140,23 @@ The operation has been successfully cancelled and will stop as soon as possible.
         except Exception:
             normalized_context = None
 
+        # Updated to use ServerMultimodalRetrieval with lesson plan detection
         result = await self.paper_retriever.search_multimodal_content( 
             query=query,
             paper_id=namespace,
-            max_chunks=max_chunks,
-            conversation_context=normalized_context
+            max_text_chunks=max_chunks  # Our method uses max_text_chunks
+            # Note: conversation_context handling is now built into the lesson plan generator
         )
         
         # Convert multimodal elements to a seamless markdown response for UI
         if result and 'inline_elements' in result:
+            
+            # Debug logging for lesson plan responses
+            if result.get('search_metadata', {}).get('lesson_plan_mode'):
+                logger.info(f"🔍 LESSON PLAN MCP DEBUG: Found inline_elements")
+                logger.info(f"🔍 LESSON PLAN MCP DEBUG: inline_elements count = {len(result.get('inline_elements', []))}")
+                for i, elem in enumerate(result.get('inline_elements', [])[:2]):  # Show first 2
+                    logger.info(f"🔍 LESSON PLAN MCP DEBUG: element {i}: type={elem.get('type')}, content_length={len(str(elem.get('content', '')))}")
             inline_elements = result.get('inline_elements', [])
             
             # Create a combined markdown response
@@ -4205,6 +4222,12 @@ The operation has been successfully cancelled and will stop as soon as possible.
             
             # Combine all parts into final response
             final_response = "\n".join(response_parts).strip()
+            
+            # Debug logging for lesson plan responses
+            if result.get('search_metadata', {}).get('lesson_plan_mode'):
+                logger.info(f"🔍 LESSON PLAN DEBUG: response_parts count = {len(response_parts)}")
+                logger.info(f"🔍 LESSON PLAN DEBUG: final_response length = {len(final_response)}")
+                logger.info(f"🔍 LESSON PLAN DEBUG: final_response preview = {final_response[:200]}...")
             
             # Return the combined response
             return [TextContent(

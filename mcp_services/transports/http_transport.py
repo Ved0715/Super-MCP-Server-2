@@ -388,6 +388,8 @@ class MCPHTTPTransport:
                 result = await self.mcp_server._handle_extract_paper_topics(**arguments)
             elif tool_name == "question_paper_analysis":
                 result = await self.mcp_server._handle_question_paper_analysis(**arguments)
+            elif tool_name == "generate_topic_questions":
+                result = await self.mcp_server._handle_generate_topic_questions(**arguments)
             else:
                 raise ValueError(f"Unknown tool: {tool_name}")
             
@@ -600,6 +602,29 @@ class MCPHTTPTransport:
                                 "document_uuid": {"type": "string", "description": "Document UUID for namespace identification"}
                             },
                             "required": ["questions_text", "user_id", "document_uuid"]
+                        }
+                    },
+                    {
+                        "name": "generate_topic_questions",
+                        "description": "Generate educational questions with answers based on a specific topic/query from document content",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string", 
+                                    "description": "Topic or query to generate questions about (e.g., 'photosynthesis', 'chemical reactions')"
+                                },
+                                "user_id": {"type": "string", "description": "User ID for namespace identification"},
+                                "document_uuid": {"type": "string", "description": "Document UUID for namespace identification"},
+                                "num_questions": {
+                                    "type": "integer", 
+                                    "minimum": 1, 
+                                    "maximum": 5, 
+                                    "default": 5,
+                                    "description": "Number of questions to generate (max 5)"
+                                }
+                            },
+                            "required": ["query", "user_id", "document_uuid"]
                         }
                     }
                 ]

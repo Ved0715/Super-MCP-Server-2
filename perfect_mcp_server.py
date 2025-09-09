@@ -50,6 +50,7 @@ try:
     from retrieval.paper.paper_compare_qa import DocumentQA
     from retrieval.paper.paper_topics import DocumentTopics
     from retrieval.paper.question_paper_analysis import QuestionPaperAnalysis
+    from retrieval.paper.paper_topic_questions import PaperTopicQuestionGenerator
     PDF_COMPARATOR_AVAILABLE = True
     logger.debug("PDF Comparator imported successfully")
 except ImportError as e:
@@ -587,6 +588,30 @@ class PerfectMCPServer:
                         },
                         "required": ["questions_text", "user_id", "document_uuid"]
                     }
+                ),
+
+                Tool(
+                    name="generate_topic_questions",
+                    description="Generate educational questions with answers based on a specific topic/query from document content",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string", 
+                                "description": "Topic or query to generate questions about (e.g., 'photosynthesis', 'chemical reactions')"
+                            },
+                            "user_id": {"type": "string", "description": "User ID for namespace identification"},
+                            "document_uuid": {"type": "string", "description": "Document UUID for namespace identification"},
+                            "num_questions": {
+                                "type": "integer", 
+                                "minimum": 1, 
+                                "maximum": 5, 
+                                "default": 5,
+                                "description": "Number of questions to generate (max 5)"
+                            }
+                        },
+                        "required": ["query", "user_id", "document_uuid"]
+                    }
                 )
             ]
 
@@ -631,6 +656,9 @@ class PerfectMCPServer:
                 
                 elif name == "question_paper_analysis":
                     return await self._handle_question_paper_analysis(**arguments)
+                
+                elif name == "generate_topic_questions":
+                    return await self._handle_generate_topic_questions(**arguments)
                 
                 elif name == "compare_research_papers":
                     return await self._handle_compare_papers(**arguments)
@@ -2381,6 +2409,53 @@ CONTENT TO ENRICH:
             
         except Exception as e:
             logger.error(f"❌ Error analyzing question paper: {e}")
+            return [TextContent(
+                type="text",
+                text=json.dumps({"success": False, "error": str(e)}, indent=2)
+            )]
+
+    async def _handle_generate_topic_questions(self, query: str, user_id: str, document_uuid: str, num_questions: int = 5) -> List[TextContent]:
+        """Handle topic-based question generation"""
+        try:
+            logger.info(f"🎯 Generating topic questions for query: '{query}' (User: {user_id})")
+            
+            if not PDF_COMPARATOR_AVAILABLE:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({"success": False, "error": "Topic question generation module not available"}, indent=2)
+                )]
+            
+            # Create generator instance
+            generator = PaperTopicQuestionGenerator(self.config)
+            
+            # Generate questions based on query
+            result = generator.generate_questions_from_query(query, user_id, document_uuid, num_questions)
+            
+            if not result.get("success"):
+                logger.warning(f"⚠️ Topic question generation failed: {result.get('error')}")
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({"error": result.get('error')}, indent=2)
+                )]
+            else:
+                questions_count = result.get('total_questions', 0)
+                logger.info(f"✅ Successfully generated {questions_count} topic questions for query: '{query}'")
+                
+                # Return clean structure without double nesting (like extract_paper_topics)
+                clean_result = {
+                    "query": result["query"],
+                    "total_questions": result["total_questions"],
+                    "questions": result["questions"],
+                    "metadata": result["metadata"]
+                }
+                
+                return [TextContent(
+                    type="text",
+                    text=json.dumps(clean_result, indent=2)
+                )]
+            
+        except Exception as e:
+            logger.error(f"❌ Error generating topic questions: {e}")
             return [TextContent(
                 type="text",
                 text=json.dumps({"success": False, "error": str(e)}, indent=2)

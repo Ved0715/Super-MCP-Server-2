@@ -278,6 +278,76 @@ class UniversalLessonPlanGenerator:
         else:
             return 25
 
+    def _get_llm_guided_search_queries(self, query: str, instruction_info: Dict[str, Any]) -> List[str]:
+        """Use LLM to analyze instructions and generate targeted search queries."""
+        try:
+            prompt = f'''You are an expert research assistant. Your task is to analyze a user's request for a lesson plan and the parsed instructions to generate a list of targeted search queries. These queries will be used to retrieve the most relevant text from a source document.
+
+USER'S REQUEST: "{query}"
+
+PARSED INSTRUCTIONS:
+- Lesson Type: {instruction_info.get('lesson_type', 'N/A')}
+- Content Scope: {instruction_info.get('content_scope', {})}
+- Duration: {instruction_info.get('duration', {}).get('suggested_duration', 'N/A')}
+- Audience: {instruction_info.get('audience', 'N/A')}
+- Format/Style: {instruction_info.get('format_style', [])}
+- Assessment Needs: {instruction_info.get('assessment_needs', [])}
+
+Based on the above, generate a list of 3 to 5 precise and varied search queries to find the best content for creating this lesson plan. The queries should cover definitions, core concepts, examples, and practical applications related to the user's request.
+
+Return ONLY a JSON list of strings. Example:
+["core definition of photosynthesis", "examples of cellular respiration in plants", "practical applications of genetic inheritance"]
+'''
+            response = self.openai_client.chat.completions.create(
+                model=self.chat_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=200,
+                temperature=0.2,
+                response_format={"type": "json_object"},
+            )
+            
+            queries_str = response.choices[0].message.content
+            # The response should be a JSON string of a list, e.g., '{"queries": ["q1", "q2"]}' or just '["q1", "q2"]'
+            # We need to robustly parse this.
+            try:
+                # First, try to load the whole string as JSON
+                data = json.loads(queries_str)
+                # If it's a dict with a "queries" key
+                if isinstance(data, dict) and 'queries' in data and isinstance(data['queries'], list):
+                    search_queries = data['queries']
+                # If it's just a list
+                elif isinstance(data, list):
+                    search_queries = data
+                else:
+                    # Fallback if JSON is valid but not in expected format
+                    logger.warning(f"LLM returned unexpected JSON structure for search queries: {queries_str}")
+                    return [query] # Fallback to original query
+            except json.JSONDecodeError:
+                # If it's not a valid JSON, maybe it's a plain list-like string
+                logger.warning(f"LLM did not return valid JSON for search queries: {queries_str}")
+                # Try to extract from a markdown code block if present
+                match = re.search(r'```json\n(.*)\n```', queries_str, re.DOTALL)
+                if match:
+                    try:
+                        search_queries = json.loads(match.group(1))
+                        if isinstance(search_queries, dict) and 'queries' in search_queries:
+                             search_queries = search_queries['queries']
+                    except Exception:
+                        return [query]
+                else:
+                    return [query] # Fallback
+
+            if not search_queries or not all(isinstance(q, str) for q in search_queries):
+                 logger.warning(f"LLM returned invalid list of search queries: {search_queries}")
+                 return [query]
+
+            logger.info(f"🧠 LLM generated search queries: {search_queries}")
+            return search_queries
+
+        except Exception as e:
+            logger.error(f"❌ LLM-guided search query generation failed: {e}")
+            return [query] # Fallback to original query
+
 
 class ServerMultimodalRetrieval:
     """Server-ready class for multimodal content retrieval using existing project components."""
@@ -295,6 +365,87 @@ class ServerMultimodalRetrieval:
         except Exception as e:
             logger.error(f"❌ Failed to initialize multimodal integrator: {e}")
             raise
+
+    def _get_page_range_for_scope(self, paper_id: str, instruction_info: Dict) -> Optional[Dict[str, int]]:
+        """
+        Analyzes the document's Table of Contents to find the page range for a specific scope.
+        """
+        try:
+            logger.info(f"📚 Analyzing Table of Contents for paper_id: {paper_id}")
+            
+            # 1. Retrieve text from the first 20 pages to find the ToC
+            toc_query_response = self.multimodal_integrator.index.query(
+                vector=[0.0] * 3072,  # Dummy vector for metadata-only retrieval
+                top_k=100,  # Fetch enough chunks to cover the first 20 pages
+                namespace=paper_id,
+                filter={"page_number": {"$lte": 20}},
+                include_metadata=True
+            )
+
+            if not toc_query_response.matches:
+                logger.warning("Could not retrieve any chunks from the first 20 pages to find ToC.")
+                return None
+
+            # 2. Reconstruct the text by sorting chunks by page number
+            page_chunks = sorted(toc_query_response.matches, key=lambda m: m.metadata.get('page_number', 0))
+            
+            reconstructed_text = ""
+            last_page = -1
+            for chunk in page_chunks:
+                page_num = chunk.metadata.get('page_number', 0)
+                if page_num != last_page:
+                    reconstructed_text += f"\n\n--- Page {page_num} ---\n"
+                    last_page = page_num
+                reconstructed_text += chunk.metadata.get('text', '') + " "
+
+            if not reconstructed_text.strip():
+                logger.warning("Reconstructed text for ToC analysis is empty.")
+                return None
+
+            # 3. Use LLM to find the target scope in the ToC and return its page range
+            target_scope_str = instruction_info.get('content_scope', {}).get('chapters', []) or \
+                               instruction_info.get('content_scope', {}).get('sections', []) or \
+                               instruction_info.get('content_scope', {}).get('topics', [])
+            target_scope_str = ", ".join(target_scope_str) if target_scope_str else "the user's target area"
+
+
+            prompt = f"""You are a document analysis expert. Below is text from the beginning of a document, which should contain a Table of Contents (ToC). Your task is to find the page range for the user's target scope.
+
+USER'S TARGET SCOPE: "{target_scope_str}"
+
+DOCUMENT TEXT:
+{reconstructed_text[:15000]}
+
+INSTRUCTIONS:
+1. Read the DOCUMENT TEXT and locate the Table of Contents.
+2. Find the entry in the ToC that corresponds to the USER'S TARGET SCOPE.
+3. Determine the starting and ending page numbers for that entry. The end page is often the start page of the *next* entry minus one.
+4. Return a single JSON object with the start and end pages. Example: {{"start_page": 84, "end_page": 95}}
+5. If you cannot reliably determine the page range, return {{"error": "Could not determine page range."}}
+"""
+
+            response = self.multimodal_integrator.openai_client.chat.completions.create(
+                model=self.multimodal_integrator.chat_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=150,
+                temperature=0.0,
+                response_format={"type": "json_object"},
+            )
+
+            response_data = json.loads(response.choices[0].message.content)
+
+            if response_data and "error" not in response_data and "start_page" in response_data:
+                start_page = int(response_data["start_page"])
+                end_page = int(response_data.get("end_page", start_page + 20)) # Guess end page if not found
+                logger.info(f"✅ LLM identified page range for '{target_scope_str}': {start_page}-{end_page}")
+                return {"start_page": start_page, "end_page": end_page}
+            else:
+                logger.warning(f"LLM could not determine page range for '{target_scope_str}'. Reason: {response_data.get('error', 'Unknown')}")
+                return None
+
+        except Exception as e:
+            logger.error(f"❌ Failed to get page range from ToC: {e}")
+            return None
     
     async def search_multimodal_content(self, 
                                       query: str, 
@@ -670,7 +821,6 @@ class ServerMultimodalRetrieval:
         
         return "structured data"
     
-    # 🎓 UNIVERSAL LESSON PLAN GENERATION METHODS
     async def _generate_universal_lesson_plan(self, query: str, paper_id: str, max_text_chunks: int) -> Dict[str, Any]:
         """Generate lesson plan for ANY instruction with comprehensive edge case handling."""
         
@@ -678,15 +828,34 @@ class ServerMultimodalRetrieval:
             # Step 1: Parse the instruction comprehensively
             instruction_info = self.lesson_plan_generator.parse_lesson_instruction(query)
             
-            # Step 2: Adjust search parameters based on instruction
-            search_chunks = instruction_info['search_strategy']['max_chunks_needed']
+            # Step 2: Find the page range for the requested scope using ToC analysis
+            page_range = self._get_page_range_for_scope(paper_id, instruction_info)
+
+            # Step 3: Use LLM to generate targeted search queries
+            logger.info("🧠 Generating LLM-guided search queries for lesson plan...")
+            search_queries = self.lesson_plan_generator._get_llm_guided_search_queries(query, instruction_info)
+
+            # Step 4: Retrieve content using the generated queries and page range, then aggregate results
+            all_results = []
+            seen_chunk_ids = set()
             
-            # Step 3: Simple similarity search for lesson plan content
-            results = self._retrieve_text_only_for_lesson_plan(
-                query=query,  # Use original query directly for similarity search
-                document_uuid=paper_id,
-                max_chunks=search_chunks
-            )
+            chunks_per_query = max(1, max_text_chunks // len(search_queries)) if search_queries else max_text_chunks
+
+            for sub_query in search_queries:
+                results_for_query = self._retrieve_text_only_for_lesson_plan(
+                    query=sub_query,
+                    document_uuid=paper_id,
+                    max_chunks=chunks_per_query,
+                    page_range=page_range  # Pass the page range filter
+                )
+                if results_for_query and 'inline_elements' in results_for_query:
+                    for element in results_for_query['inline_elements']:
+                        chunk_id = element.get('metadata', {}).get('chunk_id')
+                        if chunk_id and chunk_id not in seen_chunk_ids:
+                            all_results.append(element)
+                            seen_chunk_ids.add(chunk_id)
+            
+            results = {"inline_elements": all_results, "retrieval_type": "toc_filtered_llm_guided_text"}
             
             if not results or 'inline_elements' not in results or not results['inline_elements']:
                 return {
@@ -695,13 +864,13 @@ class ServerMultimodalRetrieval:
                         "paper_id": paper_id,
                         "lesson_plan_mode": True,
                         "error": "No text content retrieved for lesson plan",
-                        "retrieval_type": "text_only"
+                        "retrieval_type": results.get('retrieval_type')
                     },
                     "success": False,
                     "error": "No text content found for lesson plan generation"
                 }
             
-            # Step 4: Extract ALL text content for lesson plan (no filtering)
+            # Step 5: Extract ALL text content for lesson plan
             logger.info(f"📝 Processing {len(results['inline_elements'])} TEXT-ONLY elements for lesson plan")
             
             filtered_content = {
@@ -713,7 +882,6 @@ class ServerMultimodalRetrieval:
                 }
             }
             
-            # Extract all text content from elements
             for element in results['inline_elements']:
                 if element.get('type') == 'text':
                     content = element.get('content', '')
@@ -735,12 +903,12 @@ class ServerMultimodalRetrieval:
                     "error": "No text content found for lesson plan generation"
                 }
             
-            # Step 5: Generate simple lesson plan from retrieved content
-            lesson_plan_content = self._create_simple_lesson_plan(
-                filtered_content['text_content'], query
+            # Step 6: Generate adaptive lesson plan from retrieved content
+            lesson_plan_content = self._create_adaptive_lesson_plan(
+                filtered_content, instruction_info, query
             )
             
-            # Step 6: Return in MCP server expected format (inline_elements at top level)
+            # Step 7: Return in MCP server expected format
             return {
                 "search_metadata": {
                     "query": query,
@@ -784,6 +952,497 @@ class ServerMultimodalRetrieval:
                 "success": False,
                 "error": f"Lesson plan generation failed: {str(e)}"
             }
+    
+    def _enhance_query_for_search(self, original_query: str, instruction_info: Dict) -> str:
+        """Enhance search query based on parsed instruction for better retrieval."""
+        
+        enhanced_parts = [original_query]
+        
+        # Add chapter-specific terms
+        if instruction_info['content_scope']['chapters']:
+            chapter_terms = ' '.join(instruction_info['content_scope']['chapters'])
+            enhanced_parts.append(chapter_terms)
+        
+        # Add section-specific terms  
+        if instruction_info['content_scope']['sections']:
+            section_terms = ' '.join(instruction_info['content_scope']['sections'])
+            enhanced_parts.append(section_terms)
+        
+        # Add topic-specific terms
+        if instruction_info['content_scope']['topics']:
+            topic_terms = ' '.join(instruction_info['content_scope']['topics'])
+            enhanced_parts.append(topic_terms)
+        
+        # Add educational context for better retrieval
+        enhanced_parts.append("learning objectives teaching education curriculum concepts")
+        
+        enhanced_query = ' '.join(enhanced_parts)
+        logger.info(f"🔍 Enhanced search query: {enhanced_query[:100]}...")
+        return enhanced_query
+    
+    def _filter_content_by_instruction(self, elements: List[Dict], instruction_info: Dict) -> Dict[str, Any]:
+        """Filter retrieved content to match specific instruction requirements."""
+        
+        filtered = {
+            'text_content': "",
+            'metadata': {
+                'chapters_found': [],
+                'sections_found': [],
+                'topics_covered': []
+            },
+            'coverage_info': {
+                'requested_chapters': instruction_info['content_scope']['chapters'],
+                'found_chapters': [],
+                'requested_sections': instruction_info['content_scope']['sections'],
+                'found_sections': [],
+                'coverage_percentage': 0
+            }
+        }
+        
+        content_scope = instruction_info['content_scope']
+        relevant_elements = []
+        
+        for element in elements:
+            if element.get('type') not in ['text', 'composite']:
+                continue
+            
+            element_content = element.get('content', '')
+            element_relevant = False
+            
+            # Check chapter relevance
+            if content_scope['chapters']:
+                for requested_chapter in content_scope['chapters']:
+                    # Check if any chapter matches in the element content
+                    for chapter in content_scope['chapters']:
+                        if chapter.lower() in element_content.lower():
+                            element_relevant = True
+                            # Collect found chapters from metadata if available
+                            if 'chapters_found' in element:
+                                filtered['metadata']['chapters_found'].extend(element.get('chapters_found', []))
+                            break
+                    if element_relevant:
+                        break
+            
+            # Check section relevance  
+            elif content_scope['sections']:
+                for requested_section in content_scope['sections']:
+                    if requested_section.lower() in element_content.lower():
+                        element_relevant = True
+                        if 'sections_found' in element:
+                            filtered['metadata']['sections_found'].extend(element.get('sections_found', []))
+                        break
+            
+            # Check topic relevance
+            elif content_scope['topics']:
+                for topic in content_scope['topics']:
+                    if topic.lower() in element_content.lower():
+                        element_relevant = True
+                        break
+            
+            # If no specific scope, include all text elements
+            else:
+                element_relevant = True
+            
+            if element_relevant:
+                relevant_elements.append(element)
+                filtered['text_content'] += element_content + "\n\n"
+                
+                # Collect metadata
+                if 'chapters_found' in element:
+                    filtered['metadata']['chapters_found'].extend(element.get('chapters_found', []))
+                if 'sections_found' in element:
+                    filtered['metadata']['sections_found'].extend(element.get('sections_found', []))
+        
+        # Calculate coverage percentage
+        requested_chapters = set(content_scope['chapters'])
+        found_chapters = set(filtered['metadata']['chapters_found'])
+        
+        if requested_chapters:
+            coverage = len(requested_chapters & found_chapters) / len(requested_chapters)
+            filtered['coverage_info']['coverage_percentage'] = int(coverage * 100)
+            filtered['coverage_info']['found_chapters'] = list(found_chapters & requested_chapters)
+        else:
+            # If no specific chapters requested, coverage is 100% if we found any content
+            filtered['coverage_info']['coverage_percentage'] = 100 if filtered['text_content'].strip() else 0
+        
+        logger.info(f"📊 Content filtered: {filtered['coverage_info']['coverage_percentage']}% coverage, {len(filtered['text_content'])} chars")
+        return filtered
+    
+    def _create_adaptive_lesson_plan(self, filtered_content: Dict, instruction_info: Dict, original_query: str) -> str:
+        """Create lesson plan with adaptive prompt based on instruction analysis."""
+        
+        # Build adaptive prompt based on instruction
+        prompt_parts = []
+        
+        # Role and context
+        prompt_parts.append(
+            "You are a highly experienced university professor with 20+ years in curriculum development. "
+            "Create a comprehensive lesson plan based on the specific instruction provided."
+        )
+        
+        # Add instruction-specific context
+        lesson_type = instruction_info['lesson_type']
+        content_scope = instruction_info['content_scope']
+        duration = instruction_info['duration']['suggested_duration']
+        audience = instruction_info['audience']
+        format_styles = instruction_info['format_style']
+        assessments = instruction_info['assessment_needs']
+        
+        # Lesson type specific instructions
+        if lesson_type == 'semester_course':
+            prompt_parts.append(
+                f"SCOPE: Full semester course plan covering extensive content\n"
+                f"DURATION: {duration}\n"
+                f"STRUCTURE: Weekly breakdown with modules, assessments, and progression"
+            )
+        elif lesson_type == 'multiple_chapters':
+            chapters_str = ', '.join(content_scope['chapters'])
+            prompt_parts.append(
+                f"SCOPE: Multi-chapter lesson plan covering: {chapters_str}\n"
+                f"DURATION: {duration}\n" 
+                f"STRUCTURE: Integrated approach connecting concepts across chapters"
+            )
+        elif lesson_type == 'single_chapter':
+            chapter_str = content_scope['chapters'][0] if content_scope['chapters'] else 'specified chapter'
+            prompt_parts.append(
+                f"SCOPE: Single chapter focused lesson: {chapter_str}\n"
+                f"DURATION: {duration}\n"
+                f"STRUCTURE: Deep dive into chapter concepts with comprehensive coverage"
+            )
+        elif lesson_type == 'section_focused':
+            sections_str = ', '.join(content_scope['sections'])
+            prompt_parts.append(
+                f"SCOPE: Section-specific lesson covering: {sections_str}\n"
+                f"DURATION: {duration}\n"
+                f"STRUCTURE: Detailed focus on specific sections and subsections"
+            )
+        elif lesson_type == 'concept_focused':
+            topics_str = ', '.join(content_scope['topics'])
+            prompt_parts.append(
+                f"SCOPE: Concept-focused lesson on: {topics_str}\n"
+                f"DURATION: {duration}\n"
+                f"STRUCTURE: Topic-centered approach with in-depth exploration"
+            )
+        else:
+            prompt_parts.append(
+                f"SCOPE: General content lesson plan\n"
+                f"DURATION: {duration}\n"
+                f"STRUCTURE: Comprehensive approach to provided content"
+            )
+        
+        # Audience and format specifications
+        if audience != 'general':
+            prompt_parts.append(f"TARGET AUDIENCE: {audience.title()} level students")
+        
+        if format_styles:
+            format_str = ', '.join(format_styles)
+            prompt_parts.append(f"TEACHING FORMAT: {format_str} approach")
+        
+        if assessments:
+            assessment_str = ', '.join(assessments)
+            prompt_parts.append(f"ASSESSMENT REQUIREMENTS: Include {assessment_str}")
+        
+        # Coverage information - simplified for lesson plans
+        total_elements = filtered_content['metadata']['total_elements']
+        prompt_parts.append(f"CONTENT AVAILABLE: {total_elements} content sections retrieved for lesson planning")
+        
+        # Special requirements
+        special_reqs = instruction_info['special_requirements']
+        if special_reqs:
+            special_str = ', '.join(special_reqs)
+            prompt_parts.append(f"SPECIAL REQUIREMENTS: {special_str}")
+        
+        # Format requirements
+        prompt_parts.append('''
+REQUIRED FORMAT:
+**LESSON PLAN: [Create appropriate title based on scope]**
+
+**Course Information:**
+- Scope: [Based on instruction analysis]
+- Duration: [As specified or suggested]
+- Level: [Based on audience]
+- Format: [Based on format requirements]
+
+**Learning Objectives:**
+[3-5 specific, measurable objectives aligned with content scope]
+
+**Prerequisites:**
+[Based on content complexity and audience level]
+
+**Content Outline:**
+[Structured breakdown matching the requested scope - chapters/sections/topics]
+
+**Teaching Methods & Activities:**
+[Align with format style requirements - interactive, practical, etc.]
+
+**Assessment & Evaluation:**
+[Include specific assessment types if requested]
+
+**Resources & Materials:**
+[Content-specific resources and supplementary materials]
+
+**Timeline & Pacing:**
+[Break down the lesson/course timing based on duration]
+
+**Homework & Follow-up:**
+[Appropriate post-lesson activities]
+
+**Edge Case Handling:**
+[If content is limited or scope is unclear, provide adaptive suggestions]''')
+        
+        # Add the actual content - limit to avoid token limits
+        content_preview = filtered_content['text_content'][:8000] # Increased limit
+        prompt_parts.append(f'''
+ORIGINAL INSTRUCTION: {original_query}
+
+CONTENT TO USE (Strictly adhere to this content ONLY):
+{content_preview}
+
+Generate the complete lesson plan now:''')
+        
+        final_prompt = '\n\n'.join(prompt_parts)
+        
+        try:
+            # Single LLM call with your existing OpenAI client
+            response = self.multimodal_integrator.openai_client.chat.completions.create(
+                model=self.multimodal_integrator.chat_model,  # Use your existing chat model
+                messages=[{"role": "user", "content": final_prompt}],
+                max_tokens=3000,  # Comprehensive lesson plan
+                temperature=0.1,
+                timeout=45
+            )
+            
+            lesson_plan = response.choices[0].message.content
+            logger.info("✅ Adaptive lesson plan generated successfully")
+            return lesson_plan
+            
+        except Exception as e:
+            logger.error(f"❌ Adaptive lesson plan generation failed: {e}")
+            return self._create_emergency_fallback_lesson(instruction_info, filtered_content)
+    
+    def _retrieve_text_only_for_lesson_plan(self, query: str, document_uuid: str, max_chunks: int = 10, page_range: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
+        """
+        Text-only retrieval specifically for lesson plans.
+        Directly queries Pinecone for text metadata only - no images/tables.
+        """
+        logger.info(f"🔍 TEXT-ONLY retrieval for lesson plan: query='{query}', doc='{document_uuid}', max_chunks={max_chunks}")
+        
+        try:
+            embedding_response = self.multimodal_integrator.openai_client.embeddings.create(
+                input=query,
+                model=self.multimodal_integrator.embedding_model
+            )
+            query_embedding = embedding_response.data[0].embedding
+            
+            # Add page range filter if provided
+            query_filter = {}
+            if page_range and 'start_page' in page_range and 'end_page' in page_range:
+                query_filter = {
+                    "page_number": {
+                        "$gte": page_range['start_page'],
+                        "$lte": page_range['end_page']
+                    }
+                }
+                logger.info(f"Applying page range filter: {query_filter}")
+
+            namespace = document_uuid
+            query_response = self.multimodal_integrator.index.query(
+                vector=query_embedding,
+                top_k=max_chunks,
+                namespace=namespace,
+                filter=query_filter if query_filter else None,
+                include_metadata=True
+            )
+            
+            if not query_response.matches:
+                logger.warning(f"No matches found for query: {query}")
+                return {"inline_elements": [], "text_chunks_found": 0}
+            
+            text_elements = []
+            for match in query_response.matches:
+                metadata = match.metadata or {}
+                text_content = metadata.get('text', '')
+                
+                if text_content.strip():
+                    text_elements.append({
+                        'type': 'text',
+                        'content': text_content.strip(),
+                        'metadata': {
+                            'page': metadata.get('page_number', 'unknown'),
+                            'score': float(match.score),
+                            'chunk_id': match.id,
+                            'has_text': metadata.get('has_text', False),
+                            'contains_image': metadata.get('contains_image', False),
+                            'contains_table': metadata.get('contains_table', False)
+                        }
+                    })
+            
+            logger.info(f"✅ TEXT-ONLY retrieval: {len(text_elements)} text chunks retrieved")
+            
+            return {
+                'inline_elements': text_elements,
+                'text_chunks_found': len(text_elements),
+                'retrieval_type': 'text_only_for_lesson_plan'
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ TEXT-ONLY retrieval failed: {e}")
+            return {"inline_elements": [], "text_chunks_found": 0, "error": str(e)}
+
+    def _create_simple_lesson_plan(self, relevant_content: str, query: str) -> str:
+        """Create lesson plan directly from relevant retrieved content."""
+        
+        try:
+            # Simple prompt that uses the retrieved content directly
+            prompt = f"""You are an expert educator. Create a comprehensive lesson plan based on the content provided below.
+
+USER REQUEST: {query}
+
+RELEVANT CONTENT FROM DOCUMENT:
+{relevant_content}
+
+Create a detailed lesson plan that:
+1. Uses ONLY the information provided in the content above
+2. Structures the lesson based on what's actually covered in the content
+3. Includes learning objectives based on the content
+4. Provides a clear outline and timeline
+5. Is appropriate for the subject matter found in the content
+
+Format the lesson plan professionally with clear sections and structure."""
+
+            # Generate lesson plan using OpenAI
+            response = self.multimodal_integrator.openai_client.chat.completions.create(
+                model=self.multimodal_integrator.chat_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=2000
+            )
+            
+            lesson_plan = response.choices[0].message.content.strip()
+            logger.info(f"✅ Simple lesson plan generated: {len(lesson_plan)} characters")
+            return lesson_plan
+            
+        except Exception as e:
+            logger.error(f"❌ Simple lesson plan generation failed: {e}")
+            return f"# Lesson Plan\n\nBased on: {query}\n\nContent Summary:\n{relevant_content[:500]}...\n\nPlease refer to the above content for lesson details."
+
+    def _create_emergency_fallback_lesson(self, instruction_info: Dict, content: Dict) -> str:
+        """Emergency fallback when LLM fails - comprehensive template-based lesson."""
+        
+        lesson_type = instruction_info['lesson_type']
+        duration = instruction_info['duration']['suggested_duration']
+        scope_info = instruction_info['content_scope']
+        
+        # Determine title
+        if scope_info['chapters']:
+            title = f"Lesson Plan: {', '.join(scope_info['chapters'][:3])}"
+        elif scope_info['sections']:
+            title = f"Section-Focused Lesson: {', '.join(scope_info['sections'][:2])}"
+        elif scope_info['topics']:
+            title = f"Topic Lesson: {', '.join(scope_info['topics'][:2])}"
+        else:
+            title = "Academic Lesson Plan"
+        
+        fallback = f"""**{title}**
+
+**Course Information:**
+- Scope: {lesson_type.replace('_', ' ').title()}
+- Duration: {duration}
+- Level: {instruction_info['audience'].title()}
+- Created: {datetime.now().strftime('%Y-%m-%d')}
+
+**Learning Objectives:**
+• Master core concepts from the specified content
+• Apply theoretical knowledge through practical examples
+• Demonstrate understanding through assessments
+• Develop critical thinking and analytical skills
+
+**Prerequisites:**
+Completion of foundational coursework and basic understanding of related concepts.
+
+**Content Outline:**"""
+        
+        # Add content-specific outline
+        if scope_info['chapters']:
+            fallback += f"\n• Chapter Coverage: {', '.join(scope_info['chapters'])}"
+        if scope_info['sections']:
+            fallback += f"\n• Section Focus: {', '.join(scope_info['sections'])}"
+        if scope_info['topics']:
+            fallback += f"\n• Topic Areas: {', '.join(scope_info['topics'])}"
+        
+        fallback += """
+• Core theoretical foundations
+• Practical applications and examples
+• Problem-solving techniques and methods
+• Real-world connections and case studies
+
+**Teaching Methods & Activities:**"""
+        
+        # Add format-specific methods
+        formats = instruction_info['format_style']
+        if 'interactive' in formats:
+            fallback += "\n• Interactive discussions and group activities"
+        if any(f in formats for f in ['hands-on', 'practical']):
+            fallback += "\n• Hands-on exercises and practical applications"
+        if 'lab-based' in formats:
+            fallback += "\n• Laboratory sessions and experiments"
+        
+        fallback += """
+• Structured presentations and lectures
+• Q&A sessions and clarifications
+• Problem-solving workshops
+• Peer learning and collaboration
+
+**Assessment & Evaluation:**"""
+        
+        # Add assessment-specific methods
+        assessments = instruction_info['assessment_needs']
+        if any(a in assessments for a in ['quiz', 'test']):
+            fallback += "\n• Quiz questions and knowledge checks"
+        if 'assignment' in assessments:
+            fallback += "\n• Written assignments and projects"
+        if 'homework' in assessments:
+            fallback += "\n• Homework exercises and practice problems"
+        
+        fallback += """
+• Formative assessments during lessons
+• Summative evaluations at completion
+• Class participation and engagement
+• Practical demonstrations of learning
+
+**Resources & Materials:**
+• Primary textbook and assigned readings
+• Supplementary articles and references
+• Online resources and digital materials
+• Practice exercises and example problems
+
+**Timeline & Pacing:**"""
+        
+        if 'semester' in duration:
+            fallback += "\n• Weekly modules with progressive complexity"
+            fallback += "\n• Mid-semester review and assessments"
+            fallback += "\n• Final project and comprehensive evaluation"
+        elif 'week' in duration:
+            fallback += "\n• Daily sessions building on each other"
+            fallback += "\n• Weekly review and consolidation"
+        else:
+            fallback += "\n• Introduction and context setting (20%)"
+            fallback += "\n• Core content delivery (60%)"
+            fallback += "\n• Review and assessment (20%)"
+        
+        fallback += """
+
+**Homework & Follow-up:**
+• Review and reinforce lesson concepts
+• Complete assigned readings and exercises
+• Prepare for upcoming assessments
+• Research additional examples and applications
+
+**Adaptive Notes:**
+This lesson plan has been generated to match your specific instruction. The content has been adapted based on available materials. If you need modifications for different audience levels, duration changes, or additional assessment types, please specify your requirements."""
+
+        logger.info("🛡️ Emergency fallback lesson plan created")
+        return fallback
     
     def _enhance_query_for_search(self, original_query: str, instruction_info: Dict) -> str:
         """Enhance search query based on parsed instruction for better retrieval."""
@@ -1052,7 +1711,7 @@ Generate the complete lesson plan now:""")
             logger.error(f"❌ Adaptive lesson plan generation failed: {e}")
             return self._create_emergency_fallback_lesson(instruction_info, filtered_content)
     
-    def _retrieve_text_only_for_lesson_plan(self, query: str, document_uuid: str, max_chunks: int = 10) -> Dict[str, Any]:
+    def _retrieve_text_only_for_lesson_plan(self, query: str, document_uuid: str, max_chunks: int = 10, page_range: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
         """
         Text-only retrieval specifically for lesson plans.
         Directly queries Pinecone for text metadata only - no images/tables.
@@ -1060,19 +1719,29 @@ Generate the complete lesson plan now:""")
         logger.info(f"🔍 TEXT-ONLY retrieval for lesson plan: query='{query}', doc='{document_uuid}', max_chunks={max_chunks}")
         
         try:
-            # Use the multimodal_integrator's OpenAI client but query only for text
             embedding_response = self.multimodal_integrator.openai_client.embeddings.create(
                 input=query,
-                model=self.multimodal_integrator.embedding_model  # Use same model as multimodal integrator
+                model=self.multimodal_integrator.embedding_model
             )
             query_embedding = embedding_response.data[0].embedding
             
-            # Query Pinecone directly for ALL chunks (no filter needed)
+            # Add page range filter if provided
+            query_filter = {}
+            if page_range and 'start_page' in page_range and 'end_page' in page_range:
+                query_filter = {
+                    "page_number": {
+                        "$gte": page_range['start_page'],
+                        "$lte": page_range['end_page']
+                    }
+                }
+                logger.info(f"Applying page range filter: {query_filter}")
+
             namespace = document_uuid
             query_response = self.multimodal_integrator.index.query(
                 vector=query_embedding,
                 top_k=max_chunks,
                 namespace=namespace,
+                filter=query_filter if query_filter else None,
                 include_metadata=True
             )
             
@@ -1080,7 +1749,6 @@ Generate the complete lesson plan now:""")
                 logger.warning(f"No matches found for query: {query}")
                 return {"inline_elements": [], "text_chunks_found": 0}
             
-            # Convert to simple text elements format - extract text field from metadata
             text_elements = []
             for match in query_response.matches:
                 metadata = match.metadata or {}

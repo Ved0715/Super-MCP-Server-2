@@ -1,142 +1,321 @@
-INFO:     ::1:63908 - "POST /mcp/call HTTP/1.1" 200 OK
-INFO:mcp_services.transports.http_transport:Calling tool: multimodel_paper_search with request_id: ebe9fa1e-6078-4067-80df-2424fd36a96c
-INFO:perfect_mcp_server:📚 Lesson plan detection: True for query: 'Create a lesson plan on the chapter "introduction to data mining"'
-INFO:processors.multimodel_retrival:🔍 Searching multimodal content for query: 'Create a lesson plan on the chapter "introduction to data mining"' in paper: user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15     
+INFO:mcp_services.transports.http_transport:Calling tool: multimodel_paper_search with request_id: b1b9757b-bd1c-4228-b3a6-ba8c294162f4
+INFO:perfect_mcp_server:📚 Lesson plan detection: True for query: 'Create a lesson plan on chapter 1'
+INFO:processors.multimodel_retrival:🔍 Searching multimodal content for query: 'Create a lesson plan on chapter 1' in paper: user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15
 INFO:processors.multimodel_retrival:📚 Lesson plan request detected, routing to universal lesson plan generator
-INFO:processors.multimodel_retrival:📚 Lesson plan instruction parsed: single_chapter for {'chapters': [], 'sections': [], 'topics': ['plan on the chapter "introduction to data mining"'], 'coverage': 'broad'}  
-INFO:processors.multimodel_retrival:📚 Analyzing Table of Contents for paper_id: user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15
-INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
-INFO:processors.multimodel_retrival:✅ LLM identified page range for 'plan on the chapter "introduction to data mining"': 21-35
-INFO:processors.multimodel_retrival:🧠 Generating LLM-guided search queries for lesson plan...
-INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
-INFO:processors.multimodel_retrival:🧠 LLM generated search queries: ['introduction to data mining concepts', 'examples of data mining techniques', 'practical applications of data mining in industry', 'interactive activities for teaching data mining', 'overview of data mining processes and methodologies']
-INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='introduction to data mining concepts', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
-INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
-INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 21, '$lte': 35}}
-INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
-INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='examples of data mining techniques', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
-INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
-INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 21, '$lte': 35}}
-INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
-INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='practical applications of data mining in industry', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3       
-INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
-INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 21, '$lte': 35}}
-INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
-INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='interactive activities for teaching data mining', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
-INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
-INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 21, '$lte': 35}}
-INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
-INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='overview of data mining processes and methodologies', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3     
-INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
-INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 21, '$lte': 35}}
-INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
-INFO:processors.multimodel_retrival:📝 Processing 10 TEXT-ONLY elements for lesson plan
-INFO:processors.multimodel_retrival:📊 Text content extracted: 5812 characters from 10 text elements     
-INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
-INFO:processors.multimodel_retrival:✅ Adaptive lesson plan generated successfully
-INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: Found inline_elements
-INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: inline_elements count = 1
-INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: element 0: type=text, content_length=3998
-INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: response_parts count = 2
-INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: final_response length = 3998
-INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: final_response preview = **LESSON PLAN: Introduction to Data Mining**
-
-**Course Information:**
-- Scope: Introduction to Data Mining
-- Duration: 60-90 minutes
-- Level: Undergraduate/Graduate
-- Format: Interactive Lecture and G...
-INFO:     ::1:56570 - "POST /mcp/call HTTP/1.1" 200 OK
-INFO:mcp_services.transports.http_transport:Calling tool: multimodel_paper_search with request_id: 6a7a1f47-ece0-44d5-9e94-1f98d3f4a693
-INFO:perfect_mcp_server:📚 Lesson plan detection: True for query: 'Give me a weekly lesson plan on the first three chapters from the book.'
-INFO:processors.multimodel_retrival:🔍 Searching multimodal content for query: 'Give me a weekly lesson plan on the first three chapters from the book.' in paper: user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15
-INFO:processors.multimodel_retrival:📚 Lesson plan request detected, routing to universal lesson plan generator
-INFO:processors.multimodel_retrival:📚 Lesson plan instruction parsed: weekly_unit for {'chapters': [], 'sections': [], 'topics': ['plan on the first three chapters from the book.'], 'coverage': 'specific'}    
-INFO:processors.multimodel_retrival:📚 Analyzing Table of Contents for paper_id: user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15
-INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
-INFO:processors.multimodel_retrival:✅ LLM identified page range for 'plan on the first three chapters from the book.': 1-56
-INFO:processors.multimodel_retrival:🧠 Generating LLM-guided search queries for lesson plan...
-INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
-INFO:processors.multimodel_retrival:🧠 LLM generated search queries: ['weekly lesson plan for first three chapters of a book', 'interactive activities for teaching first three chapters', 'assessment strategies for first three chapters of a book', 'core concepts from first three chapters of a book', 'examples of lesson plans for specific book chapters']
-INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='weekly lesson plan for first three chapters of a book', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3   
-INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
-INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 56}}
-INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
-INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='interactive activities for teaching first three chapters', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
-INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
-INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 56}}
-INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
-INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='assessment strategies for first three chapters of a book', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
-INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
-INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 56}}
-INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
-INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='core concepts from first three chapters of a book', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3       
-INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
-INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 56}}
-INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
-INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='examples of lesson plans for specific book chapters', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3     
-INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
-INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 56}}
-INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
-INFO:processors.multimodel_retrival:📝 Processing 6 TEXT-ONLY elements for lesson plan
-INFO:processors.multimodel_retrival:📊 Text content extracted: 2906 characters from 6 text elements      
-INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
-INFO:processors.multimodel_retrival:✅ Adaptive lesson plan generated successfully
-INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: Found inline_elements
-INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: inline_elements count = 1
-INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: element 0: type=text, content_length=3714
-INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: response_parts count = 2
-INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: final_response length = 3714
-INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: final_response preview = **LESSON PLAN: Introduction to Data Mining Concepts and Techniques**
-
-**Course Information:**
-- Scope: Introduction to Data Mining Concepts
-- Duration: 60-90 minutes
-- Level: Undergraduate/Graduate
-- ...
-INFO:     ::1:62294 - "POST /mcp/call HTTP/1.1" 200 OK
-INFO:mcp_services.transports.http_transport:Calling tool: multimodel_paper_search with request_id: 5b86c1df-0315-4191-8a06-113768bd3608
-INFO:perfect_mcp_server:📚 Lesson plan detection: True for query: 'Give me a semester plan for the whole book units'
-INFO:processors.multimodel_retrival:🔍 Searching multimodal content for query: 'Give me a semester plan for the whole book units' in paper: user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15
-INFO:processors.multimodel_retrival:📚 Lesson plan request detected, routing to universal lesson plan generator
-INFO:processors.multimodel_retrival:📚 Lesson plan instruction parsed: semester_course for {'chapters': [], 'sections': [], 'topics': [], 'coverage': 'specific'}
 INFO:processors.multimodel_retrival:📚 Analyzing Table of Contents for paper_id: user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15
 INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
 INFO:processors.multimodel_retrival:✅ LLM identified page range for 'the user's target area': 1-21
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:🧠 Intelligent query analysis completed
+INFO:processors.multimodel_retrival:📚 Lesson plan instruction parsed: single_chapter for {'chapters': ['Unit 1: Data Warehousing and Online Analytical Processing'], 'sections': [], 'topics': ['Data Warehousing', 'Online Analytical Processing', 'Data Integration', 'Data Transformation', 'OLAP Tools'], 'coverage': 'specific'}
 INFO:processors.multimodel_retrival:🧠 Generating LLM-guided search queries for lesson plan...
 INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
-INFO:processors.multimodel_retrival:🧠 LLM generated search queries: ['semester lesson plan for book units', 'interactive teaching strategies for full semester courses', 'examples of unit plans for literature or textbook chapters', 'core concepts in developing a semester course outline', 'best practices for structuring a 16-week curriculum']
-INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='semester lesson plan for book units', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:processors.multimodel_retrival:🧠 LLM generated search queries: ['definition of data warehousing', 'core concepts of online analytical processing (OLAP)', 'examples of data integration techniques', 'practical applications of data transformation in business', 'overview of OLAP tools and their functionalities']
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='definition of data warehousing', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
 INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
 INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
 INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
-INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='interactive teaching strategies for full semester courses', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='core concepts of online analytical processing (OLAP)', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
 INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
 INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
 INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
-INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='examples of unit plans for literature or textbook chapters', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='examples of data integration techniques', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
 INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
 INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
 INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
-INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='core concepts in developing a semester course outline', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3   
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='practical applications of data transformation in business', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
 INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
 INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
 INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
-INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='best practices for structuring a 16-week curriculum', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3     
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='overview of OLAP tools and their functionalities', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
 INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
 INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
 INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
-INFO:processors.multimodel_retrival:📝 Processing 5 TEXT-ONLY elements for lesson plan
-INFO:processors.multimodel_retrival:📊 Text content extracted: 2742 characters from 5 text elements      
+INFO:processors.multimodel_retrival:📝 Processing 13 TEXT-ONLY elements for lesson plan
+INFO:processors.multimodel_retrival:📊 Text content extracted: 7410 characters from 13 text elements
 INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
 INFO:processors.multimodel_retrival:✅ Adaptive lesson plan generated successfully
 INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: Found inline_elements
 INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: inline_elements count = 1
-INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: element 0: type=text, content_length=4596
+INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: element 0: type=text, content_length=3711
 INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: response_parts count = 2
-INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: final_response length = 4596
-INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: final_response preview = **LESSON PLAN: Data Mining and Warehousing: Techniques and Applications**
+INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: final_response length = 3711
+INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: final_response preview = **LESSON PLAN: Understanding Data Warehousing and Online Analytical Processing (OLAP)**
 
 **Course Information:**
-- **Scope:** Comprehensive exploration of data mining and warehousing techniques, focusing on practic... 
-INFO:     ::1:57330 - "POST /mcp/call HTTP/1.1" 200 OK
+- Scope: Unit 1: Data Warehousing and Online Analytical Processing
+- Duration: 2 hours
+...
+INFO:     ::1:51439 - "POST /mcp/call HTTP/1.1" 200 OK
+INFO:mcp_services.transports.http_transport:Calling tool: multimodel_paper_search with request_id: 28f04721-7e42-4d10-9cac-9cf84c3856e1
+INFO:perfect_mcp_server:📚 Lesson plan detection: True for query: 'Create a lesson plan on first three chapters'
+INFO:processors.multimodel_retrival:🔍 Searching multimodal content for query: 'Create a lesson plan on first three chapters' in paper: user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15
+INFO:processors.multimodel_retrival:📚 Lesson plan request detected, routing to universal lesson plan generator
+INFO:processors.multimodel_retrival:📚 Analyzing Table of Contents for paper_id: user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:✅ LLM identified page range for 'the user's target area': 1-21
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:🧠 Intelligent query analysis completed
+INFO:processors.multimodel_retrival:📚 Lesson plan instruction parsed: multiple_chapters for {'chapters': ['Unit 1: Data Warehousing and Online Analytical Processing', 'Unit 2: Introduction to Data Mining', 'Unit 3: Data Warehousing Architecture'], 'sections': [], 'topics': ['Data Warehousing', 'Online Analytical Processing', 'Data Mining', 'Data Warehousing Architecture'], 'coverage': 'comprehensive'}
+INFO:processors.multimodel_retrival:🧠 Generating LLM-guided search queries for lesson plan...
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:🧠 LLM generated search queries: ['definition of data warehousing', 'core concepts of online analytical processing', 'examples of data mining techniques', 'data warehousing architecture overview', 'practical applications of data warehousing in business']
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='definition of data warehousing', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='core concepts of online analytical processing', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='examples of data mining techniques', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='data warehousing architecture overview', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='practical applications of data warehousing in business', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:📝 Processing 14 TEXT-ONLY elements for lesson plan
+INFO:processors.multimodel_retrival:📊 Text content extracted: 8367 characters from 14 text elements
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:✅ Adaptive lesson plan generated successfully
+INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: Found inline_elements
+INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: inline_elements count = 1
+INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: element 0: type=text, content_length=4316
+INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: response_parts count = 2
+INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: final_response length = 4316
+INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: final_response preview = **LESSON PLAN: Understanding Data Warehousing and Data Mining**
+
+**Course Information:**
+- **Scope:** Multi-chapter exploration of Data Warehousing, Online Analytical Processing (OLAP), Introduction t...      
+INFO:     ::1:64477 - "POST /mcp/call HTTP/1.1" 200 OK
+INFO:mcp_services.transports.http_transport:Calling tool: multimodel_paper_search with request_id: 921cc50e-aa93-4a91-a2d0-394e32aebd0b
+INFO:perfect_mcp_server:📚 Lesson plan detection: True for query: 'Create a semester plan on the chapters,semester 1 is from chapter 1 to 7 and semester 2 is from chapter 8 to 14.'
+INFO:processors.multimodel_retrival:🔍 Searching multimodal content for query: 'Create a semester plan on the chapters,semester 1 is from chapter 1 to 7 and semester 2 is from chapter 8 to 14.' in paper: user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15
+INFO:processors.multimodel_retrival:📚 Lesson plan request detected, routing to universal lesson plan generator
+INFO:processors.multimodel_retrival:📚 Analyzing Table of Contents for paper_id: user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:✅ LLM identified page range for 'the user's target area': 1-21
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:🧠 Intelligent query analysis completed
+INFO:processors.multimodel_retrival:📚 Lesson plan instruction parsed: semester_course for {'chapters': ['Unit 1: Data Warehousing and Online Analytical Processing', 'Unit 2: Introduction to Data Mining', 'Unit 3: Data Warehousing Architecture', 'Unit 4: Installation and development environment overview', 'Unit 5: Introduction to Mining Tools', 'Unit 6: Extracting Data Sets', 'Unit 7: Data Preprocessing', 'Unit 8: Data Preprocessing Using Rapid Miner', 'Unit 9: Association and Correlation Analysis', 'Unit 10: Clustering Algorithms and Cluster Analysis', 'Unit 11: Classification', 'Unit 12: Prediction and Classification Using Weka Tool'], 'sections': [], 'topics': [], 'coverage': 'comprehensive'}
+INFO:processors.multimodel_retrival:🧠 Generating LLM-guided search queries for lesson plan...
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:🧠 LLM generated search queries: ['overview of data warehousing and online analytical processing', 'introduction to data mining concepts and techniques', 'data warehousing architecture best practices', 'installation and development environment for data mining tools', 'practical applications of clustering algorithms in data analysis']
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='overview of data warehousing and online analytical processing', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='introduction to data mining concepts and techniques', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='data warehousing architecture best practices', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='installation and development environment for data mining tools', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='practical applications of clustering algorithms in data analysis', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:📝 Processing 14 TEXT-ONLY elements for lesson plan
+INFO:processors.multimodel_retrival:📊 Text content extracted: 7166 characters from 14 text elements
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:✅ Adaptive lesson plan generated successfully
+INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: Found inline_elements
+INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: inline_elements count = 1
+INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: element 0: type=text, content_length=4426
+INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: response_parts count = 2
+INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: final_response length = 4426
+INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: final_response preview = **LESSON PLAN: Data Warehousing and Data Mining Fundamentals**
+
+**Course Information:**
+- **Scope:** Comprehensive exploration of Data Warehousing and Data Mining, covering Chapters 1 to 14 over two s...     
+INFO:     ::1:58457 - "POST /mcp/call HTTP/1.1" 200 OK
+INFO:mcp_services.transports.http_transport:Calling tool: multimodel_paper_search with request_id: ed2d9f78-213c-4edb-b968-5e07f4cb605a
+INFO:perfect_mcp_server:📚 Lesson plan detection: True for query: 'Create a lesson plan seperately for each chapter from 1 to 6'
+INFO:processors.multimodel_retrival:🔍 Searching multimodal content for query: 'Create a lesson plan seperately for each chapter from 1 to 6' in paper: user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15
+INFO:processors.multimodel_retrival:📚 Lesson plan request detected, routing to universal lesson plan generator
+INFO:processors.multimodel_retrival:📚 Analyzing Table of Contents for paper_id: user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:✅ LLM identified page range for 'the user's target area': 1-21
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:🧠 Intelligent query analysis completed
+INFO:processors.multimodel_retrival:📚 Lesson plan instruction parsed: multiple_chapters for {'chapters': ['Unit 1: Data Warehousing and Online Analytical Processing', 'Unit 2: Introduction to Data Mining', 'Unit 3: Data Warehousing Architecture', 'Unit 4: Installation and development environment overview', 'Unit 5: Introduction to Mining Tools', 'Unit 6: Extracting Data Sets'], 'sections': [], 'topics': [], 'coverage': 'comprehensive'}
+INFO:processors.multimodel_retrival:🧠 Generating LLM-guided search queries for lesson plan...
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:🧠 LLM generated search queries: ['overview of data warehousing and online analytical processing', 'key concepts in data mining for undergraduate students', 'data warehousing architecture explained with examples', 'installation and development environment for data mining tools', 'practical applications of extracting data sets in real-world scenarios']
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='overview of data warehousing and online analytical processing', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='key concepts in data mining for undergraduate students', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='data warehousing architecture explained with examples', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='installation and development environment for data mining tools', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='practical applications of extracting data sets in real-world scenarios', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:📝 Processing 15 TEXT-ONLY elements for lesson plan
+INFO:processors.multimodel_retrival:📊 Text content extracted: 8652 characters from 15 text elements
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:✅ Adaptive lesson plan generated successfully
+INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: Found inline_elements
+INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: inline_elements count = 1
+INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: element 0: type=text, content_length=4588
+INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: response_parts count = 2
+INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: final_response length = 4588
+INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: final_response preview = **LESSON PLAN: Comprehensive Overview of Data Warehousing and Data Mining**
+
+**Course Information:**
+- **Scope:** Multi-chapter exploration of Data Warehousing and Online Analytical Processing, Data M...
+INFO:     ::1:62904 - "POST /mcp/call HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [22972]
+
+(mcp_server) C:\Users\Admin\OneDrive - BANDHURE SOLUTIONS LLP\Desktop\GitHub\Super-MCP-Server-2>python start_mcp_server.py --host localhost --port 3001
+ImageProcessor class created successfully
+TableProcessor class created successfully
+InlineMultimodalGenerator created successfully
+INFO:perfect_mcp_server:✅ HybridRetriever imported successfully
+INFO:perfect_mcp_server:✅ Prompt templates imported successfully
+============================================================
+🚀 Starting MCP Research Server
+============================================================
+Host: localhost
+Port: 3001
+Debug: False
+Server URL: http://localhost:3001
+============================================================
+
+🔧 Core MCP Endpoints:
+  📊 Health Check:     http://localhost:3001/health
+  🛠️  Tool Call:        http://localhost:3001/mcp/call
+  📤 Upload & Process: http://localhost:3001/mcp/upload-and-process
+  📋 List Tools:       http://localhost:3001/mcp/list-tools
+  📥 Downloads:        http://localhost:3001/presentations/{filename}
+
+🧠 Knowledge Base API (Intelligent):
+  🔍 Smart Query:      http://localhost:3001/kb/query
+  📊 KB Statistics:    http://localhost:3001/kb/stats
+  📚 Books Inventory:  http://localhost:3001/kb/books
+  ⚡ KB Health:        http://localhost:3001/kb/health
+  📝 Query Examples:   http://localhost:3001/kb/examples
+  🔧 Diagnostics:      http://localhost:3001/kb/diagnostics
+
+💾 Vector Databases:
+  📄 Research Papers:  test
+  📚 Knowledge Base:   optimized-kb-index
+============================================================
+
+Press Ctrl+C to stop the server
+
+INFO:mcp_services.core.server_wrapper:MCP Server Wrapper initialized for localhost:3001
+INFO:mcp_services.core.server_wrapper:Initializing MCP server...
+INFO:retrieval.paper.paper_compare_qa:Document Q&A system initialized successfully
+C:\Users\Admin\anaconda3\envs\mcp_server\Lib\site-packages\llama_cloud_services\parse\base.py:519: UserWarning: The following parameters are unused: instructions.
+
+ - 'instructions' is not a valid parameter. Please check the documentation or update the package.
+  warnings.warn(
+INFO:vector_storage:🔗 Connected to existing Pinecone index: test (📚 Knowledge Base)
+INFO:vector_storage:🔗 Connected to existing Pinecone index: test (📚 Knowledge Base)
+✅ LlamaParse initialized successfully
+🧠 Initializing Chain of Thought Knowledge Base Retriever...
+🔧 Loading cross-encoder for CoT reranking...
+INFO:sentence_transformers.cross_encoder.CrossEncoder:Use pytorch device: cpu
+✅ Cross-encoder loaded successfully
+✅ Connected to Pinecone index: optimized-kb-index
+✅ Chain of Thought KB Retriever initialized with cost optimization
+INFO:perfect_mcp_server:✅ Chain of Thought KB Retriever initialized successfully
+INFO:perfect_mcp_server:🔧 Initializing Enhanced Multimodal Retriever with Lesson Plan support...
+INFO:processors.multimodal_integrator:✅ LlamaParse initialized successfully
+INFO:processors.multimodal_integrator:All clients initialized successfully
+WARNING:processors.image_processor:S3 initialization failed: cannot import name 'get_s3_url' from 'config' (C:\Users\Admin\OneDrive - BANDHURE SOLUTIONS LLP\Desktop\GitHub\Super-MCP-Server-2\config.py). Using local storage.
+INFO:processors.multimodal_integrator:Specialized processors initialized
+INFO:processors.multimodel_retrival:✅ Server multimodal retrieval system initialized successfully
+INFO:processors.multimodel_retrival:✅ Universal lesson plan generator initialized
+INFO:perfect_mcp_server:✅ Enhanced Multimodal Retriever initialized successfully
+INFO:perfect_mcp_server:📚 Universal Lesson Plan Generator is now active!
+🔧 Loading cross-encoder for reranking...
+INFO:sentence_transformers.cross_encoder.CrossEncoder:Use pytorch device: cpu
+✅ Cross-encoder loaded successfully
+✅ Connected to Pinecone index: optimized-kb-index
+INFO:perfect_mcp_server:✅ HybridRetriever initialized successfully
+INFO:perfect_mcp_server:Perfect MCP Server initialized with all advanced features
+INFO:mcp_services.transports.http_transport:✅ Knowledge Base Retrieval API integrated successfully
+INFO:mcp_services.transports.http_transport:MCP HTTP Transport initialized on localhost:3001
+INFO:mcp_services.core.server_wrapper:MCP server and HTTP transport initialized successfully
+INFO:mcp_services.core.server_wrapper:Running MCP server on localhost:3001
+INFO:     Started server process [22708]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://localhost:3001 (Press CTRL+C to quit)
+INFO:mcp_services.transports.http_transport:Calling tool: multimodel_paper_search with request_id: 5904231e-7ff6-4d75-8a76-56da9f6dadc3
+INFO:perfect_mcp_server:📚 Lesson plan detection: True for query: 'create a lesson plan of 2 weeks on chapter 1.'
+INFO:processors.multimodel_retrival:🔍 Searching multimodal content for query: 'create a lesson plan of 2 weeks on chapter 1.' in paper: user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15
+INFO:processors.multimodel_retrival:📚 Lesson plan request detected, routing to universal lesson plan generator
+INFO:processors.multimodel_retrival:📚 Analyzing Table of Contents for paper_id: user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:✅ LLM identified page range for 'the user's target area': 1-21
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:🧠 Intelligent query analysis completed
+INFO:processors.multimodel_retrival:📚 Lesson plan instruction parsed: single_chapter for {'chapters': ['Unit 1: Data Warehousing and Online Analytical Processing'], 'sections': [], 'topics': ['Data Warehousing', 'Online Analytical Processing', 'Data Cleaning', 'Data Integration', 'Data Transformation'], 'coverage': 'comprehensive'}
+INFO:processors.multimodel_retrival:🧠 Generating LLM-guided search queries for lesson plan...
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:🧠 LLM generated search queries: ['definition of data warehousing', 'core concepts of online analytical processing', 'examples of data cleaning techniques', 'practical applications of data integration', 'overview of data transformation processes']
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='definition of data warehousing', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='core concepts of online analytical processing', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='examples of data cleaning techniques', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='practical applications of data integration', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:🔍 TEXT-ONLY retrieval for lesson plan: query='overview of data transformation processes', doc='user_44_doc_1d6c88a5-3af3-4197-a68e-2b1105d97a15', max_chunks=3
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:Applying page range filter: {'page_number': {'$gte': 1, '$lte': 21}}
+INFO:processors.multimodel_retrival:✅ TEXT-ONLY retrieval: 3 text chunks retrieved
+INFO:processors.multimodel_retrival:📝 Processing 11 TEXT-ONLY elements for lesson plan
+INFO:processors.multimodel_retrival:📊 Text content extracted: 6267 characters from 11 text elements
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:processors.multimodel_retrival:✅ Adaptive lesson plan generated successfully
+INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: Found inline_elements
+INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: inline_elements count = 1
+INFO:perfect_mcp_server:🔍 LESSON PLAN MCP DEBUG: element 0: type=text, content_length=4125
+INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: response_parts count = 2
+INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: final_response length = 4125
+INFO:perfect_mcp_server:🔍 LESSON PLAN DEBUG: final_response preview = **LESSON PLAN: Understanding Data Warehousing and Online Analytical Processing (OLAP)**
+
+**Course Information:**
+- Scope: Unit 1: Data Warehousing and Online Analytical Processing
+- Duration: 2 weeks
+...
+INFO:     ::1:56582 - "POST /mcp/call HTTP/1.1" 200 OK

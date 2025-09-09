@@ -47,7 +47,17 @@ class UniversalLessonPlanGenerator:
                 r'chapters?\s*(\d+)\s*[-–to]+\s*(\d+)',
                 r'chapters?\s*([\d,\s-]+)',
                 r'part\s*(\d+)',
-                r'unit\s*(\d+)'
+                r'unit\s*(\d+)',
+                r'UNIT\s*(\d+)',
+                r'Unit\s*(\d+)',
+                # Natural language patterns for chapter references
+                r'first\s+(\d+)\s+chapters?',
+                r'first\s+three\s+chapters?',
+                r'first\s+two\s+chapters?',
+                r'first\s+four\s+chapters?',
+                r'first\s+five\s+chapters?',
+                r'last\s+(\d+)\s+chapters?',
+                r'(\d+)\s*[-–to]+\s*(\d+)\s+chapters?'
             ],
             'section_patterns': [
                 r'section\s*(\d+(?:\.\d+)?)',
@@ -87,11 +97,82 @@ class UniversalLessonPlanGenerator:
         query_lower = query.lower()
         return any(trigger in query_lower for trigger in self.instruction_patterns['lesson_plan_triggers'])
     
-    def parse_lesson_instruction(self, query: str) -> Dict[str, Any]:
-        """Parse comprehensive lesson plan instruction and extract all requirements."""
+    def parse_lesson_instruction(self, query: str, toc_content: str = None) -> Dict[str, Any]:
+        """Parse comprehensive lesson plan instruction using intelligent LLM analysis."""
+        
+        # Use LLM to analyze the query with ToC context
+        instruction_info = self._intelligent_query_analysis(query, toc_content)
+        
+        logger.info(f"📚 Lesson plan instruction parsed: {instruction_info['lesson_type']} for {instruction_info['content_scope']}")
+        return instruction_info
+    
+    def _intelligent_query_analysis(self, query: str, toc_content: str = None) -> Dict[str, Any]:
+        """Use LLM to intelligently analyze user query against Table of Contents."""
+        try:
+            prompt = f"""You are an expert educational content analyzer. Analyze the user's lesson plan request and the document's Table of Contents to understand exactly what content they want.
+
+USER QUERY: "{query}"
+
+TABLE OF CONTENTS (if available):
+{toc_content[:4000] if toc_content else "No ToC provided - will analyze from document structure"}
+
+TASK: Analyze the user's request and return a JSON object with the following structure:
+
+{{
+    "lesson_type": "single_chapter|multiple_chapters|weekly_unit|semester_course|section_focused|concept_focused|general_content",
+    "content_scope": {{
+        "chapters": ["list of specific chapter/unit names found in ToC"],
+        "sections": ["list of specific section names if applicable"],
+        "topics": ["list of topic areas mentioned"],
+        "coverage": "specific|broad|comprehensive"
+    }},
+    "duration": {{
+        "time_amount": "extracted number if any",
+        "time_unit": "hours|days|weeks|months|semester",
+        "suggested_duration": "appropriate duration based on scope"
+    }},
+    "audience": "beginner|intermediate|advanced|undergraduate|graduate|general",
+    "format_style": ["interactive", "practical", "lecture", "workshop"],
+    "assessment_needs": ["quiz", "assignment", "project", "homework"],
+    "special_requirements": ["with examples", "step by step", "detailed"],
+    "timeline_needs": {{
+        "needs_timeline": true/false,
+        "format": "weekly|monthly|semester",
+        "convert_to_table": true/false
+    }}
+}}
+
+IMPORTANT RULES:
+1. If user says "first three chapters", look at ToC and identify the actual first 3 chapters/units
+2. If ToC uses "UNIT 1", "UNIT 2" format, use that instead of "Chapter"
+3. If user asks for timeline in weeks but it's long (>8 weeks), suggest monthly conversion
+4. Be precise about what content is actually available in the ToC
+5. If ToC is not clear, make reasonable assumptions but note them
+
+Return ONLY the JSON object."""
+
+            response = self.openai_client.chat.completions.create(
+                model=self.chat_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=800,
+                temperature=0.1,
+                response_format={"type": "json_object"},
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            logger.info(f"🧠 Intelligent query analysis completed")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Intelligent query analysis failed: {e}")
+            # Fallback to basic analysis
+            return self._fallback_basic_analysis(query)
+    
+    def _fallback_basic_analysis(self, query: str) -> Dict[str, Any]:
+        """Fallback analysis when LLM fails."""
         query_lower = query.lower()
         
-        instruction_info = {
+        return {
             'lesson_type': self._detect_lesson_type(query_lower),
             'content_scope': self._extract_content_scope(query_lower),
             'duration': self._extract_duration(query_lower),
@@ -99,11 +180,12 @@ class UniversalLessonPlanGenerator:
             'format_style': self._extract_format_style(query_lower),
             'assessment_needs': self._extract_assessment_needs(query_lower),
             'special_requirements': self._extract_special_requirements(query),
-            'search_strategy': self._determine_search_strategy(query_lower)
+            'timeline_needs': {
+                'needs_timeline': 'timeline' in query_lower or 'schedule' in query_lower,
+                'format': 'weekly',
+                'convert_to_table': True
+            }
         }
-        
-        logger.info(f"📚 Lesson plan instruction parsed: {instruction_info['lesson_type']} for {instruction_info['content_scope']}")
-        return instruction_info
     
     def _detect_lesson_type(self, query: str) -> str:
         """Detect the type of lesson plan requested."""
@@ -366,9 +448,10 @@ class ServerMultimodalRetrieval:
             logger.error(f"❌ Failed to initialize multimodal integrator: {e}")
             raise
 
-    def _get_page_range_for_scope(self, paper_id: str, instruction_info: Dict) -> Optional[Dict[str, int]]:
+    def _get_toc_content_and_page_range(self, paper_id: str, instruction_info: Dict) -> Tuple[str, Optional[Dict[str, int]]]:
         """
-        Analyzes the document's Table of Contents to find the page range for a specific scope.
+        Analyzes the document's Table of Contents to extract ToC content and find page range for scope.
+        Returns both the ToC content for intelligent analysis and the page range.
         """
         try:
             logger.info(f"📚 Analyzing Table of Contents for paper_id: {paper_id}")
@@ -384,7 +467,7 @@ class ServerMultimodalRetrieval:
 
             if not toc_query_response.matches:
                 logger.warning("Could not retrieve any chunks from the first 20 pages to find ToC.")
-                return None
+                return "", None
 
             # 2. Reconstruct the text by sorting chunks by page number
             page_chunks = sorted(toc_query_response.matches, key=lambda m: m.metadata.get('page_number', 0))
@@ -400,14 +483,13 @@ class ServerMultimodalRetrieval:
 
             if not reconstructed_text.strip():
                 logger.warning("Reconstructed text for ToC analysis is empty.")
-                return None
+                return "", None
 
             # 3. Use LLM to find the target scope in the ToC and return its page range
             target_scope_str = instruction_info.get('content_scope', {}).get('chapters', []) or \
                                instruction_info.get('content_scope', {}).get('sections', []) or \
                                instruction_info.get('content_scope', {}).get('topics', [])
             target_scope_str = ", ".join(target_scope_str) if target_scope_str else "the user's target area"
-
 
             prompt = f"""You are a document analysis expert. Below is text from the beginning of a document, which should contain a Table of Contents (ToC). Your task is to find the page range for the user's target scope.
 
@@ -434,18 +516,20 @@ INSTRUCTIONS:
 
             response_data = json.loads(response.choices[0].message.content)
 
+            page_range = None
             if response_data and "error" not in response_data and "start_page" in response_data:
                 start_page = int(response_data["start_page"])
                 end_page = int(response_data.get("end_page", start_page + 20)) # Guess end page if not found
                 logger.info(f"✅ LLM identified page range for '{target_scope_str}': {start_page}-{end_page}")
-                return {"start_page": start_page, "end_page": end_page}
+                page_range = {"start_page": start_page, "end_page": end_page}
             else:
                 logger.warning(f"LLM could not determine page range for '{target_scope_str}'. Reason: {response_data.get('error', 'Unknown')}")
-                return None
+
+            return reconstructed_text, page_range
 
         except Exception as e:
-            logger.error(f"❌ Failed to get page range from ToC: {e}")
-            return None
+            logger.error(f"❌ Failed to get ToC content and page range: {e}")
+            return "", None
     
     async def search_multimodal_content(self, 
                                       query: str, 
@@ -825,11 +909,17 @@ INSTRUCTIONS:
         """Generate lesson plan for ANY instruction with comprehensive edge case handling."""
         
         try:
-            # Step 1: Parse the instruction comprehensively
-            instruction_info = self.lesson_plan_generator.parse_lesson_instruction(query)
+            # Step 1: Get ToC content first for intelligent analysis
+            toc_content, initial_page_range = self._get_toc_content_and_page_range(paper_id, {"content_scope": {"chapters": [], "sections": [], "topics": []}})
             
-            # Step 2: Find the page range for the requested scope using ToC analysis
-            page_range = self._get_page_range_for_scope(paper_id, instruction_info)
+            # Step 2: Parse the instruction intelligently using ToC context
+            instruction_info = self.lesson_plan_generator.parse_lesson_instruction(query, toc_content)
+            
+            # Step 3: Get precise page range based on intelligent analysis
+            if initial_page_range is None:
+                _, page_range = self._get_toc_content_and_page_range(paper_id, instruction_info)
+            else:
+                page_range = initial_page_range
 
             # Step 3: Use LLM to generate targeted search queries
             logger.info("🧠 Generating LLM-guided search queries for lesson plan...")
@@ -1190,6 +1280,12 @@ REQUIRED FORMAT:
 **Edge Case Handling:**
 [If content is limited or scope is unclear, provide adaptive suggestions]''')
         
+        # Add timeline table if needed
+        timeline_section = ""
+        if instruction_info.get('timeline_needs', {}).get('needs_timeline', False):
+            timeline_section = self.lesson_plan_generator._generate_timeline_table(instruction_info)
+            prompt_parts.append(f"TIMELINE REQUIREMENTS:\n{timeline_section}")
+
         # Add the actual content - limit to avoid token limits
         content_preview = filtered_content['text_content'][:8000] # Increased limit
         prompt_parts.append(f'''
@@ -1964,3 +2060,167 @@ def get_retrieval_instance() -> ServerMultimodalRetrieval:
     if _retrieval_instance is None:
         _retrieval_instance = ServerMultimodalRetrieval()
     return _retrieval_instance
+
+
+# Add timeline generation methods to the UniversalLessonPlanGenerator class
+def add_timeline_methods_to_generator():
+    """Add timeline generation methods to the UniversalLessonPlanGenerator class."""
+    
+    def _generate_timeline_table(self, instruction_info: Dict) -> str:
+        """Generate dynamic timeline table based on duration - months/weeks or weeks/days."""
+        duration = instruction_info.get('duration', {}).get('suggested_duration', '16 weeks')
+        
+        # Extract number of weeks if present
+        weeks_match = re.search(r'(\d+)\s*weeks?', duration.lower())
+        if weeks_match:
+            total_weeks = int(weeks_match.group(1))
+        else:
+            # Default based on lesson type
+            lesson_type = instruction_info.get('lesson_type', 'single_chapter')
+            if lesson_type == 'semester_course':
+                total_weeks = 16
+            elif lesson_type == 'multiple_chapters':
+                total_weeks = 8
+            elif lesson_type == 'weekly_unit':
+                total_weeks = 4
+            else:
+                total_weeks = 2
+        
+        # Dynamic table structure based on duration
+        if total_weeks > 4:  # More than a month - use Month > Week hierarchy
+            return self._generate_monthly_week_table(total_weeks, instruction_info)
+        else:  # 4 weeks or less - use Week > Day hierarchy
+            return self._generate_weekly_day_table(total_weeks, instruction_info)
+    
+    def _generate_monthly_week_table(self, total_weeks: int, instruction_info: Dict) -> str:
+        """Generate month > week hierarchy table for longer durations."""
+        content_scope = instruction_info.get('content_scope', {})
+        chapters = content_scope.get('chapters', [])
+        
+        # Calculate months (4 weeks per month)
+        total_months = (total_weeks + 3) // 4  # Round up
+        
+        timeline_table = f"""
+**TIMELINE TABLE: {total_weeks} Week Course ({total_months} Month Duration)**
+
+| Month | Week | Content Focus | Learning Goals | Activities | Milestones |
+|-------|------|---------------|----------------|------------|------------|"""
+        
+        content_per_week = max(1, len(chapters) // total_weeks) if chapters else 1
+        
+        for week in range(1, total_weeks + 1):
+            month_num = ((week - 1) // 4) + 1
+            week_in_month = ((week - 1) % 4) + 1
+            
+            # Determine content for this week
+            if chapters:
+                chapter_start = (week - 1) * content_per_week
+                chapter_end = min(week * content_per_week, len(chapters))
+                week_chapters = chapters[chapter_start:chapter_end]
+                content = ", ".join(week_chapters) if week_chapters else f"Review/Integration"
+            else:
+                content = f"Week {week} Content"
+            
+            # Dynamic goals, activities, milestones based on week position
+            if week == 1:
+                goals = "Course introduction, foundation concepts"
+                activities = "Orientation, initial assessments"
+                milestones = "Baseline established"
+            elif week == total_weeks:
+                goals = "Course synthesis, final evaluation"
+                activities = "Final projects, comprehensive review"
+                milestones = "Course completion"
+            elif week % 4 == 1:  # First week of month
+                goals = f"Begin {content} - core concepts"
+                activities = "New topic introduction, reading"
+                milestones = "Monthly goals set"
+            elif week % 4 == 0:  # Last week of month
+                goals = f"Master {content} - application"
+                activities = "Practice, assessment, review"
+                milestones = "Monthly assessment"
+            else:
+                goals = f"Develop {content} understanding"
+                activities = "Interactive learning, exercises"
+                milestones = "Progress checkpoints"
+            
+            timeline_table += f"""
+| {month_num} | {week} | {content} | {goals} | {activities} | {milestones} |"""
+        
+        return timeline_table
+    
+    def _generate_weekly_day_table(self, total_weeks: int, instruction_info: Dict) -> str:
+        """Generate week > day hierarchy table for shorter durations (≤4 weeks)."""
+        content_scope = instruction_info.get('content_scope', {})
+        chapters = content_scope.get('chapters', [])
+        
+        timeline_table = f"""
+**TIMELINE TABLE: {total_weeks} Week Intensive Course (Daily Breakdown)**
+
+| Week | Day | Content Focus | Daily Objectives | Activities | Deliverables |
+|------|-----|---------------|------------------|------------|-------------|"""
+        
+        total_days = total_weeks * 5  # Assuming 5 days per week
+        content_per_day = max(1, len(chapters) // total_days) if chapters else 1
+        
+        for week in range(1, total_weeks + 1):
+            for day in range(1, 6):  # Monday to Friday
+                day_number = (week - 1) * 5 + day
+                
+                # Determine content for this day
+                if chapters and day_number <= len(chapters):
+                    chapter_index = day_number - 1
+                    if chapter_index < len(chapters):
+                        content = chapters[chapter_index]
+                    else:
+                        content = "Review & Integration"
+                else:
+                    content = f"Day {day} Content"
+                
+                # Day names for readability
+                day_names = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+                day_name = day_names[day - 1]
+                
+                # Dynamic objectives and activities based on day pattern
+                if day == 1:  # Monday - Introduction
+                    objectives = f"Introduce {content} concepts"
+                    activities = "Lecture, reading materials"
+                    deliverables = "Notes, initial questions"
+                elif day == 2:  # Tuesday - Deep dive
+                    objectives = f"Understand {content} in detail"
+                    activities = "Interactive discussion, examples"
+                    deliverables = "Practice exercises"
+                elif day == 3:  # Wednesday - Practice
+                    objectives = f"Apply {content} knowledge"
+                    activities = "Hands-on activities, group work"
+                    deliverables = "Lab work, assignments"
+                elif day == 4:  # Thursday - Assessment
+                    objectives = f"Demonstrate {content} mastery"
+                    activities = "Quiz, presentations"
+                    deliverables = "Assessment results"
+                else:  # Friday - Integration
+                    objectives = f"Integrate {content} with prior learning"
+                    activities = "Review, synthesis, preparation"
+                    deliverables = "Weekly summary"
+                
+                # Special cases for first and last days
+                if week == 1 and day == 1:
+                    objectives = "Course orientation, expectations"
+                    activities = "Introduction, overview, setup"
+                    deliverables = "Course materials"
+                elif week == total_weeks and day == 5:
+                    objectives = "Course completion, final evaluation"
+                    activities = "Final presentations, wrap-up"
+                    deliverables = "Final project"
+                
+                timeline_table += f"""
+| {week} | {day} ({day_name}) | {content} | {objectives} | {activities} | {deliverables} |"""
+        
+        return timeline_table
+    
+    # Add methods to the class
+    UniversalLessonPlanGenerator._generate_timeline_table = _generate_timeline_table
+    UniversalLessonPlanGenerator._generate_monthly_week_table = _generate_monthly_week_table
+    UniversalLessonPlanGenerator._generate_weekly_day_table = _generate_weekly_day_table
+
+# Call the function to add the methods
+add_timeline_methods_to_generator()

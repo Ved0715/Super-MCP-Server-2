@@ -114,8 +114,7 @@ class DocumentTopics:
             - All syntax, rules, and guidelines mentioned
             - All use cases and applications described
 
-            Use natural language patterns like:
-            "This topic consists of comprehensive coverage of...", "This section explains in detail...", "this topic covers extensively..."
+            Format the summary as bullet points using "•" for better readability. Start with a brief overview sentence, then use bullet points for detailed coverage.
 
             Guidelines:
             - Extract MAJOR and Important topics maximum.
@@ -130,7 +129,7 @@ class DocumentTopics:
             Return strictly valid JSON:
             {{
               "topics": [
-                 {{"topic": "Broad Topic Title", "summary": "This topic consists of comprehensive and detailed coverage of [include everything - concepts, examples, procedures, syntax, rules, use cases, etc.]"}},
+                 {{"topic": "Broad Topic Title", "summary": "This topic provides comprehensive coverage of [brief overview]. Key aspects include:\n• [Key concept 1 with details]\n• [Key concept 2 with details]\n• [Examples and demonstrations]\n• [Procedures and methodologies]\n• [Use cases and applications]"}},
                  ...
               ]
             }}
@@ -197,7 +196,7 @@ class DocumentTopics:
               • All subtopics, procedures, methodologies, and syntax rules
               • All use cases, applications, and important details
             - Preserve the original document flow/order
-            - Use natural language patterns like "This topic consists of comprehensive coverage of...", "Here the document explains extensively..."
+            - Format summaries as bullet points using "•" with a brief overview sentence followed by detailed bullet points
             
             MERGING GUIDELINES:
             - Only merge if topics are truly about the same concept (e.g., "Functions" with "Function Definition")
@@ -211,7 +210,7 @@ class DocumentTopics:
             Return strictly valid JSON with ALL topics represented (merged where appropriate):
             {{
               "topics": [
-                 {{"topic": "Comprehensive Topic Title", "summary": "This topic consists of extensive and detailed coverage of [include EVERYTHING from all merged related topics - all concepts, examples, procedures, syntax, rules, use cases, applications, etc. Make this very comprehensive]"}},
+                 {{"topic": "Comprehensive Topic Title", "summary": "This topic provides comprehensive coverage of [brief overview]. Key aspects include:\n• [Key concept 1 with details]\n• [Key concept 2 with details]\n• [Examples and demonstrations]\n• [Procedures and methodologies]\n• [Use cases and applications]"}},
                  ...
               ]
             }}

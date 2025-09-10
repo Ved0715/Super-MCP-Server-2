@@ -488,9 +488,9 @@ async def generate_query_based_quiz(user_id: str, document_uuid: str, user_query
 async def test_query_based_quiz_generation():
     """Test function for query-based quiz generation"""
     result = await generate_query_based_quiz(
-        user_id="44",
-        document_uuid="770291bf-beb0-49ee-97cb-c832e40dfee6",
-        user_query="Marketing Managment",
+        user_id="5",
+        document_uuid="9e51cc77-49ed-403e-906e-9882ef8a236d",
+        user_query="Lists in Python",
         num_questions=5
     )
     

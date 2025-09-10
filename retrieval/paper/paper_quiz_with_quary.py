@@ -151,7 +151,7 @@ class QueryBasedPaperQuizGenerator:
                 if matches:
                     for match in matches:
                         # Only include chunks with reasonable similarity score
-                        if match.score > 0.5:  # Adjust threshold as needed
+                        if match.score > 0.2:  # Adjust threshold as needed
                             content = self._extract_text_content(match.metadata)
                             if content and len(content.strip()) > 20:  # Filter out very short content
                                 relevant_chunks.append({

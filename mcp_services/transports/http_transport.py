@@ -390,6 +390,8 @@ class MCPHTTPTransport:
                 result = await self.mcp_server._handle_question_paper_analysis(**arguments)
             elif tool_name == "generate_topic_questions":
                 result = await self.mcp_server._handle_generate_topic_questions(**arguments)
+            elif tool_name == "generate_query_based_quiz":
+                result = await self.mcp_server._handle_generate_query_based_quiz(**arguments)
             else:
                 raise ValueError(f"Unknown tool: {tool_name}")
             
@@ -625,6 +627,25 @@ class MCPHTTPTransport:
                                 }
                             },
                             "required": ["query", "user_id", "document_uuid"]
+                        }
+                    },
+                    {
+                        "name": "generate_query_based_quiz",
+                        "description": "Generate MCQ quiz based on user query with focused questions from document content",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "user_id": {"type": "string", "description": "User identifier for namespace"},
+                                "document_uuid": {"type": "string", "description": "Document UUID for namespace"},
+                                "user_query": {"type": "string", "description": "Topics or specific areas user wants to focus on"},
+                                "num_questions": {"type": "integer", "minimum": 5, "maximum": 20, "default": 10, "description": "Number of questions to generate"},
+                                "difficulty_mix": {
+                                    "type": "object", 
+                                    "description": "Optional difficulty distribution (e.g., {'easy': 3, 'medium': 4, 'hard': 3})",
+                                    "additionalProperties": {"type": "integer"}
+                                }
+                            },
+                            "required": ["user_id", "document_uuid", "user_query"]
                         }
                     }
                 ]

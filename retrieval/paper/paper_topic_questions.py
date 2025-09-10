@@ -49,10 +49,26 @@ class PaperTopicQuestionGenerator:
         return f"user_{user_id}_doc_{document_uuid}"
     
     def _namespace_exists(self, namespace: str) -> bool:
-        """Check if namespace exists"""
+        """Check if namespace exists and has content"""
         try:
             stats = self.index.describe_index_stats()
-            return namespace in stats.get("namespaces", {})
+            namespaces = stats.get("namespaces", {})
+            
+            # Log available namespaces for debugging
+            if namespaces:
+                # self.logger.info(f"Available namespaces: {list(namespaces.keys())}")
+                # Check if namespace exists and has vectors
+                if namespace in namespaces:
+                    vector_count = namespaces[namespace].get("vector_count", 0)
+                    self.logger.info(f"Namespace {namespace} found with {vector_count} vectors")
+                    return vector_count > 0  # Only return True if namespace has content
+                else:
+                    self.logger.warning(f"Namespace {namespace} not found in available namespaces")
+                    return False
+            else:
+                self.logger.warning("No namespaces found in the index")
+                return False
+                
         except Exception as e:
             self.logger.error(f"Error checking namespace: {e}")
             return False
@@ -217,11 +233,15 @@ CRITICAL REQUIREMENTS FOR ANSWERS:
             
             # Check namespace exists
             namespace = self._build_namespace(user_id, document_uuid)
+            self.logger.info(f"Checking namespace: {namespace}")
+            
             if not self._namespace_exists(namespace):
+                self.logger.warning(f"Namespace not found: {namespace}")
                 return {
                     "success": False,
-                    "error": f"Document not found for user {user_id}",
+                    "error": f"Document not found for user {user_id} and document {document_uuid}. Please ensure the document has been processed and stored.",
                     "query": query,
+                    "namespace": namespace,
                     "questions": []
                 }
             

@@ -51,6 +51,7 @@ try:
     from retrieval.paper.paper_topics import DocumentTopics
     from retrieval.paper.question_paper_analysis import QuestionPaperAnalysis
     from retrieval.paper.paper_topic_questions import PaperTopicQuestionGenerator
+    from retrieval.paper.paper_quiz_with_quary import QueryBasedPaperQuizGenerator
     PDF_COMPARATOR_AVAILABLE = True
     logger.debug("PDF Comparator imported successfully")
 except ImportError as e:
@@ -612,6 +613,26 @@ class PerfectMCPServer:
                         },
                         "required": ["query", "user_id", "document_uuid"]
                     }
+                ),
+
+                Tool(
+                    name="generate_query_based_quiz",
+                    description="Generate MCQ quiz based on user query with focused questions from document content",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "user_id": {"type": "string", "description": "User identifier for namespace"},
+                            "document_uuid": {"type": "string", "description": "Document UUID for namespace"},
+                            "user_query": {"type": "string", "description": "Topics or specific areas user wants to focus on"},
+                            "num_questions": {"type": "integer", "minimum": 5, "maximum": 20, "default": 10, "description": "Number of questions to generate"},
+                            "difficulty_mix": {
+                                "type": "object", 
+                                "description": "Optional difficulty distribution (e.g., {'easy': 3, 'medium': 4, 'hard': 3})",
+                                "additionalProperties": {"type": "integer"}
+                            }
+                        },
+                        "required": ["user_id", "document_uuid", "user_query"]
+                    }
                 )
             ]
 
@@ -659,6 +680,9 @@ class PerfectMCPServer:
                 
                 elif name == "generate_topic_questions":
                     return await self._handle_generate_topic_questions(**arguments)
+                
+                elif name == "generate_query_based_quiz":
+                    return await self._handle_generate_query_based_quiz(**arguments)
                 
                 elif name == "compare_research_papers":
                     return await self._handle_compare_papers(**arguments)
@@ -2456,6 +2480,61 @@ CONTENT TO ENRICH:
             
         except Exception as e:
             logger.error(f"❌ Error generating topic questions: {e}")
+            return [TextContent(
+                type="text",
+                text=json.dumps({"success": False, "error": str(e)}, indent=2)
+            )]
+
+    async def _handle_generate_query_based_quiz(self, user_id: str, document_uuid: str, user_query: str, num_questions: int = 10, difficulty_mix: dict = None) -> List[TextContent]:
+        """Handle query-based quiz generation"""
+        try:
+            logger.info(f"🎯 Generating query-based quiz for query: '{user_query}' (User: {user_id})")
+            
+            if not PDF_COMPARATOR_AVAILABLE:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({"success": False, "error": "Query-based quiz generation module not available"}, indent=2)
+                )]
+            
+            # Create generator instance
+            generator = QueryBasedPaperQuizGenerator()
+            
+            # Create quiz request
+            from retrieval.paper.paper_quiz_with_quary import QueryBasedQuizRequest
+            quiz_request = QueryBasedQuizRequest(
+                user_id=user_id,
+                document_uuid=document_uuid,
+                user_query=user_query,
+                num_questions=num_questions,
+                difficulty_mix=difficulty_mix
+            )
+            
+            # Generate quiz
+            result = await generator.generate_query_based_quiz(quiz_request)
+            
+            if not result.get("success"):
+                logger.warning(f"⚠️ Query-based quiz generation failed: {result.get('error')}")
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({"error": result.get('error')}, indent=2)
+                )]
+            else:
+                questions_count = result.get('metadata', {}).get('total_questions', 0)
+                logger.info(f"✅ Successfully generated {questions_count} quiz questions for query: '{user_query}'")
+                
+                # Return flattened response - extract quiz and metadata directly
+                flattened_response = {
+                    "quiz": result.get("quiz", {}),
+                    "metadata": result.get("metadata", {})
+                }
+                
+                return [TextContent(
+                    type="text",
+                    text=json.dumps(flattened_response, indent=2)
+                )]
+            
+        except Exception as e:
+            logger.error(f"❌ Error generating query-based quiz: {e}")
             return [TextContent(
                 type="text",
                 text=json.dumps({"success": False, "error": str(e)}, indent=2)

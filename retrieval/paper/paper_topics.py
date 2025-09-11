@@ -114,7 +114,7 @@ class DocumentTopics:
             - All syntax, rules, and guidelines mentioned
             - All use cases and applications described
 
-            Format the summary as bullet points using "•" for better readability. Start with a brief overview sentence, then use bullet points for detailed coverage.
+            Format the summary using proper markdown with "- " for bullet points for better readability. Start with a brief overview sentence, then use markdown bullet points for detailed coverage.
 
             Guidelines:
             - Extract MAJOR and Important topics maximum.
@@ -129,7 +129,7 @@ class DocumentTopics:
             Return strictly valid JSON:
             {{
               "topics": [
-                 {{"topic": "Broad Topic Title", "summary": "This topic provides comprehensive coverage of [brief overview]. Key aspects include:\n• [Key concept 1 with details]\n• [Key concept 2 with details]\n• [Examples and demonstrations]\n• [Procedures and methodologies]\n• [Use cases and applications]"}},
+                 {{"topic": "Broad Topic Title", "summary": "This topic provides comprehensive coverage of [brief overview]. Key aspects include:\n- [Key concept 1 with details]\n- [Key concept 2 with details]\n- [Examples and demonstrations]\n- [Procedures and methodologies]\n- [Use cases and applications]"}},
                  ...
               ]
             }}
@@ -156,8 +156,13 @@ class DocumentTopics:
                 content = content[:-3]  # Remove trailing ```
             content = content.strip()
             
-            # Parse JSON response
-            result = json.loads(content)
+            # Parse JSON response with relaxed parsing
+            try:
+                result = json.loads(content)
+            except json.JSONDecodeError:
+                # Try with strict=False to handle escape sequences
+                decoder = json.JSONDecoder(strict=False)
+                result = decoder.decode(content)
             
             # Validate response structure
             if not isinstance(result, dict) or "topics" not in result:
@@ -191,12 +196,12 @@ class DocumentTopics:
             - For merged topics, combine ALL content from related summaries into one comprehensive summary
             - Keep unique topics separate - do NOT over-merge distinct concepts
             - Create VERY DETAILED and COMPREHENSIVE summaries that capture:
-              • All key concepts, definitions, and explanations from merged topics
-              • All examples, code snippets, and practical demonstrations
-              • All subtopics, procedures, methodologies, and syntax rules
-              • All use cases, applications, and important details
+              - All key concepts, definitions, and explanations from merged topics
+              - All examples, code snippets, and practical demonstrations
+              - All subtopics, procedures, methodologies, and syntax rules
+              - All use cases, applications, and important details
             - Preserve the original document flow/order
-            - Format summaries as bullet points using "•" with a brief overview sentence followed by detailed bullet points
+            - Format summaries as markdown bullet points using "- " with a brief overview sentence followed by detailed bullet points
             
             MERGING GUIDELINES:
             - Only merge if topics are truly about the same concept (e.g., "Functions" with "Function Definition")
@@ -210,7 +215,7 @@ class DocumentTopics:
             Return strictly valid JSON with ALL topics represented (merged where appropriate):
             {{
               "topics": [
-                 {{"topic": "Comprehensive Topic Title", "summary": "This topic provides comprehensive coverage of [brief overview]. Key aspects include:\n• [Key concept 1 with details]\n• [Key concept 2 with details]\n• [Examples and demonstrations]\n• [Procedures and methodologies]\n• [Use cases and applications]"}},
+                 {{"topic": "Comprehensive Topic Title", "summary": "This topic provides comprehensive coverage of [brief overview]. Key aspects include:\n- [Key concept 1 with details]\n- [Key concept 2 with details]\n- [Examples and demonstrations]\n- [Procedures and methodologies]\n- [Use cases and applications]"}},
                  ...
               ]
             }}
@@ -234,7 +239,12 @@ class DocumentTopics:
                 content = content[:-3]  # Remove trailing ```
             content = content.strip()
             
-            result = json.loads(content)
+            try:
+                result = json.loads(content)
+            except json.JSONDecodeError:
+                # Try with strict=False to handle escape sequences
+                decoder = json.JSONDecoder(strict=False)
+                result = decoder.decode(content)
             return result.get("topics", topics)
 
         except Exception as e:
@@ -288,10 +298,8 @@ class DocumentTopics:
             future_to_batch = {executor.submit(self._process_batch, b): i for i, b in enumerate(batches)}
             
             for future in as_completed(future_to_batch):
-                batch_idx = future_to_batch[future]
                 batch_result = future.result()
                 if batch_result and "topics" in batch_result:
-                    # logging.info(f"Batch {batch_idx} completed with {len(batch_result['topics'])} topics")
                     results.extend(batch_result["topics"])
 
         if not results:

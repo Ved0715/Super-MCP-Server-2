@@ -18,34 +18,22 @@ class InlineMultimodalGenerator:
         self.openai_client = openai_client
         self.chat_model = chat_model
     
-    def generate_inline_response_from_chunks(self, query: str, chunks: List[Dict], conditional_instructions: Dict = None, response_scope: str = 'standard') -> Dict[str, Any]:
-        """Generate inline response directly from raw chunks - simpler processing."""
+    def generate_inline_response_from_chunks(self, query: str, chunks: List[Dict], conditional_instructions: Dict = None, response_scope: str = 'standard', suggested_max_tokens: int = 2500, content_strategy: Dict = None, query_intent: Dict = None) -> Dict[str, Any]:
+        """Generate inline response directly from raw chunks - with content strategy filtering applied BEFORE text generation."""
         try:
-            # Simple content extraction from chunks
-            filtered_content = {
+            # Extract all available content first
+            all_content = {
                 'text': [],
                 'images': [],
                 'tables': []
             }
             
-            # Extract content from chunks without complex filtering
+            # Extract content from chunks
             for chunk in chunks:
                 # Add text content with smart extraction
                 if chunk.get('text'):
-                    # Apply smart text extraction to get only relevant sentences/paragraphs
-                    original_text = chunk['text']
-                    extracted_text = self._extract_relevant_text(original_text, query)
-                    
-                    # Use extracted text if it's substantially shorter, otherwise use original
-                    extraction_applied = len(extracted_text) < len(original_text) * 0.7
-                    final_text = extracted_text if extraction_applied else original_text
-                    
-                    # Log smart extraction usage
-                    if extraction_applied:
-                        logger.info(f"Smart extraction applied: Page {chunk.get('page_number', 0)} text reduced from {len(original_text)} to {len(extracted_text)} chars")
-                    
-                    filtered_content['text'].append({
-                        'content': final_text,
+                    all_content['text'].append({
+                        'content': chunk['text'],
                         'relevance_score': chunk.get('relevance_score', 0),
                         'page_number': chunk.get('page_number', 0),
                         'extraction_applied': extraction_applied
@@ -53,17 +41,9 @@ class InlineMultimodalGenerator:
                 
                 # Add image content from arrays  
                 if chunk.get('contains_image') and chunk.get('image_s3_urls'):
-                    image_urls = chunk.get('image_s3_urls', [])
-                    image_summaries = chunk.get('image_summaries', [])
-                    image_ids = chunk.get('image_ids', [])
-                    
-                    # Process each image in the arrays
-                    for i, image_url in enumerate(image_urls):
-                        image_summary = image_summaries[i] if i < len(image_summaries) else ''
-                        image_id = image_ids[i] if i < len(image_ids) else f'img_{i}'
-                        
-                        filtered_content['images'].append({
-                            'image_summary': image_summary,
+                    for i, image_url in enumerate(chunk['image_s3_urls']):
+                        all_content['images'].append({
+                            'image_summary': chunk['image_summaries'][i] if i < len(chunk['image_summaries']) else '',
                             's3_url': image_url,
                             'image_id': image_id,
                             'page_number': chunk.get('page_number', 0),
@@ -72,39 +52,110 @@ class InlineMultimodalGenerator:
                 
                 # Add table content from arrays with validation
                 if chunk.get('contains_table') and chunk.get('table_content_jsons'):
-                    table_jsons = chunk.get('table_content_jsons', [])
-                    table_summaries = chunk.get('table_summaries', [])
-                    table_ids = chunk.get('table_ids', [])
-                    
-                    # Process each table in the arrays
-                    for i, table_json in enumerate(table_jsons):
-                        table_summary = table_summaries[i] if i < len(table_summaries) else ''
-                        table_id = table_ids[i] if i < len(table_ids) else f'table_{i}'
-                        
-                        # Validate table before adding
-                        if self._is_table_valid(table_json):
-                            # Check if table has meaningful content and relevance
-                            if self._has_meaningful_table_content(table_json, query):
-                                filtered_content['tables'].append({
-                                    'table_content_json': table_json,
-                                    'table_id': table_id,
-                                    'page_number': chunk.get('page_number', 0),
-                                    'relevance_score': chunk.get('relevance_score', 0)
-                                })
-                                logger.info(f"Added valid table {table_id} from page {chunk.get('page_number', 0)}")
-                            else:
-                                logger.info(f"Filtered out low-relevance table {table_id} from page {chunk.get('page_number', 0)} - insufficient meaningful content")
-                        else:
-                            logger.info(f"Filtered out invalid table {table_id} from page {chunk.get('page_number', 0)} - failed validation checks")
+                    for i, table_json in enumerate(chunk['table_content_jsons']):
+                        all_content['tables'].append({
+                            'table_content_json': table_json,
+                            'table_id': chunk['table_ids'][i] if i < len(chunk['table_ids']) else f'table_{i}',
+                            'page_number': chunk.get('page_number', 0),
+                            'relevance_score': chunk.get('relevance_score', 0)
+                        })
             
-            # Use the existing response generation logic
-            return self.generate_inline_response(query, filtered_content, conditional_instructions, response_scope)
+            # Check if content strategy filtering is needed
+            if content_strategy and 'content_limits' in content_strategy:
+                # Apply content strategy limits BEFORE text generation
+                filtered_content = self._apply_content_strategy_limits(all_content, query, conditional_instructions, response_scope, content_strategy)
+                logger.info("Applied content strategy filtering")
+            else:
+                # Use all content directly - AI selection already applied optimal filtering
+                filtered_content = all_content
+                logger.info("Using AI-selected content directly - no additional filtering needed")
+            
+            # Use LLM-driven response length from query intent analysis (determined at start)
+            if query_intent and 'suggested_max_tokens' in query_intent:
+                final_max_tokens = query_intent['suggested_max_tokens']
+                logger.info(f"Using LLM query-determined response length: {final_max_tokens} tokens")
+            elif content_strategy and 'suggested_tokens' in content_strategy:
+                final_max_tokens = content_strategy['suggested_tokens']
+                logger.info(f"Using content strategy response length: {final_max_tokens} tokens")
+            else:
+                final_max_tokens = suggested_max_tokens
+                logger.info(f"Using default response length: {final_max_tokens} tokens")
+            
+            return self.generate_inline_response(query, filtered_content, conditional_instructions, response_scope, final_max_tokens)
             
         except Exception as e:
             logger.error(f"Error in generate_inline_response_from_chunks: {e}")
             return {'inline_elements': [{'type': 'text', 'content': f"Error generating response: {str(e)}"}]}
 
-    def generate_inline_response(self, query: str, filtered_content: Dict, conditional_instructions: Dict = None, response_scope: str = 'standard') -> Dict[str, Any]:
+    def _apply_content_strategy_limits(self, all_content: Dict, query: str, conditional_instructions: Dict = None, response_scope: str = 'standard', content_strategy: Dict = None) -> Dict:
+        """Apply content strategy limits BEFORE text generation to prevent references to filtered content."""
+        try:
+            # Use LLM-driven content limits from multimodal integrator if provided, otherwise fallback
+            if content_strategy and 'content_limits' in content_strategy:
+                content_limits = content_strategy['content_limits']
+                logger.info(f"Using LLM-driven content limits from strategy: {content_limits}")
+            else:
+                content_limits = self._get_content_limits_for_response(query, all_content, response_scope)
+                logger.info(f"Using fallback content limits: {content_limits}")
+            
+            # Apply limits to each content type, keeping highest relevance items
+            filtered_content = {
+                'text': [],
+                'images': [],
+                'tables': []
+            }
+            
+            # Filter text content
+            text_content = sorted(all_content.get('text', []), key=lambda x: x.get('relevance_score', 0), reverse=True)
+            max_text = content_limits['text'][1]  # Use max from [min, max] range
+            filtered_content['text'] = text_content[:max_text]
+            
+            # Filter image content
+            image_content = sorted(all_content.get('images', []), key=lambda x: x.get('relevance_score', 0), reverse=True)
+            max_images = content_limits['images'][1]  # Use max from [min, max] range
+            filtered_content['images'] = image_content[:max_images]
+            
+            # Filter table content
+            table_content = sorted(all_content.get('tables', []), key=lambda x: x.get('relevance_score', 0), reverse=True)
+            max_tables = content_limits['tables'][1]  # Use max from [min, max] range
+            filtered_content['tables'] = table_content[:max_tables]
+            
+            logger.info(f"Content strategy filtering: text {len(all_content.get('text', []))} -> {len(filtered_content['text'])}, "
+                       f"images {len(all_content.get('images', []))} -> {len(filtered_content['images'])}, "
+                       f"tables {len(all_content.get('tables', []))} -> {len(filtered_content['tables'])}")
+            
+            return filtered_content
+            
+        except Exception as e:
+            logger.error(f"Error applying content strategy limits: {e}")
+            return all_content  # Fallback to all content if filtering fails
+    
+    def _get_content_limits_for_response(self, query: str, available_content: Dict, response_scope: str) -> Dict[str, List[int]]:
+        """Get content limits for response generation - simplified version."""
+        # Default limits based on response scope
+        scope_limits = {
+            'minimal': {'text': [1, 2], 'images': [0, 1], 'tables': [0, 1]},
+            'concise': {'text': [2, 4], 'images': [1, 2], 'tables': [0, 1]}, 
+            'standard': {'text': [3, 6], 'images': [1, 3], 'tables': [1, 2]},
+            'detailed': {'text': [4, 8], 'images': [2, 4], 'tables': [1, 3]},
+            'comprehensive': {'text': [6, 12], 'images': [3, 6], 'tables': [2, 4]}
+        }
+        
+        base_limits = scope_limits.get(response_scope, scope_limits['standard'])
+        
+        # Adjust based on available content
+        available_text = len(available_content.get('text', []))
+        available_images = len(available_content.get('images', []))
+        available_tables = len(available_content.get('tables', []))
+        
+        # Don't exceed available content
+        return {
+            'text': [base_limits['text'][0], min(base_limits['text'][1], available_text)],
+            'images': [base_limits['images'][0], min(base_limits['images'][1], available_images)],
+            'tables': [base_limits['tables'][0], min(base_limits['tables'][1], available_tables)]
+        }
+
+    def generate_inline_response(self, query: str, filtered_content: Dict, conditional_instructions: Dict = None, response_scope: str = 'standard', suggested_max_tokens: int = 2500) -> Dict[str, Any]:
         """Generate intelligent inline multimodal response."""
         try:
             # Analyze content availability from filtered content
@@ -283,89 +334,131 @@ class InlineMultimodalGenerator:
         logger.info(f"Unified content list: {len(content_map['unified'])} items sorted by relevance")
         
         return content_map
-    
-    def _generate_response_structure(self, query: str, content_map: Dict, has_text: bool, has_images: bool, has_tables: bool, response_scope: str = 'standard') -> str:
-        """Generate intelligent response structure with seamless multimodal integration."""
+
+    def _generate_content_flow_analysis(self, query: str, content_map: Dict, has_images: bool, has_tables: bool) -> Dict:
+        """Pass 1: Analyze content and create optimal inlinement flow plan."""
         
-        # Build comprehensive context for AI with detailed content analysis
-        context_parts = []
+        # Prepare content summaries for analysis
+        text_summaries = []
+        for i, item in enumerate(content_map['text']):
+            summary = f"TEXT_{i+1}: {item.get('content', '')[:200]}..." if len(item.get('content', '')) > 200 else f"TEXT_{i+1}: {item.get('content', '')}"
+            text_summaries.append(summary)
         
-        # Add available content descriptions
-        if has_text:
-            context_parts.append(f"Available text content from {len(content_map['text'])} sections")
-        if has_images:
-            context_parts.append(f"Available visual content: {len(content_map['images'])} images with descriptions")
-        if has_tables:
-            context_parts.append(f"Available structured data: {len(content_map['tables'])} tables")
+        image_summaries = []
+        for i, item in enumerate(content_map['images']):
+            image_summaries.append(f"IMAGE_{i+1}: {item.get('image_summary', 'No description')}")
         
-        # Create detailed content summary for AI reasoning with semantic analysis
-        content_analysis = []
+        table_summaries = []
+        for i, item in enumerate(content_map['tables']):
+            table_summaries.append(f"TABLE_{i+1}: {item.get('table_summary', 'Data table')}")
         
-        # Add actual text content for AI to use
-        text_content_sections = []
-        for i, text_item in enumerate(content_map['text']):
-            content = text_item.get('content', '')
-            page_num = text_item.get('page_number', 0)
-            relevance = text_item.get('relevance_score', 0)
-            if content and len(content.strip()) > 10:  # Only include substantial text content
-                text_content_sections.append(f"TEXT_SECTION_{i+1} (Page {page_num}, relevance: {relevance:.2f}):\n{content}")
+        analysis_prompt = f"""CONTENT FLOW ANALYSIS TASK
         
-        # Analyze images with context
-        for i, img in enumerate(content_map['images']):
-            img_desc = img.get('image_summary', img.get('ocr_text', 'Visual content'))
-            page_num = img['page_number']
-            # Convert page number to integer if it's a number
-            if isinstance(page_num, (int, float)):
-                page_num = int(page_num)
-            page_context = f"Page {page_num}"
-            relevance = img.get('relevance_score', 0)
+QUERY: "{query}"
+
+AVAILABLE CONTENT:
+TEXT SECTIONS:
+{chr(10).join(text_summaries)}
+
+IMAGES ({len(image_summaries)} available):
+{chr(10).join(image_summaries) if image_summaries else "None available"}
+
+TABLES ({len(table_summaries)} available):
+{chr(10).join(table_summaries) if table_summaries else "None available"}
+
+TASK: Analyze the optimal flow for inlining images and tables to create the most coherent, readable response.
+
+Consider:
+1. **Logical Reading Order**: What sequence makes most sense for the user?
+2. **Content Relationships**: Which images/tables best support which text sections?
+3. **Reference Positioning**: Where should "Figure 1", "Table 1" references appear?
+4. **Flow Coherence**: How to maintain natural reading progression?
+
+Respond in JSON format:
+{{
+  "content_flow_plan": [
+    {{"type": "text", "section": 1, "reference_prep": "Should this text reference upcoming figures/tables?"}},
+    {{"type": "image", "image_id": 1, "placement_reasoning": "Why place here?"}},
+    {{"type": "text", "section": 2, "reference_prep": "References needed?"}},
+    {{"type": "table", "table_id": 1, "placement_reasoning": "Why place here?"}}
+  ],
+  "reference_strategy": {{
+    "figure_numbering": "Sequential order: Figure 1, Figure 2...",
+    "table_numbering": "Sequential order: Table 1, Table 2...",
+    "reference_phrases": ["As shown in Figure X:", "Table Y demonstrates:", "The diagram below:"]
+  }},
+  "flow_reasoning": "Brief explanation of this flow strategy"
+}}"""
+
+        try:
+            response = self.openai_client.chat.completions.create(
+                model=self.chat_model,
+                messages=[{"role": "user", "content": analysis_prompt}],
+                max_tokens=800,
+                temperature=0.1
+            )
             
-            # Create a more descriptive summary for contextual reference
-            if img_desc and len(img_desc.strip()) > 10:
-                # Use the full summary if available
-                contextual_desc = img_desc[:300]  # Limit length but keep more detail
-            else:
-                contextual_desc = f"visual content from page {img['page_number']}"
+            import json
+            import re
             
-            content_analysis.append(f"IMAGE_{i+1} ({page_context}, relevance: {relevance:.2f}): {contextual_desc}")
-        
-        # Analyze tables with structure and content preview
-        for i, table in enumerate(content_map['tables']):
-            table_summary = self._get_enhanced_table_summary(table)
-            page_num = table['page_number']
-            # Convert page number to integer if it's a number
-            if isinstance(page_num, (int, float)):
-                page_num = int(page_num)
-            page_context = f"Page {page_num}"
-            relevance = table.get('relevance_score', 0)
+            response_content = response.choices[0].message.content.strip()
+            logger.info(f"Raw content flow analysis response: {response_content[:200]}...")
             
-            # Create a more descriptive summary for contextual reference
-            contextual_desc = table_summary if table_summary else "structured data"
+            # Try multiple parsing strategies
+            try:
+                # First try direct parsing
+                flow_analysis = json.loads(response_content)
+            except json.JSONDecodeError:
+                # Try to extract from markdown code blocks
+                json_match = re.search(r'```(?:json)?\n(.*?)\n```', response_content, re.DOTALL)
+                if json_match:
+                    flow_analysis = json.loads(json_match.group(1))
+                else:
+                    # Try to find JSON object pattern
+                    json_match = re.search(r'\{.*\}', response_content, re.DOTALL)
+                    if json_match:
+                        flow_analysis = json.loads(json_match.group(0))
+                    else:
+                        raise ValueError("No valid JSON found in content flow analysis response")
             
-            # Add content preview if available
-            if table.get('table_content_json'):
-                try:
-                    import json
-                    table_json = json.loads(table['table_content_json'])
-                    if isinstance(table_json, dict) and '_metadata' in table_json:
-                        metadata = table_json['_metadata']
-                        contextual_desc += f" containing {metadata.get('total_rows', 0)} rows and {metadata.get('total_columns', 0)} columns"
-                    # Get column headers for context
-                    headers = [k for k in table_json.keys() if k != '_metadata']
-                    if headers:
-                        contextual_desc += f" with columns including {', '.join(headers[:5])}{'...' if len(headers) > 5 else ''}"
-                except:
-                    pass
-                    
-            content_analysis.append(f"TABLE_{i+1} ({page_context}, relevance: {relevance:.2f}): {contextual_desc}")
+            logger.info(f"Content flow analysis: {flow_analysis.get('flow_reasoning', 'No reasoning provided')}")
+            return flow_analysis
+            
+        except Exception as e:
+            logger.error(f"Content flow analysis failed: {e}")
+            # Fallback to simple sequential flow
+            return {
+                "content_flow_plan": [
+                    {"type": "text", "section": 1, "reference_prep": "Introduction"},
+                    {"type": "image", "image_id": 1, "placement_reasoning": "Visual support"} if has_images else None,
+                    {"type": "table", "table_id": 1, "placement_reasoning": "Data support"} if has_tables else None,
+                    {"type": "text", "section": 2, "reference_prep": "Analysis"}
+                ],
+                "reference_strategy": {
+                    "figure_numbering": "Sequential",
+                    "table_numbering": "Sequential"
+                },
+                "flow_reasoning": "Fallback sequential flow"
+            }
+
+    def _generate_response_structure(self, query: str, content_map: Dict, has_text: bool, has_images: bool, has_tables: bool, response_scope: str = 'standard', suggested_max_tokens: int = 2500) -> list:
+        """Pass 2: Generate final response using the content flow analysis."""
         
-        # Build comprehensive prompt with actual content
-        text_content_prompt = ""
-        if text_content_sections:
-            text_content_prompt = f"\nDOCUMENT TEXT CONTENT (USE THIS FULL CONTENT IN YOUR RESPONSE):\n{chr(10).join(text_content_sections)}\n"
+        # First, get the content flow analysis
+        flow_analysis = self._generate_content_flow_analysis(query, content_map, has_images, has_tables)
         
-        # MERGED: Enhanced prompt combining original structure with regeneration focus
-        system_prompt = f"""You are an expert AI assistant that creates perfectly integrated multimodal responses.
+        text_content_prompt = "\n".join([f"TEXT_SECTION_{i+1} (Page {item.get('page_number', 0)}, relevance: {item.get('relevance_score', 0):.2f}):\n{item.get('content', '')}" for i, item in enumerate(content_map['text'])])
+
+        system_prompt = f"""You are an expert AI assistant that creates perfectly integrated multimodal responses by generating a structured JSON array.
+
+**CONTENT FLOW ANALYSIS COMPLETED:**
+{flow_analysis.get('flow_reasoning', 'Standard flow applied')}
+
+**OPTIMAL FLOW PLAN:**
+{flow_analysis['content_flow_plan']}
+
+**REFERENCE STRATEGY:**
+{flow_analysis.get('reference_strategy', {})}
 
 AVAILABLE CONTENT:
 {', '.join(context_parts)}
@@ -379,76 +472,37 @@ MULTIMEDIA REFERENCES:
 
 USER'S QUESTION: "{query}"
 
-CRITICAL REQUIREMENTS - FOLLOW THESE EXACTLY:
+DOCUMENT TEXT CONTENT (USE THIS FOR YOUR RESPONSE):
+{text_content_prompt}
 
-1. MULTIMEDIA INTEGRATION (HIGHEST PRIORITY):
-You MUST create contextual references to multimedia throughout your response using these REQUIRED phrases:
+CRITICAL REQUIREMENTS - FOLLOW THE FLOW ANALYSIS EXACTLY:
 
-FOR IMAGES - USE THESE EXACT PHRASES:
-• "As illustrated in the image below"
-• "The image shows" 
-• "As shown in the figure"
-• "The diagram illustrates"
-• "As depicted in the image"
-• "Referring to the image"
+1. **FOLLOW THE FLOW PLAN ABOVE**: Use the optimal flow plan as your blueprint. Follow the exact sequence and positioning suggested.
 
-FOR TABLES - USE THESE EXACT PHRASES:
-• "As shown in the table below"
-• "The table shows"
-• "According to the data"
-• "The following table"
-• "As presented in the table"
-• "Referring to the table"
+2. **JSON Output Format**: Your entire output MUST be a single, valid JSON array starting with [ and ending with ]. Each element must have "type" ("text", "image", or "table") and "content" or "id" field.
 
-TABLE CONTEXT REQUIREMENTS (CRITICAL):
-• NEVER generate fake tables - only use the retrieved tables from the document
-• For each table you reference, EXPLAIN what it shows and WHY it's relevant to the user's question
-• If you can't explain a table's relevance, DO NOT include it
-• Always connect table data to the user's specific query
-• Use phrases like "This table is relevant because..." or "This table shows..."
-                • CRITICAL: If ANY column in a table has ANY empty cells, DO NOT display that table
-                • CRITICAL: If ANY column has a header but ALL cells in that column are empty, DO NOT display that table
-                • CRITICAL: If a table contains only one row of data after the header, DO NOT display it
-                • CRITICAL: DO NOT display exercise/worksheet tables, matching exercises, or practice activities
-                • CRITICAL: Only show tables with actual data, results, or meaningful information relevant to the query
-                • Only show tables that have clear, structured data with meaningful content in ALL columns and at least 2 rows of data
-                • Even one empty cell in any column makes the entire table invalid
-• If a table appears distorted, has empty rows/columns, or lacks meaningful content, DO NOT display it
-• Validate table quality before referencing - if data looks meaningless or unusable, skip it entirely
+3. **Element Structure**:
+   * For text: `{{"type": "text", "content": "Your written text here with proper references"}}`
+   * For images: `{{"type": "image", "id": "IMAGE_1"}}` (Use exact ID from AVAILABLE CONTENT)
+   * For tables: `{{"type": "table", "id": "TABLE_1"}}` (Use exact ID from AVAILABLE CONTENT)
 
-DISTRIBUTION REQUIREMENT (CRITICAL):
-• Start your answer with text content first
-• Integrate image and table references naturally in the MIDDLE sections of your response  
-• Do NOT cluster all references at the beginning or end
-• Spread references throughout different paragraphs
-• Each multimedia element should be referenced EXACTLY ONCE
+4. **MANDATORY FIGURE/TABLE REFERENCES**:
+   * ALWAYS include proper references in text content BEFORE placing image/table elements
+   * Use the reference phrases from the REFERENCE STRATEGY above
+   * Examples: "As shown in Figure 1:", "Table 2 demonstrates:", "The diagram below illustrates:"
+   * Number figures and tables sequentially: Figure 1, Figure 2, Table 1, Table 2
+   * Each reference in text must correspond to the next image/table element in the JSON
 
-2. PROFESSIONAL FORMATTING:
-• Use ## for main headers, ### for subsections
-• Use **bold** for key terms and concepts
-• Use > blockquotes for important findings
-• Create logical paragraph flow with transitions
+5. **Content Quality**: Use ONLY the provided text content. Do not invent facts. Synthesize from multiple sections where appropriate.
 
-3. CONTENT SYNTHESIS:
-• Use ONLY the provided text content - no external knowledge
-• Create seamless narrative flow between sections
-• Synthesize information from multiple sources into coherent themes
-• Write complete, connected paragraphs
-
-CORRECT FORMAT EXAMPLE (DO THIS):
-## Research Methodology Overview
-The study employed a three-phase experimental design to investigate the research question. Each phase built upon the previous findings to create a comprehensive framework.
-
-### Phase 1: Experimental Setup  
-The initial phase focused on establishing experimental parameters. As illustrated in the image below, the experimental setup demonstrates key components and their spatial arrangement. This configuration enabled precise control of variables.
-
-### Results and Analysis
-The collected data revealed significant improvements across all measured parameters. As shown in the table below, the species probability data and taxonomic classifications demonstrate a 15% improvement in accuracy.
-
-> **Key Finding**: The integrated approach yielded consistently better results than traditional methods.
-
-INCORRECT FORMAT (DO NOT DO THIS):
-"Here are the images: {{IMAGE_1}} shows setup. {{TABLE_1}} shows results. The methodology involved..."
+EXAMPLE OF CORRECT JSON OUTPUT WITH PROPER REFERENCES:
+[
+  {{"type": "text", "content": "## Database Backup Strategies\nThere are two primary approaches to database backup: complete and partial backups. As shown in Figure 1 below, the choice impacts recovery strategies significantly."}},
+  {{"type": "image", "id": "IMAGE_1"}},
+  {{"type": "text", "content": "The diagram illustrates the key architectural differences. Complete backups provide full snapshots but require more resources. Table 1 compares the characteristics of each approach:"}},
+  {{"type": "table", "id": "TABLE_1"}},
+  {{"type": "text", "content": "Based on this data, organizations must balance between backup time, storage costs, and recovery complexity when selecting their strategy."}}
+]
 
 {self._get_scope_instructions(response_scope)}
 

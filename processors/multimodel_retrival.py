@@ -562,7 +562,7 @@ INSTRUCTIONS:
             total_chunks = max_images + max_tables + max_text_chunks
             
             # Call the multimodal integrator to get results
-            results = self.multimodal_integrator.query_multimodal_content(
+            results = await self.multimodal_integrator.query_multimodal_content(
                 query=query,
                 document_uuid=paper_id,
                 max_chunks=total_chunks

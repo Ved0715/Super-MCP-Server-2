@@ -1369,7 +1369,7 @@ Summary (2-3 sentences, focus on main content and purpose):"""
             }
             
             # Generate response using the inline generator
-            response_data = self._generate_composite_response(query, [chunk_data], {}, 'standard')
+            response_data = self._generate_composite_response(query, [chunk_data], {}, 'standard', 2500, None)
             response_data['performance_metrics'] = {
                 'query_time': 0.5,
                 'total_results': 1,
@@ -1469,7 +1469,7 @@ Summary (2-3 sentences, focus on main content and purpose):"""
                 'source_document': chunk.metadata.get('source_document', '')
             }
             
-            response_data = self._generate_composite_response(query, [chunk_data], {}, 'standard')
+            response_data = self._generate_composite_response(query, [chunk_data], {}, 'standard', 2500, None)
             response_data['performance_metrics'] = {
                 'query_time': 0.5,
                 'total_results': 1,
@@ -1486,11 +1486,14 @@ Summary (2-3 sentences, focus on main content and purpose):"""
                 'performance_metrics': {'query_time': 0.1, 'total_results': 0, 'relevant_chunks': 0, 'search_strategy': 'metadata'}
             }
 
-    def query_multimodal_content(self, query: str, document_uuid: str, 
+    async def query_multimodal_content(self, query: str, document_uuid: str, 
                                max_chunks: int = 5, **kwargs) -> Dict[str, Any]:
         """Query composite chunks using single-pass retrieval with full content."""
         try:
             start_time = time.time()
+            
+            # Store query terms for enhanced image relevance scoring
+            self._current_query_terms = query.lower().split()
             
             # Extract optional conversation context (string of last turns)
             conversation_context: Optional[str] = kwargs.get("conversation_context")
@@ -1501,11 +1504,16 @@ Summary (2-3 sentences, focus on main content and purpose):"""
                 logger.info(f"Found specific content match for query: {query}")
                 return specific_content_results
             
-            # Generate query embedding (primary, query-only)
-            query_embedding = self._get_embedding(query)
-
-            # Enhanced vector search with adaptive parameters (include context hints)
-            search_params = self._get_adaptive_search_params(query, conversation_context=conversation_context)
+            # Parallel processing: Generate embedding and search params simultaneously
+            # Use asyncio.to_thread for CPU-bound tasks to run in parallel
+            embedding_task = asyncio.to_thread(self._get_embedding, query)
+            search_params_task = asyncio.to_thread(self._get_adaptive_search_params, query, conversation_context=conversation_context)
+            
+            # Run embedding generation and query analysis in parallel
+            query_embedding, search_params = await asyncio.gather(
+                embedding_task,
+                search_params_task
+            )
 
             # Primary retrieval: query-only
             primary_results = self.index.query(
@@ -1549,10 +1557,22 @@ Summary (2-3 sentences, focus on main content and purpose):"""
 
             logger.info(f"Composite chunk query returned {len(combined_matches)} combined matches for namespace '{document_uuid}'")
             
-            # Enhanced filtering with multi-stage intelligent selection
-            relevant_chunks = self._filter_chunks_with_enhanced_scoring(
+            # Parallel processing: Run filtering and validation operations simultaneously  
+            filtering_task = asyncio.to_thread(
+                self._filter_chunks_with_enhanced_scoring,
                 combined_matches, query, search_params
             )
+            
+            # Wait for filtering to complete, then run validation in parallel with other tasks
+            relevant_chunks = await filtering_task
+            
+            validation_task = asyncio.to_thread(
+                self._filter_and_validate_content, 
+                relevant_chunks, query
+            )
+            
+            # Continue with validation asynchronously
+            validated_chunks = await validation_task
             
             if not search_params.get('query_intent'):
                 relevant_chunks = self._apply_content_aware_selection(relevant_chunks, query, max_chunks)
@@ -1563,7 +1583,8 @@ Summary (2-3 sentences, focus on main content and purpose):"""
             query_intent = search_params.get('query_intent', {})
             conditional_instructions = query_intent.get('conditional_instructions', {})
             response_scope = query_intent.get('response_scope', 'standard')
-            response_data = self._generate_composite_response(query, relevant_chunks, conditional_instructions, response_scope)
+            suggested_max_tokens = query_intent.get('suggested_max_tokens', 2500)
+            response_data = self._generate_composite_response(query, validated_chunks, conditional_instructions, response_scope, suggested_max_tokens, query_intent)
             
             logger.debug(f"Generated response data type: {type(response_data)}")
             logger.debug(f"Response data keys: {list(response_data.keys()) if isinstance(response_data, dict) else 'Not a dict'}")
@@ -2546,45 +2567,123 @@ Think step-by-step about what the user really wants and how to optimally retriev
             'reasoning': 'Heuristic fallback analysis'
         }
     
+    async def _get_llm_driven_content_limits(self, query: str, query_intent: Dict, available_content: Dict) -> Dict[str, List[int]]:
+        """Use LLM to determine optimal content limits based on query analysis."""
+        try:
+            # Prepare content availability info
+            content_info = {
+                'available_text_chunks': available_content.get('text_count', 0),
+                'available_images': available_content.get('image_count', 0), 
+                'available_tables': available_content.get('table_count', 0)
+            }
+            
+            prompt = f"""
+            Analyze this query and determine optimal content limits for a comprehensive response:
+            
+            QUERY: "{query}"
+            
+            QUERY ANALYSIS:
+            - Type: {query_intent.get('type', 'general')}
+            - Strategy: {query_intent.get('strategy', 'balanced')}
+            - Confidence: {query_intent.get('confidence', 0.8)}
+            - Response Scope: {query_intent.get('response_scope', 'standard')}
+            
+            AVAILABLE CONTENT:
+            - Text chunks: {content_info['available_text_chunks']}
+            - Images: {content_info['available_images']}
+            - Tables: {content_info['available_tables']}
+            
+            Based on the query complexity, type, and available content, determine the optimal number of:
+            1. Text sections (min-max range)
+            2. Images (min-max range)  
+            3. Tables (min-max range)
+            4. Suggested response length in tokens
+            
+            Consider:
+            - Simple questions need fewer resources
+            - Complex analytical questions need more text and tables
+            - Visual/diagram questions need more images
+            - Comparison questions need balanced content
+            - Don't exceed available content
+            
+            Respond in JSON format:
+            {{
+                "text_sections": [min, max],
+                "images": [min, max], 
+                "tables": [min, max],
+                "response_length_tokens": suggested_tokens,
+                "reasoning": "Brief explanation for these limits"
+            }}
+            """
+            
+            response = self.openai_client.chat.completions.create(
+                model=self.chat_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=300,
+                temperature=0.1
+            )
+            
+            # Parse LLM response with robust error handling
+            import json
+            import re
+            
+            response_content = response.choices[0].message.content.strip()
+            logger.info(f"Raw LLM content limits response: {response_content[:200]}...")
+            
+            # Try multiple parsing strategies
+            try:
+                # First try direct parsing
+                llm_limits = json.loads(response_content)
+            except json.JSONDecodeError:
+                # Try to extract from markdown code blocks
+                json_match = re.search(r'```(?:json)?\n(.*?)\n```', response_content, re.DOTALL)
+                if json_match:
+                    llm_limits = json.loads(json_match.group(1))
+                else:
+                    # Try to find JSON object pattern
+                    json_match = re.search(r'\{.*\}', response_content, re.DOTALL)
+                    if json_match:
+                        llm_limits = json.loads(json_match.group(0))
+                    else:
+                        raise ValueError("No valid JSON found in LLM content limits response")
+            
+            # Convert to expected format
+            content_limits = {
+                'text': llm_limits['text_sections'],
+                'images': llm_limits['images'],
+                'tables': llm_limits['tables']
+            }
+            
+            # Add response length for later use
+            content_limits['suggested_tokens'] = llm_limits.get('response_length_tokens', 2000)
+            
+            logger.info(f"LLM-determined content limits: {content_limits}")
+            logger.info(f"LLM reasoning: {llm_limits.get('reasoning', 'No reasoning provided')}")
+            
+            return content_limits
+            
+        except Exception as e:
+            logger.error(f"Failed to get LLM-driven content limits: {e}")
+            # Fallback to reasonable defaults
+            return {
+                'text': [5, 15],
+                'images': [1, 4], 
+                'tables': [1, 3],
+                'suggested_tokens': 2000
+            }
+    
     def _get_dynamic_content_limits(self, response_scope: str, is_comprehensive: bool, 
                                   is_analytical: bool, is_visual_focused: bool) -> Dict[str, List[int]]:
-        """Dynamically determine content limits based on response scope and query characteristics."""
-        
-        # Base limits for different response scopes (Updated for smaller 600-char chunks vs previous 2000+ char chunks)
+        """Legacy function - kept for backward compatibility."""
+        # Base limits for different response scopes
         base_limits = {
-            'minimal': {'text': [3, 6], 'images': [0, 2], 'tables': [0, 1]},         # 3-6x increase for text
-            'concise': {'text': [6, 12], 'images': [1, 2], 'tables': [0, 2]},       # 6x increase for text  
-            'standard': {'text': [12, 20], 'images': [2, 4], 'tables': [1, 3]},     # 6-5x increase for text
-            'detailed': {'text': [18, 30], 'images': [3, 6], 'tables': [2, 4]},     # 6-5x increase for text
-            'comprehensive': {'text': [25, 40], 'images': [4, 8], 'tables': [3, 6]} # 6-5x increase for text
+            'minimal': {'text': [3, 6], 'images': [0, 2], 'tables': [0, 1]},
+            'concise': {'text': [6, 12], 'images': [1, 2], 'tables': [0, 2]},
+            'standard': {'text': [12, 20], 'images': [2, 4], 'tables': [1, 3]},
+            'detailed': {'text': [18, 30], 'images': [3, 6], 'tables': [2, 4]},
+            'comprehensive': {'text': [25, 40], 'images': [4, 8], 'tables': [3, 6]}
         }
-        
-        # Get base limits
-        content_limits = base_limits.get(response_scope, base_limits['standard']).copy()
-        
-        # Adjust based on query characteristics
-        if is_comprehensive and response_scope not in ['minimal', 'concise']:
-            # Increase limits for comprehensive queries (unless explicitly minimal) - Updated caps for smaller chunks
-            content_limits['text'][1] = min(content_limits['text'][1] + 10, 50)  # Increased from 10 to 50
-            content_limits['images'][1] = min(content_limits['images'][1] + 2, 10)  # Increased from 5 to 10
-            content_limits['tables'][1] = min(content_limits['tables'][1] + 2, 8)   # Increased from 4 to 8
-            
-        elif is_analytical:
-            # Prioritize text and tables for analytical queries - Updated caps for smaller chunks
-            content_limits['text'][1] = min(content_limits['text'][1] + 5, 35)    # Increased from 8 to 35
-            content_limits['tables'][1] = min(content_limits['tables'][1] + 2, 6) # Increased from 3 to 6
-            
-        elif is_visual_focused:
-            # Prioritize images for visual queries - Updated caps for smaller chunks
-            content_limits['images'][0] = max(content_limits['images'][0], 2)     # Increased minimum from 1 to 2
-            content_limits['images'][1] = min(content_limits['images'][1] + 3, 12) # Increased from 6 to 12
-            
-        # Ensure minimums don't exceed maximums
-        for content_type in content_limits:
-            if content_limits[content_type][0] > content_limits[content_type][1]:
-                content_limits[content_type][0] = content_limits[content_type][1]
-                
-        return content_limits
+        return base_limits.get(response_scope, base_limits['standard']).copy()
     
     def _apply_content_type_boosting(self, chunks: List[Dict], query_intent: Dict) -> List[Dict]:
         """Apply content-type specific boosting based on query intent."""
@@ -2755,7 +2854,7 @@ Think step-by-step about what the user really wants and how to optimally retriev
             
             return selected_chunks
     
-    def _generate_composite_response(self, query: str, relevant_chunks: List[Dict], conditional_instructions: Dict = None, response_scope: str = 'standard') -> Dict[str, Any]:
+    def _generate_composite_response(self, query: str, relevant_chunks: List[Dict], conditional_instructions: Dict = None, response_scope: str = 'standard', suggested_max_tokens: int = 2500, query_intent: Dict = None) -> Dict[str, Any]:
         """Generate seamlessly integrated response using composite chunks and inline generator with conditional instructions."""
         try:
             if not relevant_chunks:
@@ -2777,30 +2876,30 @@ Think step-by-step about what the user really wants and how to optimally retriev
                 "- If asked 'what were the previous questions?', list ONLY the last few questions (no answers), do not invent details.\n\n"
                 "Tables and images:\n"
                 "- Include a table/image only if it directly supports the answer and exists in retrieved evidence.\n"
-                "- At most 1 table and 1 image; ensure headers/values are complete and readable.\n"
-                "- If the referenced artifact is missing, do not show it—summarize instead.\n\n"
-                "Output quality:\n"
-                "- Start with a 1–2 sentence direct answer, then supporting details.\n"
-                "- Keep to \u2264180 words unless asked otherwise.\n"
-                "- Every claim must be supported by retrieved chunks; if support is insufficient, ask one brief clarification question.\n"
             )
-
-            # Merge guardrails into conditional instructions for the inline generator
-            merged_conditionals = dict(conditional_instructions or {})
-            merged_conditionals["final_response_guardrails"] = guardrails
-
-            # Use the inline generator directly - it handles all content extraction and organization
-            response_data = self.inline_generator.generate_inline_response_from_chunks(query, relevant_chunks, merged_conditionals, response_scope)
             
-            logger.debug(f"Inline generator response type: {type(response_data)}")
-            logger.debug(f"Inline generator response: {response_data}")
+            # Skip redundant content strategy - AI limits already applied in main selection
+            # Content is already filtered to 10 chunks by AI selection strategy (line 20 in logs)
+            content_strategy = None
+            logger.info("Skipping redundant content strategy - using AI-selected chunks directly")
             
-            # Add chunk-level metadata for performance tracking
-            response_data['content_summary']['total_chunks'] = len(relevant_chunks)
-            response_data['content_summary']['context_strategy'] = self._determine_context_strategy(query, relevant_chunks)
+            # Use the query intent passed from the main pipeline (avoid duplicate LLM call)
+            if query_intent is None:
+                logger.warning("Query intent not provided, will use basic defaults")
+                query_intent = {}
+            else:
+                logger.info("Using query intent from main pipeline - avoiding duplicate LLM analysis")
             
-            logger.info(f"Final composite response: {response_data}")
-            return response_data
+            # Use inline generator to create seamless multimodal response
+            return self.inline_generator.generate_inline_response_from_chunks(
+                query=query,
+                chunks=relevant_chunks,
+                conditional_instructions=conditional_instructions,
+                response_scope=response_scope,
+                suggested_max_tokens=suggested_max_tokens,
+                content_strategy=content_strategy,
+                query_intent=query_intent
+            )
             
         except Exception as e:
             logger.error(f"Error generating seamless composite response: {e}")
@@ -2808,7 +2907,7 @@ Think step-by-step about what the user really wants and how to optimally retriev
                 'inline_elements': [{'type': 'text', 'content': f"Error generating response: {str(e)}"}]
             }
     
-    def _extract_multimodal_content_from_chunks_with_conditionals(self, chunks: List[Dict], query: str, conditional_instructions: Dict = None) -> Dict[str, List]:
+    async def _extract_multimodal_content_from_chunks_with_conditionals(self, chunks: List[Dict], query: str, conditional_instructions: Dict = None) -> Dict[str, List]:
         """Extract and organize multimodal content from composite chunks with AI-powered intelligent selection."""
         content = {
             'text': [],
@@ -2827,7 +2926,7 @@ Think step-by-step about what the user really wants and how to optimally retriev
             exclude_content = conditional_instructions.get('exclude_content', [])
         
         # AI-powered content organization and selection
-        content_strategy = self._determine_content_organization_strategy(query, chunks, conditional_instructions)
+        content_strategy = await self._determine_content_organization_strategy(query, chunks, conditional_instructions)
         
         # Apply AI-determined content organization
         for i, chunk in enumerate(chunks):
@@ -2888,7 +2987,90 @@ Think step-by-step about what the user really wants and how to optimally retriev
         logger.info(f"Extracted multimodal content with AI selection: {len(content['text'])} text sections, {len(content['images'])} images, {len(content['tables'])} tables")
         return content
     
-    def _determine_content_organization_strategy(self, query: str, chunks: List[Dict], conditional_instructions: Dict = None) -> Dict:
+    def _should_include_image_content(self, chunk: Dict, content_strategy: Dict, used_image_ids: set) -> bool:
+        """Enhanced image relevance scoring with OCR semantic matching and query-image scoring."""
+        try:
+            # Get basic image info
+            image_summary = chunk.get('image_summary', '')
+            ocr_text = chunk.get('ocr_text', '')
+            relevance_score = chunk.get('relevance_score', 0)
+            
+            # Extract query from content_strategy context (if available)
+            query_terms = getattr(self, '_current_query_terms', [])
+            
+            # 1. OCR Content Semantic Matching (LOW COMPLEXITY)
+            ocr_relevance = 0.0
+            if ocr_text and query_terms:
+                ocr_words = set(ocr_text.lower().split())
+                query_words = set(' '.join(query_terms).lower().split())
+                
+                # Calculate word overlap
+                common_words = ocr_words.intersection(query_words)
+                if query_words:
+                    ocr_relevance = len(common_words) / len(query_words)
+                    
+            # 2. Query-Image Semantic Scoring (LOW COMPLEXITY) 
+            summary_relevance = 0.0
+            if image_summary and query_terms:
+                summary_words = set(image_summary.lower().split())
+                query_words = set(' '.join(query_terms).lower().split())
+                
+                # Calculate semantic overlap
+                common_words = summary_words.intersection(query_words)
+                if query_words:
+                    summary_relevance = len(common_words) / len(query_words)
+            
+            # 3. Combined relevance score
+            enhanced_score = (
+                relevance_score * 0.4 +  # Original relevance
+                ocr_relevance * 0.3 +    # OCR matching
+                summary_relevance * 0.3   # Summary matching
+            )
+            
+            # 4. Apply content strategy thresholds
+            content_limits = content_strategy.get('content_limits', {})
+            image_limits = content_limits.get('images', [1, 3])
+            
+            # Check if we've reached max images
+            if len(used_image_ids) >= image_limits[1]:
+                return False
+            
+            # Enhanced threshold based on combined scoring
+            threshold = 0.15  # Lower threshold due to enhanced scoring
+            should_include = enhanced_score > threshold
+            
+            if should_include:
+                logger.debug(f"Image included: enhanced_score={enhanced_score:.3f} (original={relevance_score:.3f}, ocr={ocr_relevance:.3f}, summary={summary_relevance:.3f})")
+            else:
+                logger.debug(f"Image rejected: enhanced_score={enhanced_score:.3f} below threshold {threshold}")
+                
+            return should_include
+            
+        except Exception as e:
+            logger.error(f"Error in image relevance scoring: {e}")
+            # Fallback to basic relevance check
+            return chunk.get('relevance_score', 0) > 0.2
+    
+    def _should_include_table_content(self, chunk: Dict, content_strategy: Dict, used_table_ids: set) -> bool:
+        """Simple table inclusion logic - maintaining current filtering behavior."""
+        try:
+            # Apply content strategy limits
+            content_limits = content_strategy.get('content_limits', {})
+            table_limits = content_limits.get('tables', [1, 3])
+            
+            # Check if we've reached max tables
+            if len(used_table_ids) >= table_limits[1]:
+                return False
+            
+            # Use basic relevance threshold (keeping current logic)
+            relevance_score = chunk.get('relevance_score', 0)
+            return relevance_score > 0.2
+            
+        except Exception as e:
+            logger.error(f"Error in table inclusion check: {e}")
+            return chunk.get('relevance_score', 0) > 0.2
+    
+    async def _determine_content_organization_strategy(self, query: str, chunks: List[Dict], conditional_instructions: Dict = None) -> Dict:
         """Determine content organization strategy for seamless composite responses."""
         try:
             query_lower = query.lower()
@@ -2912,9 +3094,21 @@ Think step-by-step about what the user really wants and how to optimally retriev
             query_intent = search_params.get('query_intent', {})
             response_scope = query_intent.get('response_scope', 'standard')
             
-            # Use response scope intelligence to determine content limits
-            content_limits = self._get_dynamic_content_limits(response_scope, is_comprehensive, is_analytical, is_visual_focused)
-            logger.debug(f"Dynamic content limits applied for response_scope '{response_scope}': {content_limits}")
+            # Count available content for LLM decision making
+            available_content = {
+                'text_count': sum(1 for c in chunks if c.get('text')),
+                'image_count': sum(1 for c in chunks if c.get('contains_image')),
+                'table_count': sum(1 for c in chunks if c.get('contains_table'))
+            }
+            
+            # Use LLM to determine optimal content limits based on query analysis
+            try:
+                content_limits = await self._get_llm_driven_content_limits(query, query_intent, available_content)
+                logger.info(f"LLM-driven content limits applied: {content_limits}")
+            except Exception as e:
+                logger.error(f"Failed to get LLM content limits, falling back to legacy method: {e}")
+                content_limits = self._get_dynamic_content_limits(response_scope, is_comprehensive, is_analytical, is_visual_focused)
+                logger.debug(f"Legacy content limits applied for response_scope '{response_scope}': {content_limits}")
             
             # Determine strategy based on query and content
             if is_comprehensive:
@@ -2970,7 +3164,8 @@ Think step-by-step about what the user really wants and how to optimally retriev
                 'organization_strategy': organization_strategy,
                 'content_priorities': content_priorities,
                 'inclusion_criteria': inclusion_criteria,
-                'content_limits': content_limits
+                'content_limits': content_limits,
+                'suggested_max_tokens': content_limits.get('suggested_tokens', 2500)
             }
             
             logger.info(f"Content organization strategy: {selection_strategy}, priorities: {content_priorities}")
@@ -4126,6 +4321,798 @@ Create a high-quality, informative response that provides real value to the user
             
         except Exception as e:
             logger.error(f"Error creating download debug info: {e}")
+
+    def _filter_and_validate_content(self, chunks: List[Dict], query: str) -> List[Dict]:
+        """Centralized function to filter and validate content chunks before response generation."""
+        validated_chunks = []
+        for chunk in chunks:
+            # If chunk contains tables, validate them
+            if chunk.get('contains_table') and chunk.get('table_content_jsons'):
+                valid_tables = []
+                table_jsons = chunk.get('table_content_jsons', [])
+                for table_json in table_jsons:
+                    if self._is_table_valid(table_json) and self._has_meaningful_table_content(table_json, query):
+                        valid_tables.append(table_json)
+                    else:
+                        logger.info(f"Filtering out invalid or irrelevant table from chunk {chunk.get('chunk_id')}")
+
+                # If there are valid tables left, update the chunk
+                if valid_tables:
+                    chunk['table_content_jsons'] = valid_tables
+                    chunk['table_count'] = len(valid_tables)
+                    validated_chunks.append(chunk)
+                else:
+                    # If all tables in the chunk are invalid, we might still keep the chunk for its text
+                    chunk['contains_table'] = False
+                    chunk['table_count'] = 0
+                    validated_chunks.append(chunk)
+            else:
+                # If no tables, the chunk is valid as is
+                validated_chunks.append(chunk)
+        
+        logger.info(f"Content validation complete: {len(validated_chunks)} chunks remain after filtering.")
+        return validated_chunks
+    
+    def _is_table_valid(self, table_json: str) -> bool:
+        """Validate table content to filter out empty or distorted tables."""
+        try:
+            import json
+            
+            # Parse table JSON with robust error handling
+            if isinstance(table_json, str):
+                try:
+                    # First try direct parsing
+                    table_data = json.loads(table_json)
+                except json.JSONDecodeError:
+                    # Try to extract from markdown code blocks
+                    import re
+                    json_match = re.search(r'```(?:json)?\n(.*?)\n```', table_json, re.DOTALL)
+                    if json_match:
+                        table_data = json.loads(json_match.group(1))
+                    else:
+                        # Try to find JSON object pattern
+                        json_match = re.search(r'\{.*\}', table_json, re.DOTALL)
+                        if json_match:
+                            table_data = json.loads(json_match.group(0))
+                        else:
+                            logger.warning(f"No valid JSON found in table data: {table_json[:100]}...")
+                            return False
+            else:
+                table_data = table_json
+            
+            if not isinstance(table_data, dict):
+                return False
+            
+            # Get non-metadata keys
+            keys = [k for k in table_data.keys() if not k.startswith('_')]
+            if not keys:
+                return False
+            
+            # Check for empty columns - STRICTER: Even one empty column makes table invalid
+            for key in keys:
+                values = table_data.get(key, [])
+                if isinstance(values, list):
+                    # Count non-empty cells in this column
+                    non_empty_cells = sum(1 for v in values if v and str(v).strip() and len(str(v).strip()) > 1)
+                    
+                    # NEW: If ANY column has empty cells, reject the entire table
+                    if len(values) > 0 and non_empty_cells == 0:
+                        logger.info(f"Column '{key}' has header but ALL cells are empty - rejecting table")
+                        return False
+                    # If more than 50% of cells in a column are empty, reject the table
+                    elif len(values) > 0 and (non_empty_cells / len(values)) < 0.5:
+                        logger.info(f"Column '{key}' has too many empty cells ({non_empty_cells}/{len(values)}) - rejecting table")
+                        return False
+            
+            # All columns passed validation
+            logger.info("All columns passed empty cell validation")
+            
+            # Check for empty rows (if table has row structure)
+            if '_metadata' in table_data:
+                metadata = table_data['_metadata']
+                total_rows = metadata.get('total_rows', 0)
+                total_cols = metadata.get('total_columns', 0)
+                
+                # NEW: Check if table has insufficient rows (only header + 1 data row)
+                if total_rows <= 1:
+                    logger.info(f"Table rejected: Only {total_rows} row(s) - insufficient data for meaningful table")
+                    return False
+                
+                # If table has very few columns, it might be invalid
+                if total_cols < 2:
+                    return False
+                
+                # Check if most rows are empty
+                empty_rows = 0
+                for key in keys:
+                    values = table_data.get(key, [])
+                    if isinstance(values, list):
+                        for row_idx in range(min(total_rows, len(values))):
+                            if row_idx < len(values):
+                                cell_value = values[row_idx]
+                                if not cell_value or not str(cell_value).strip() or len(str(cell_value).strip()) <= 1:
+                                    empty_rows += 1
+                                    break
+                
+                # If more than 70% of rows are empty, table is invalid
+                if total_rows > 0 and (empty_rows / total_rows) > 0.7:
+                    return False
+            
+            
+            
+            # NEW: Check for tables that are just lists without meaningful structure
+            meaningful_data_count = 0
+            total_cells = 0
+            
+            for key in keys:
+                values = table_data.get(key, [])
+                if isinstance(values, list):
+                    total_cells += len(values)
+                    for value in values:
+                        if value and str(value).strip() and len(str(value).strip()) > 2:
+                            meaningful_data_count += 1
+            
+            # If less than 30% of cells have meaningful data, table is invalid
+            if total_cells > 0 and (meaningful_data_count / total_cells) < 0.3:
+                return False
+            
+            # NEW: Check for tables with suspicious patterns (all empty cells in certain rows)
+            if '_metadata' in table_data:
+                metadata = table_data['_metadata']
+                total_rows = metadata.get('total_rows', 0)
+                
+                if total_rows > 0:
+                    completely_empty_rows = 0
+                    for row_idx in range(total_rows):
+                        row_has_data = False
+                        for key in keys:
+                            values = table_data.get(key, [])
+                            if isinstance(values, list) and row_idx < len(values):
+                                cell_value = values[row_idx]
+                                if cell_value and str(cell_value).strip() and len(str(cell_value).strip()) > 1:
+                                    row_has_data = True
+                                    break
+                        
+                        if not row_has_data:
+                            completely_empty_rows += 1
+                    
+                    # If more than 60% of rows are completely empty, table is invalid
+                    if (completely_empty_rows / total_rows) > 0.6:
+                        return False
+            
+            # NEW: Check for tables that are just metadata or index without actual content
+            if len(keys) <= 2 and total_cells < 4:
+                # Check if it's just a simple index or reference table
+                has_meaningful_content = False
+                for key in keys:
+                    values = table_data.get(key, [])
+                    if isinstance(values, list):
+                        for value in values:
+                            if value and str(value).strip() and len(str(value).strip()) > 3:
+                                has_meaningful_content = True
+                                break
+                
+                if not has_meaningful_content:
+                    return False
+            
+            # NEW: Fallback check for tables without metadata - ensure we have at least 2 rows of data
+            if '_metadata' not in table_data:
+                # Count actual data rows by checking the length of the first column
+                first_key = keys[0] if keys else None
+                if first_key:
+                    first_column_values = table_data.get(first_key, [])
+                    if isinstance(first_column_values, list):
+                        actual_data_rows = len([v for v in first_column_values if v and str(v).strip() and len(str(v).strip()) > 1])
+                        if actual_data_rows <= 1:
+                            logger.info(f"Table rejected: Only {actual_data_rows} data row(s) - insufficient data for meaningful table")
+                            return False
+            
+            
+            
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Error validating table: {e}")
+            return False
+
+    def _has_meaningful_table_content(self, table_json: str, query: str) -> bool:
+        """Check if table has meaningful content relevant to the user's query."""
+        try:
+            import json
+            
+            # Parse table JSON with robust error handling
+            if isinstance(table_json, str):
+                try:
+                    # First try direct parsing
+                    table_data = json.loads(table_json)
+                except json.JSONDecodeError:
+                    # Try to extract from markdown code blocks
+                    import re
+                    json_match = re.search(r'```(?:json)?\n(.*?)\n```', table_json, re.DOTALL)
+                    if json_match:
+                        table_data = json.loads(json_match.group(1))
+                    else:
+                        # Try to find JSON object pattern
+                        json_match = re.search(r'\{.*\}', table_json, re.DOTALL)
+                        if json_match:
+                            table_data = json.loads(json_match.group(0))
+                        else:
+                            logger.warning(f"No valid JSON found in table data: {table_json[:100]}...")
+                            return False
+            else:
+                table_data = table_json
+            
+            if not isinstance(table_data, dict):
+                return False
+            
+            # Get non-metadata keys
+            keys = [k for k in table_data.keys() if not k.startswith('_')]
+            if not keys:
+                return False
+            
+            # NEW: Check if table is semantically relevant to the query
+            if not self._is_table_semantically_relevant(table_data, query):
+                logger.info(f"Table rejected due to low semantic relevance to query: '{query}'")
+                return False
+            
+            # Check if table has substantial content
+            total_cells = 0
+            meaningful_cells = 0
+            
+            for key in keys:
+                values = table_data.get(key, [])
+                if isinstance(values, list):
+                    total_cells += len(values)
+                    
+                    # Check if this column has any meaningful content at all
+                    column_has_content = False
+                    for value in values:
+                        if value and str(value).strip() and len(str(value).strip()) > 2:
+                            meaningful_cells += 1
+                            column_has_content = True
+                    
+                    # If column has header but no meaningful content, log it
+                    if not column_has_content and len(values) > 0:
+                        logger.info(f"Column '{key}' has header but no meaningful content")
+            
+            # Table must have at least 50% meaningful cells (stricter threshold)
+            if total_cells > 0 and (meaningful_cells / total_cells) < 0.5:
+                logger.info(f"Table rejected due to low meaningful content: {meaningful_cells}/{total_cells} cells meaningful")
+                return False
+            
+            # Check if table has enough data to be useful (at least 6 meaningful data points)
+            if meaningful_cells < 6:
+                logger.info(f"Table rejected due to insufficient meaningful data: {meaningful_cells} meaningful cells")
+                return False
+            
+            # Check if table structure is meaningful (not just a simple list)
+            if len(keys) < 2:
+                logger.info(f"Table rejected due to insufficient columns: {len(keys)} columns")
+                return False
+            
+            # Check if table has sufficient data rows (at least 2 rows of actual data)
+            if total_cells > 0:
+                # Calculate average rows per column to estimate total data rows
+                estimated_rows = total_cells / len(keys)
+                if estimated_rows <= 1:
+                    logger.info(f"Table rejected due to insufficient rows: estimated {estimated_rows:.1f} rows - need at least 2 rows of data")
+                    return False
+            
+            logger.info(f"Table passed content validation: {meaningful_cells}/{total_cells} meaningful cells, {len(keys)} columns")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Error checking table content relevance: {e}")
+            return False
+
+    def _is_table_semantically_relevant(self, table_data: Dict, query: str) -> bool:
+        """Check if table is semantically relevant to the user's query."""
+        try:
+            # Get non-metadata keys
+            keys = [k for k in table_data.keys() if not k.startswith('_')]
+            if not keys:
+                return False
+            
+            # Extract all text content from the table for semantic analysis
+            table_text_content = []
+            
+            # Add column headers
+            table_text_content.extend(keys)
+            
+            # Add cell values
+            for key in keys:
+                values = table_data.get(key, [])
+                if isinstance(values, list):
+                    for value in values:
+                        if value and str(value).strip():
+                            table_text_content.append(str(value).strip())
+            
+            # Combine all text content
+            combined_table_text = " ".join(table_text_content).lower()
+            
+            # Check if table is an exercise/worksheet (should be filtered out)
+            exercise_indicators = [
+                'exercise', 'question', 'answer', 'fill', 'blank', 'true', 'false',
+                'match', 'matching', 'column', 'row', 'complete', 'worksheet',
+                'activity', 'practice', 'test', 'quiz', 'homework'
+            ]
+            
+            if any(indicator in combined_table_text for indicator in exercise_indicators):
+                logger.info(f"Table identified as exercise/worksheet - filtering out for relevance")
+                return False
+            
+            # Check if table is just a simple index or reference (low relevance)
+            index_indicators = ['page', 'number', 'reference', 'index', 'list']
+            if any(indicator in combined_table_text for indicator in index_indicators) and len(keys) <= 2:
+                logger.info(f"Table identified as simple index/reference - low relevance")
+                return False
+            
+            # Calculate semantic similarity between table content and query
+            query_words = set(query.lower().split())
+            table_words = set(combined_table_text.split())
+            
+            # Remove common stop words that don't add semantic value
+            stop_words = {
+                'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+                'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+                'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+                'should', 'may', 'might', 'can', 'this', 'that', 'these', 'those'
+            }
+            
+            query_words = query_words - stop_words
+            table_words = table_words - stop_words
+            
+            # Calculate word overlap
+            if query_words:
+                overlap = len(query_words & table_words)
+                overlap_ratio = overlap / len(query_words)
+                
+                # Require at least 20% word overlap for relevance
+                if overlap_ratio < 0.2:
+                    logger.info(f"Table has low semantic overlap with query: {overlap}/{len(query_words)} words ({overlap_ratio:.2%})")
+                    return False
+                
+                logger.info(f"Table has good semantic overlap with query: {overlap}/{len(query_words)} words ({overlap_ratio:.2%})")
+                
+                logger.info(f"Table has good semantic overlap with query: {overlap}/{len(query_words)} words ({overlap_ratio:.2%})")
+            
+            # Check for domain-specific relevance
+            query_lower = query.lower()
+            
+            # If query is about nutrition, check if table contains nutrition-related terms
+            if any(word in query_lower for word in ['nutrition', 'food', 'diet', 'eating']):
+                nutrition_terms = ['food', 'nutrition', 'diet', 'eating', 'digestion', 'nutrients', 'proteins', 'carbohydrates', 'fats', 'vitamins']
+                if not any(term in combined_table_text for term in nutrition_terms):
+                    logger.info(f"Query about nutrition but table lacks nutrition-related terms")
+                    return False
+            
+            # If query is about animals/plants, check if table contains biology terms
+            if any(word in query_lower for word in ['animal', 'plant', 'biology', 'organism']):
+                biology_terms = ['animal', 'plant', 'organism', 'species', 'biology', 'cell', 'tissue', 'organ', 'system']
+                if not any(term in combined_table_text for term in biology_terms):
+                    logger.info(f"Query about animals/plants but table lacks biology-related terms")
+                    return False
+            
+            # Check if table appears to be meaningful data vs. just exercise content
+            meaningful_data_indicators = ['data', 'result', 'analysis', 'comparison', 'measurement', 'statistic', 'information', 'detail']
+            exercise_content_indicators = ['match', 'connect', 'draw', 'label', 'identify', 'choose', 'select', 'write']
+            
+            meaningful_score = sum(1 for indicator in meaningful_data_indicators if indicator in combined_table_text)
+            exercise_score = sum(1 for indicator in exercise_content_indicators if indicator in combined_table_text)
+            
+            if exercise_score > meaningful_score:
+                logger.info(f"Table appears to be exercise content rather than meaningful data")
+                return False
+            
+            logger.info(f"Table passed semantic relevance check for query: '{query}'")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Error in semantic relevance check: {e}")
+            # If we can't determine relevance, err on the side of caution and reject
+            return False
+    
+    def _is_table_valid(self, table_json: str) -> bool:
+        """Validate table content to filter out empty or distorted tables."""
+        try:
+            import json
+            
+            # Parse table JSON with robust error handling
+            if isinstance(table_json, str):
+                try:
+                    # First try direct parsing
+                    table_data = json.loads(table_json)
+                except json.JSONDecodeError:
+                    # Try to extract from markdown code blocks
+                    import re
+                    json_match = re.search(r'```(?:json)?\n(.*?)\n```', table_json, re.DOTALL)
+                    if json_match:
+                        table_data = json.loads(json_match.group(1))
+                    else:
+                        # Try to find JSON object pattern
+                        json_match = re.search(r'\{.*\}', table_json, re.DOTALL)
+                        if json_match:
+                            table_data = json.loads(json_match.group(0))
+                        else:
+                            logger.warning(f"No valid JSON found in table data: {table_json[:100]}...")
+                            return False
+            else:
+                table_data = table_json
+            
+            if not isinstance(table_data, dict):
+                return False
+            
+            # Get non-metadata keys
+            keys = [k for k in table_data.keys() if not k.startswith('_')]
+            if not keys:
+                return False
+            
+            # Check for empty columns - STRICTER: Even one empty column makes table invalid
+            for key in keys:
+                values = table_data.get(key, [])
+                if isinstance(values, list):
+                    # Count non-empty cells in this column
+                    non_empty_cells = sum(1 for v in values if v and str(v).strip() and len(str(v).strip()) > 1)
+                    
+                    # NEW: If ANY column has empty cells, reject the entire table
+                    if len(values) > 0 and non_empty_cells == 0:
+                        logger.info(f"Column '{key}' has header but ALL cells are empty - rejecting table")
+                        return False
+                    # If more than 50% of cells in a column are empty, reject the table
+                    elif len(values) > 0 and (non_empty_cells / len(values)) < 0.5:
+                        logger.info(f"Column '{key}' has too many empty cells ({non_empty_cells}/{len(values)}) - rejecting table")
+                        return False
+            
+            # All columns passed validation
+            logger.info("All columns passed empty cell validation")
+            
+            # Check for empty rows (if table has row structure)
+            if '_metadata' in table_data:
+                metadata = table_data['_metadata']
+                total_rows = metadata.get('total_rows', 0)
+                total_cols = metadata.get('total_columns', 0)
+                
+                # NEW: Check if table has insufficient rows (only header + 1 data row)
+                if total_rows <= 1:
+                    logger.info(f"Table rejected: Only {total_rows} row(s) - insufficient data for meaningful table")
+                    return False
+                
+                # If table has very few columns, it might be invalid
+                if total_cols < 2:
+                    return False
+                
+                # Check if most rows are empty
+                empty_rows = 0
+                for key in keys:
+                    values = table_data.get(key, [])
+                    if isinstance(values, list):
+                        for row_idx in range(min(total_rows, len(values))):
+                            if row_idx < len(values):
+                                cell_value = values[row_idx]
+                                if not cell_value or not str(cell_value).strip() or len(str(cell_value).strip()) <= 1:
+                                    empty_rows += 1
+                                    break
+                
+                # If more than 70% of rows are empty, table is invalid
+                if total_rows > 0 and (empty_rows / total_rows) > 0.7:
+                    return False
+            
+            
+            
+            # NEW: Check for tables that are just lists without meaningful structure
+            meaningful_data_count = 0
+            total_cells = 0
+            
+            for key in keys:
+                values = table_data.get(key, [])
+                if isinstance(values, list):
+                    total_cells += len(values)
+                    for value in values:
+                        if value and str(value).strip() and len(str(value).strip()) > 2:
+                            meaningful_data_count += 1
+            
+            # If less than 30% of cells have meaningful data, table is invalid
+            if total_cells > 0 and (meaningful_data_count / total_cells) < 0.3:
+                return False
+            
+            # NEW: Check for tables with suspicious patterns (all empty cells in certain rows)
+            if '_metadata' in table_data:
+                metadata = table_data['_metadata']
+                total_rows = metadata.get('total_rows', 0)
+                
+                if total_rows > 0:
+                    completely_empty_rows = 0
+                    for row_idx in range(total_rows):
+                        row_has_data = False
+                        for key in keys:
+                            values = table_data.get(key, [])
+                            if isinstance(values, list) and row_idx < len(values):
+                                cell_value = values[row_idx]
+                                if cell_value and str(cell_value).strip() and len(str(cell_value).strip()) > 1:
+                                    row_has_data = True
+                                    break
+                        
+                        if not row_has_data:
+                            completely_empty_rows += 1
+                    
+                    # If more than 60% of rows are completely empty, table is invalid
+                    if (completely_empty_rows / total_rows) > 0.6:
+                        return False
+            
+            # NEW: Check for tables that are just metadata or index without actual content
+            if len(keys) <= 2 and total_cells < 4:
+                # Check if it's just a simple index or reference table
+                has_meaningful_content = False
+                for key in keys:
+                    values = table_data.get(key, [])
+                    if isinstance(values, list):
+                        for value in values:
+                            if value and str(value).strip() and len(str(value).strip()) > 3:
+                                has_meaningful_content = True
+                                break
+                
+                if not has_meaningful_content:
+                    return False
+            
+            # NEW: Fallback check for tables without metadata - ensure we have at least 2 rows of data
+            if '_metadata' not in table_data:
+                # Count actual data rows by checking the length of the first column
+                first_key = keys[0] if keys else None
+                if first_key:
+                    first_column_values = table_data.get(first_key, [])
+                    if isinstance(first_column_values, list):
+                        actual_data_rows = len([v for v in first_column_values if v and str(v).strip() and len(str(v).strip()) > 1])
+                        if actual_data_rows <= 1:
+                            logger.info(f"Table rejected: Only {actual_data_rows} data row(s) - insufficient data for meaningful table")
+                            return False
+            
+            
+            
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Error validating table: {e}")
+            return False
+    
+    def _has_meaningful_table_content(self, table_json: str, query: str) -> bool:
+        """Check if table has meaningful content relevant to the user's query."""
+        try:
+            import json
+            
+            # Parse table JSON with robust error handling
+            if isinstance(table_json, str):
+                try:
+                    # First try direct parsing
+                    table_data = json.loads(table_json)
+                except json.JSONDecodeError:
+                    # Try to extract from markdown code blocks
+                    import re
+                    json_match = re.search(r'```(?:json)?\n(.*?)\n```', table_json, re.DOTALL)
+                    if json_match:
+                        table_data = json.loads(json_match.group(1))
+                    else:
+                        # Try to find JSON object pattern
+                        json_match = re.search(r'\{.*\}', table_json, re.DOTALL)
+                        if json_match:
+                            table_data = json.loads(json_match.group(0))
+                        else:
+                            logger.warning(f"No valid JSON found in table data: {table_json[:100]}...")
+                            return False
+            else:
+                table_data = table_json
+            
+            if not isinstance(table_data, dict):
+                return False
+            
+            # Get non-metadata keys
+            keys = [k for k in table_data.keys() if not k.startswith('_')]
+            if not keys:
+                return False
+            
+            # NEW: Check if table is semantically relevant to the query
+            if not self._is_table_semantically_relevant(table_data, query):
+                logger.info(f"Table rejected due to low semantic relevance to query: '{query}'")
+                return False
+            
+            # Check if table has substantial content
+            total_cells = 0
+            meaningful_cells = 0
+            
+            for key in keys:
+                values = table_data.get(key, [])
+                if isinstance(values, list):
+                    total_cells += len(values)
+                    
+                    # Check if this column has any meaningful content at all
+                    column_has_content = False
+                    for value in values:
+                        if value and str(value).strip() and len(str(value).strip()) > 2:
+                            meaningful_cells += 1
+                            column_has_content = True
+                    
+                    # If column has header but no meaningful content, log it
+                    if not column_has_content and len(values) > 0:
+                        logger.info(f"Column '{key}' has header but no meaningful content")
+            
+            # Table must have at least 50% meaningful cells (stricter threshold)
+            if total_cells > 0 and (meaningful_cells / total_cells) < 0.5:
+                logger.info(f"Table rejected due to low meaningful content: {meaningful_cells}/{total_cells} cells meaningful")
+                return False
+            
+            # Check if table has enough data to be useful (at least 6 meaningful data points)
+            if meaningful_cells < 6:
+                logger.info(f"Table rejected due to insufficient meaningful data: {meaningful_cells} meaningful cells")
+                return False
+            
+            # Check if table structure is meaningful (not just a simple list)
+            if len(keys) < 2:
+                logger.info(f"Table rejected due to insufficient columns: {len(keys)} columns")
+                return False
+            
+            # Check if table has sufficient data rows (at least 2 rows of actual data)
+            if total_cells > 0:
+                # Calculate average rows per column to estimate total data rows
+                estimated_rows = total_cells / len(keys)
+                if estimated_rows <= 1:
+                    logger.info(f"Table rejected due to insufficient rows: estimated {estimated_rows:.1f} rows - need at least 2 rows of data")
+                    return False
+            
+            logger.info(f"Table passed content validation: {meaningful_cells}/{total_cells} meaningful cells, {len(keys)} columns")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Error checking table content relevance: {e}")
+            return False
+    
+    def _is_table_semantically_relevant(self, table_data: Dict, query: str) -> bool:
+        """Check if table is semantically relevant to the user's query."""
+        try:
+            # Get non-metadata keys
+            keys = [k for k in table_data.keys() if not k.startswith('_')]
+            if not keys:
+                return False
+            
+            # Extract all text content from the table for semantic analysis
+            table_text_content = []
+            
+            # Add column headers
+            table_text_content.extend(keys)
+            
+            # Add cell values
+            for key in keys:
+                values = table_data.get(key, [])
+                if isinstance(values, list):
+                    for value in values:
+                        if value and str(value).strip():
+                            table_text_content.append(str(value).strip())
+            
+            # Combine all text content
+            combined_table_text = " ".join(table_text_content).lower()
+            
+            # Check if table is an exercise/worksheet (should be filtered out)
+            exercise_indicators = [
+                'exercise', 'question', 'answer', 'fill', 'blank', 'true', 'false',
+                'match', 'matching', 'column', 'row', 'complete', 'worksheet',
+                'activity', 'practice', 'test', 'quiz', 'homework'
+            ]
+            
+            if any(indicator in combined_table_text for indicator in exercise_indicators):
+                logger.info(f"Table identified as exercise/worksheet - filtering out for relevance")
+                return False
+            
+            # Check if table is just a simple index or reference (low relevance)
+            index_indicators = ['page', 'number', 'reference', 'index', 'list']
+            if any(indicator in combined_table_text for indicator in index_indicators) and len(keys) <= 2:
+                logger.info(f"Table identified as simple index/reference - low relevance")
+                return False
+            
+            # Calculate semantic similarity between table content and query
+            query_words = set(query.lower().split())
+            table_words = set(combined_table_text.split())
+            
+            # Remove common stop words that don't add semantic value
+            stop_words = {
+                'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+                'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+                'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+                'should', 'may', 'might', 'can', 'this', 'that', 'these', 'those'
+            }
+            
+            query_words = query_words - stop_words
+            table_words = table_words - stop_words
+            
+            # Calculate word overlap
+            if query_words:
+                overlap = len(query_words & table_words)
+                overlap_ratio = overlap / len(query_words)
+                
+                # Require at least 20% word overlap for relevance
+                if overlap_ratio < 0.2:
+                    logger.info(f"Table has low semantic overlap with query: {overlap}/{len(query_words)} words ({overlap_ratio:.2%})")
+                    return False
+                
+                logger.info(f"Table has good semantic overlap with query: {overlap}/{len(query_words)} words ({overlap_ratio:.2%})")
+                
+                logger.info(f"Table has good semantic overlap with query: {overlap}/{len(query_words)} words ({overlap_ratio:.2%})")
+            
+            # Check for domain-specific relevance
+            query_lower = query.lower()
+            
+            # If query is about nutrition, check if table contains nutrition-related terms
+            if any(word in query_lower for word in ['nutrition', 'food', 'diet', 'eating']):
+                nutrition_terms = ['food', 'nutrition', 'diet', 'eating', 'digestion', 'nutrients', 'proteins', 'carbohydrates', 'fats', 'vitamins']
+                if not any(term in combined_table_text for term in nutrition_terms):
+                    logger.info(f"Query about nutrition but table lacks nutrition-related terms")
+                    return False
+            
+            # If query is about animals/plants, check if table contains biology terms
+            if any(word in query_lower for word in ['animal', 'plant', 'biology', 'organism']):
+                biology_terms = ['animal', 'plant', 'organism', 'species', 'biology', 'cell', 'tissue', 'organ', 'system']
+                if not any(term in combined_table_text for term in biology_terms):
+                    logger.info(f"Query about animals/plants but table lacks biology-related terms")
+                    return False
+            
+            # Check if table appears to be meaningful data vs. just exercise content
+            meaningful_data_indicators = ['data', 'result', 'analysis', 'comparison', 'measurement', 'statistic', 'information', 'detail']
+            exercise_content_indicators = ['match', 'connect', 'draw', 'label', 'identify', 'choose', 'select', 'write']
+            
+            meaningful_score = sum(1 for indicator in meaningful_data_indicators if indicator in combined_table_text)
+            exercise_score = sum(1 for indicator in exercise_content_indicators if indicator in combined_table_text)
+            
+            if exercise_score > meaningful_score:
+                logger.info(f"Table appears to be exercise content rather than meaningful data")
+                return False
+            
+            logger.info(f"Table passed semantic relevance check for query: '{query}'")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Error in semantic relevance check: {e}")
+            # If we can't determine relevance, err on the side of caution and reject
+            return False
+
+    def _filter_and_validate_chunks(self, chunks: List[Dict], query: str) -> List[Dict]:
+        """
+        Filters chunks by validating their multimedia content, especially tables.
+        Removes invalid tables from chunks and updates metadata accordingly.
+        """
+        validated_chunks = []
+        for chunk in chunks:
+            if chunk.get('contains_table'):
+                valid_tables_json = []
+                valid_table_ids = []
+                valid_table_summaries = []
+                
+                table_jsons = chunk.get('table_content_jsons', [])
+                table_ids = chunk.get('table_ids', [])
+                table_summaries = chunk.get('table_summaries', [])
+
+                for i, table_json_str in enumerate(table_jsons):
+                    # Here we call the newly moved validation functions
+                    if self._is_table_valid(table_json_str) and self._has_meaningful_table_content(table_json_str, query):
+                        valid_tables_json.append(table_json_str)
+                        if i < len(table_ids):
+                            valid_table_ids.append(table_ids[i])
+                        if i < len(table_summaries):
+                            valid_table_summaries.append(table_summaries[i])
+                
+                if valid_tables_json:
+                    chunk['table_content_jsons'] = valid_tables_json
+                    chunk['table_ids'] = valid_table_ids
+                    chunk['table_summaries'] = valid_table_summaries
+                    chunk['table_count'] = len(valid_tables_json)
+                else:
+                    # If all tables in this chunk are invalid, update the metadata
+                    chunk['contains_table'] = False
+                    chunk['table_count'] = 0
+                    chunk['table_content_jsons'] = []
+                    chunk['table_ids'] = []
+                    chunk['table_summaries'] = []
+            
+            validated_chunks.append(chunk)
+            
+        logger.info(f"Validated {len(chunks)} chunks, returning {len(validated_chunks)} chunks after filtering.")
+        return validated_chunks
     
     def _extract_images_from_zip_response(self, zip_content: bytes, save_dir: Path, pdf_id: str) -> int:
         """Extract images from ZIP response."""
@@ -4316,9 +5303,25 @@ Create a high-quality, informative response that provides real value to the user
         try:
             import json
             
-            # Parse table JSON
+            # Parse table JSON with robust error handling
             if isinstance(table_json, str):
-                table_data = json.loads(table_json)
+                try:
+                    # First try direct parsing
+                    table_data = json.loads(table_json)
+                except json.JSONDecodeError:
+                    # Try to extract from markdown code blocks
+                    import re
+                    json_match = re.search(r'```(?:json)?\n(.*?)\n```', table_json, re.DOTALL)
+                    if json_match:
+                        table_data = json.loads(json_match.group(1))
+                    else:
+                        # Try to find JSON object pattern
+                        json_match = re.search(r'\{.*\}', table_json, re.DOTALL)
+                        if json_match:
+                            table_data = json.loads(json_match.group(0))
+                        else:
+                            logger.warning(f"No valid JSON found in table data: {table_json[:100]}...")
+                            return False
             else:
                 table_data = table_json
             
@@ -4402,3 +5405,4 @@ Create a high-quality, informative response that provides real value to the user
         except Exception as e:
             logger.warning(f"Error validating table for selection: {e}")
             return False
+    

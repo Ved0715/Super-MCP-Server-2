@@ -378,7 +378,7 @@ class ServerMultimodalRetrieval:
                     'total': len(filtered_elements)
                 }
             
-            # Add metadata about the search
+            # Add metadata about the search and expose top-level fields expected by UI
             enhanced_results = {
                 "search_metadata": {
                     "query": query,
@@ -388,7 +388,14 @@ class ServerMultimodalRetrieval:
                     "max_text_chunks": max_text_chunks,
                     "timestamp": time.time()
                 },
+                # Backward compatible nested payload
                 "multimodal_results": results,
+                # UI compatibility: surface commonly-consumed fields at the top level
+                "inline_elements": (results or {}).get("inline_elements", []),
+                "content_summary": (results or {}).get("content_summary"),
+                "inline_placement_quality": (results or {}).get("inline_placement_quality"),
+                "performance_metrics": (results or {}).get("performance_metrics"),
+                "element_counts": (results or {}).get("element_counts"),
                 "success": True
             }
             
@@ -405,6 +412,7 @@ class ServerMultimodalRetrieval:
                     "error": str(e)
                 },
                 "multimodal_results": None,
+                "inline_elements": [],
                 "success": False,
                 "error": str(e)
             }

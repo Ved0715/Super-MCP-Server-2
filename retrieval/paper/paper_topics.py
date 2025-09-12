@@ -1,10 +1,14 @@
 import logging
 import json
-from typing import List, Dict
+import re
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pinecone import Pinecone
 from openai import OpenAI
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from config import AdvancedConfig
  
 
@@ -37,6 +41,7 @@ class DocumentTopics:
         self.index = self.pc.Index("test")
         self.model = self.config.response_model
         self.embedding_dimension = self.config.embedding_dimension
+        self.max_retries = 3
 
     def _build_namespace(self, user_id: str, document_uuid: str) -> str:
         """Build the namespace for user-specific document"""
@@ -96,6 +101,84 @@ class DocumentTopics:
         
         # Cap at reasonable limits
         return min(optimal_batch_size, 275)
+
+    def _clean_json_response(self, content: str) -> str:
+        """Clean and fix common JSON formatting issues in OpenAI responses."""
+        content = content.strip()
+        
+        # Remove markdown code blocks
+        if content.startswith("```json"):
+            content = content[7:]
+        elif content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+        
+        # Fix common JSON issues
+        # Remove any text before first {
+        start_idx = content.find('{')
+        if start_idx > 0:
+            content = content[start_idx:]
+        
+        # Remove any text after last }
+        end_idx = content.rfind('}')
+        if end_idx != -1 and end_idx < len(content) - 1:
+            content = content[:end_idx + 1]
+        
+        # Fix unescaped quotes in strings
+        content = re.sub(r'(?<!\\)"(?=.*":)', r'\\"', content)
+        
+        # Fix trailing commas
+        content = re.sub(r',\s*}', '}', content)
+        content = re.sub(r',\s*]', ']', content)
+        
+        return content
+
+    def _parse_json_with_retry(self, content: str) -> Dict:
+        """Parse JSON with automatic fixing and retry logic."""
+        for attempt in range(self.max_retries):
+            try:
+                cleaned_content = self._clean_json_response(content)
+                return json.loads(cleaned_content)
+            except json.JSONDecodeError as e:
+                logging.warning(f"JSON parse attempt {attempt + 1} failed: {e}")
+                
+                if attempt < self.max_retries - 1:
+                    # Try additional fixes
+                    if attempt == 0:
+                        # Fix newlines in strings
+                        content = content.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+                    elif attempt == 1:
+                        # Try to fix unescaped backslashes
+                        content = content.replace('\\', '\\\\')
+                else:
+                    logging.error(f"Failed to parse JSON after {self.max_retries} attempts: {e}")
+                    return {"topics": []}
+        
+        return {"topics": []}
+
+    def _validate_topics_structure(self, data: Dict) -> Dict:
+        """Validate and fix the structure of the topics response."""
+        if not isinstance(data, dict):
+            return {"topics": []}
+        
+        if "topics" not in data:
+            return {"topics": []}
+        
+        topics = data["topics"]
+        if not isinstance(topics, list):
+            return {"topics": []}
+        
+        # Validate each topic
+        valid_topics = []
+        for topic in topics:
+            if isinstance(topic, dict) and "topic" in topic and "summary" in topic:
+                # Ensure topic and summary are strings
+                if isinstance(topic["topic"], str) and isinstance(topic["summary"], str):
+                    valid_topics.append(topic)
+        
+        return {"topics": valid_topics}
 
     def _process_batch(self, batch: List[DocumentChunk]) -> Dict:
         """Send a batch of chunks to OpenAI to extract broader, main topics."""
@@ -314,11 +397,11 @@ class DocumentTopics:
 
 
 def main():
-    from config import AdvancedConfig
     
     config = AdvancedConfig()
-    user_id = "44"
-    document_uuid = "4109a094-a6a0-4ec1-bba7-9ce5eb8dcace"     
+    user_id = "5"
+    document_uuid = "65b834b4-1e88-4b6b-ae97-0d2c62c522c5"
+       
     
     doc_topics = DocumentTopics(config)
     result = doc_topics.extract_topics(user_id=user_id, document_uuid=document_uuid)

@@ -119,26 +119,12 @@ class InlineMultimodalGenerator:
             # Create content map sorted by relevance
             content_map = self._create_content_map(filtered_content, query)
 
-            # Generate contextual response structure
-            response_structure = self._generate_response_structure(query, content_map, input_has_text, input_has_images, input_has_tables, response_scope)
-            
-            # Validate inline placement
-            is_inline_valid, validation_message = self._validate_inline_placement(response_structure)
-            logger.info(f"Inline placement validation: {validation_message}")
-            
-            # If inline placement is poor, regenerate with stronger focus
-            if not is_inline_valid and (input_has_images or input_has_tables):
-                logger.info("Poor inline placement detected, regenerating with stronger focus...")
-                response_structure = self._regenerate_with_inline_focus(query, content_map, input_has_text, input_has_images, input_has_tables, response_scope)
-                
-                # Validate again with more lenient criteria
-                is_inline_valid, validation_message = self._validate_inline_placement(response_structure, is_regenerated=True)
-                logger.info(f"Regenerated inline placement validation: {validation_message}")
-                
-                # If second attempt also fails, accept it anyway but log the issue
-                if not is_inline_valid:
-                    logger.warning(f"Second validation attempt failed: {validation_message}. Proceeding with current response.")
-        
+            # Generate response with natural multimedia placement using single regeneration prompt
+            logger.info("Generating response with natural multimedia placement...")
+            response_structure = self._generate_comprehensive_response(query, content_map, input_has_text, input_has_images, input_has_tables, response_scope)
+            validation_message = "Single comprehensive generation with natural multimedia placement"
+            logger.info(f"Response generated using natural placement strategy")
+
             # Create inline elements for display
             inline_elements = self._create_inline_elements(response_structure, content_map)
         
@@ -284,6 +270,122 @@ class InlineMultimodalGenerator:
         
         return content_map
     
+    def _generate_comprehensive_response(self, query: str, content_map: Dict, has_text: bool, has_images: bool, has_tables: bool, response_scope: str = 'standard') -> str:
+        """Generate comprehensive response with natural multimedia placement in a single call."""
+
+        # Build comprehensive context
+        context_parts = []
+        if has_text:
+            context_parts.append(f"Available text content from {len(content_map['text'])} sections")
+        if has_images:
+            context_parts.append(f"Available visual content: {len(content_map['images'])} images with descriptions")
+        if has_tables:
+            context_parts.append(f"Available structured data: {len(content_map['tables'])} tables")
+
+        # Create detailed text content for AI to use
+        text_content_sections = []
+        for i, text_item in enumerate(content_map['text']):
+            content = text_item.get('content', '')
+            page_num = text_item.get('page_number', 0)
+            relevance = text_item.get('relevance_score', 0)
+            if content and len(content.strip()) > 10:
+                text_content_sections.append(f"TEXT_SECTION_{i+1} (Page {page_num}, relevance: {relevance:.2f}):\n{content}")
+
+        # Create multimedia content analysis
+        content_analysis = []
+
+        # Analyze images with context
+        for i, img in enumerate(content_map['images']):
+            img_desc = img.get('image_summary', img.get('ocr_text', 'Visual content'))
+            page_num = int(img['page_number']) if isinstance(img['page_number'], (int, float)) else img['page_number']
+            relevance = img.get('relevance_score', 0)
+            contextual_desc = img_desc[:300] if img_desc and len(img_desc.strip()) > 10 else f"visual content from page {img['page_number']}"
+            content_analysis.append(f"IMAGE_{i+1} (Page {page_num}, relevance: {relevance:.2f}): {contextual_desc}")
+
+        # Analyze tables with structure
+        for i, table in enumerate(content_map['tables']):
+            table_summary = self._get_enhanced_table_summary(table)
+            page_num = int(table['page_number']) if isinstance(table['page_number'], (int, float)) else table['page_number']
+            relevance = table.get('relevance_score', 0)
+            contextual_desc = table_summary if table_summary else "structured data"
+
+            if table.get('table_content_json'):
+                try:
+                    import json
+                    table_json = json.loads(table['table_content_json'])
+                    if isinstance(table_json, dict) and '_metadata' in table_json:
+                        metadata = table_json['_metadata']
+                        contextual_desc += f" containing {metadata.get('total_rows', 0)} rows and {metadata.get('total_columns', 0)} columns"
+                    headers = [k for k in table_json.keys() if k != '_metadata']
+                    if headers:
+                        contextual_desc += f" with columns including {', '.join(headers[:5])}{'...' if len(headers) > 5 else ''}"
+                except:
+                    pass
+            content_analysis.append(f"TABLE_{i+1} (Page {page_num}, relevance: {relevance:.2f}): {contextual_desc}")
+
+        # Build comprehensive single prompt
+        text_content_prompt = ""
+        if text_content_sections:
+            text_content_prompt = f"\nDOCUMENT TEXT CONTENT:\n{chr(10).join(text_content_sections)}\n"
+
+        system_prompt = f"""You are an expert AI assistant that creates comprehensive responses with natural multimedia integration.
+
+AVAILABLE CONTENT:
+{', '.join(context_parts)}
+{text_content_prompt}
+
+MULTIMEDIA CONTENT DETAILS:
+{chr(10).join(content_analysis)}
+
+MULTIMEDIA REFERENCES (use these exact placeholders in your response):
+{self._generate_placeholder_list(content_map)}
+
+USER'S QUESTION: "{query}"
+
+INSTRUCTIONS:
+Create a comprehensive, well-structured response that naturally integrates multimedia content. Follow these guidelines:
+
+1. NATURAL PLACEMENT: Place images and tables naturally where they support your explanation. Don't force them into specific patterns - let the content flow guide placement.
+
+2. CONTEXTUAL INTEGRATION: When referencing multimedia, use natural language like:
+   - "As shown in the image below"
+   - "The following table illustrates"
+   - "Refer to the image for visual context"
+   - "The data in the table demonstrates"
+
+3. CONTENT UTILIZATION: Use the full text content provided to create a comprehensive response. Build your explanation around the available text, supplemented by multimedia elements.
+
+4. LOGICAL STRUCTURE: Organize your response logically with clear sections, headings, and smooth transitions between concepts.
+
+5. MULTIMEDIA PLACEMENT STRATEGY:
+   - Place images after relevant explanatory text
+   - Insert tables when you need to present structured data
+   - Don't cluster all multimedia at the end or beginning
+   - Let the narrative flow determine optimal placement
+
+6. RESPONSE SCOPE: Aim for a {response_scope} level response that thoroughly addresses the query.
+
+Generate your complete response now, naturally incorporating the multimedia placeholders where they best support your explanation:"""
+
+        try:
+            # Single comprehensive LLM call
+            response = self.openai_client.chat.completions.create(
+                model=self.chat_model,
+                messages=[{"role": "user", "content": system_prompt}],
+                max_tokens=4000,  # Increased for comprehensive response
+                temperature=0.3,
+                timeout=60
+            )
+
+            generated_response = response.choices[0].message.content.strip()
+            logger.info(f"Comprehensive response generated: {len(generated_response)} characters")
+            return generated_response
+
+        except Exception as e:
+            logger.error(f"Error in comprehensive response generation: {e}")
+            # Fallback to original method if needed
+            return self._generate_response_structure(query, content_map, has_text, has_images, has_tables, response_scope)
+
     def _generate_response_structure(self, query: str, content_map: Dict, has_text: bool, has_images: bool, has_tables: bool, response_scope: str = 'standard') -> str:
         """Generate intelligent response structure with seamless multimodal integration."""
         

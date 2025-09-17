@@ -1849,21 +1849,65 @@ INSTRUCTIONS:
    - Does the user want visual information (needs images)?
    - Is this a comprehensive analysis (needs all content types)?
 
-2. DECIDE CONTENT REQUIREMENTS:
-   - For simple "what/how/why/tell me about" questions → TEXT ONLY
-   - For "show me data/statistics/results" → TEXT + TABLES
-   - For "show me/visualize/images/figures" → TEXT + IMAGES
-   - For "analyze/compare/comprehensive" → TEXT + IMAGES + TABLES
+2. DECIDE CONTENT REQUIREMENTS BASED ON QUERY TYPE:
 
-3. SET APPROPRIATE LIMITS:
-   - Simple queries: 1-3 text sections, 0 images, 0 tables
-   - Data queries: 2-4 text sections, 0-1 images, 1-2 tables
-   - Visual queries: 2-4 text sections, 1-3 images, 0-1 tables
-   - Complex queries: 3-5 text sections, 1-3 images, 1-2 tables
+   FACTUAL/DEFINITIONAL QUERIES:
+   - Primary: Text explanations
+   - Secondary: Images for illustration (if available)
+   - Strategy: text_focused or minimal
+   - Limits: 2-4 text, 0-1 images, 0 tables
+
+   ANALYTICAL/EVALUATIVE QUERIES:
+   - Primary: Text analysis + Supporting data
+   - Secondary: Visual evidence + Tables for data
+   - Strategy: comprehensive or balanced
+   - Limits: 3-6 text, 1-3 images, 1-2 tables
+
+   COMPARATIVE QUERIES:
+   - Primary: Text comparison + Structured data
+   - Secondary: Visual comparisons
+   - Strategy: comparative_analysis
+   - Limits: 3-5 text, 1-2 images, 1-3 tables
+
+   VISUAL/PROCEDURAL QUERIES:
+   - Primary: Images/diagrams + Supporting text
+   - Secondary: Step-by-step tables
+   - Strategy: visual_heavy
+   - Limits: 2-4 text, 2-4 images, 0-1 tables
+
+   DATA_EXTRACTION/TREND_ANALYSIS:
+   - Primary: Tables/statistics + Text explanation
+   - Secondary: Charts/graphs
+   - Strategy: data_heavy
+   - Limits: 2-4 text, 0-2 images, 2-4 tables
+
+   RESEARCH/SYNTHESIS QUERIES:
+   - Primary: Comprehensive coverage
+   - Secondary: All content types
+   - Strategy: research_depth or comprehensive
+   - Limits: 4-8 text, 2-4 images, 1-3 tables
+
+   TROUBLESHOOTING/DIAGNOSTIC:
+   - Primary: Focused problem-solving content
+   - Secondary: Relevant diagrams/data
+   - Strategy: diagnostic_precision
+   - Limits: 2-5 text, 1-2 images, 0-2 tables
+
+3. SELECTION STRATEGY GUIDELINES:
+   - minimal: 1-3 text, 0 images, 0 tables (simple definitions)
+   - text_focused: 2-4 text, 0-1 images, 0 tables (explanations)
+   - balanced: 3-5 text, 1-2 images, 1-2 tables (standard queries)
+   - comprehensive: 3-6 text, 1-3 images, 1-2 tables (detailed analysis)
+   - visual_heavy: 2-4 text, 2-4 images, 0-1 tables (diagram-focused)
+   - data_heavy: 2-4 text, 0-2 images, 2-4 tables (statistics-focused)
+   - comparative_analysis: 3-5 text, 1-2 images, 1-3 tables (comparisons)
+   - research_depth: 4-8 text, 2-4 images, 1-3 tables (comprehensive research)
+   - diagnostic_precision: 2-5 text, 1-2 images, 0-2 tables (problem-solving)
+   - mixed_optimal: Dynamic based on available content quality
 
 Respond with ONLY this JSON format:
 {{
-    "selection_strategy": "[comprehensive|focused|balanced|minimal]",
+    "selection_strategy": "[comprehensive|focused|balanced|minimal|visual_heavy|data_heavy|text_focused|mixed_optimal|comparative_analysis|research_depth|diagnostic_precision]",
     "content_limits": {{
         "text_sections": [min, max],
         "images": [min, max], 
@@ -1953,31 +1997,53 @@ RELEVANCE SCORES:
             text_limit = content_limits.get('text_sections', [8, 15])[0]   # Updated from [2,4] to [8,15]
             image_limit = content_limits.get('images', [6, 12])[1]         # Updated from [3,5] to [6,12]
             table_limit = content_limits.get('tables', [2, 4])[1]         # Updated from [2,3] to [2,4]
-        elif selection_strategy == 'textual':
-            # Prioritize text content - Updated fallback limits for smaller chunks
-            text_limit = content_limits.get('text_sections', [20, 35])[1]  # Updated from [6,10] to [20,35]
-            image_limit = content_limits.get('images', [2, 4])[0]          # Updated from [1,2] to [2,4]
-            table_limit = content_limits.get('tables', [2, 4])[0]         # Updated from [1,2] to [2,4]
+        elif selection_strategy == 'textual' or selection_strategy == 'text_focused':
+            # Prioritize text content
+            text_limit = content_limits.get('text_sections', [20, 35])[1]
+            image_limit = content_limits.get('images', [2, 4])[0]
+            table_limit = content_limits.get('tables', [2, 4])[0]
+        elif selection_strategy == 'minimal':
+            # Minimal content for simple queries
+            text_limit = content_limits.get('text_sections', [1, 3])[1]
+            image_limit = content_limits.get('images', [0, 1])[1]
+            table_limit = content_limits.get('tables', [0, 0])[1]
+        elif selection_strategy == 'visual_heavy':
+            # Prioritize visual content heavily
+            text_limit = content_limits.get('text_sections', [2, 4])[1]
+            image_limit = content_limits.get('images', [2, 4])[1]
+            table_limit = content_limits.get('tables', [0, 1])[1]
+        elif selection_strategy == 'data_heavy':
+            # Prioritize data/tables
+            text_limit = content_limits.get('text_sections', [2, 4])[1]
+            image_limit = content_limits.get('images', [0, 2])[1]
+            table_limit = content_limits.get('tables', [2, 4])[1]
+        elif selection_strategy == 'comparative_analysis':
+            # Balanced for comparisons with emphasis on tables
+            text_limit = content_limits.get('text_sections', [3, 5])[1]
+            image_limit = content_limits.get('images', [1, 2])[1]
+            table_limit = content_limits.get('tables', [1, 3])[1]
+        elif selection_strategy == 'research_depth':
+            # Deep research with comprehensive coverage
+            text_limit = content_limits.get('text_sections', [4, 8])[1]
+            image_limit = content_limits.get('images', [2, 4])[1]
+            table_limit = content_limits.get('tables', [1, 3])[1]
+        elif selection_strategy == 'diagnostic_precision':
+            # Focused problem-solving content
+            text_limit = content_limits.get('text_sections', [2, 5])[1]
+            image_limit = content_limits.get('images', [1, 2])[1]
+            table_limit = content_limits.get('tables', [0, 2])[1]
+        elif selection_strategy == 'mixed_optimal':
+            # Dynamic based on available content quality
+            text_limit = content_limits.get('text_sections', [3, 6])[1]
+            image_limit = content_limits.get('images', [1, 3])[1]
+            table_limit = content_limits.get('tables', [1, 2])[1]
         else:  # balanced or default
-            text_limit = content_limits.get('text_sections', [15, 25])[1]  # Updated from [4,6] to [15,25]
-            image_limit = content_limits.get('images', [3, 6])[1]          # Updated from [2,3] to [3,6]
-            table_limit = content_limits.get('tables', [2, 4])[1]         # Updated from [1,2] to [2,4]
+            text_limit = content_limits.get('text_sections', [15, 25])[1]
+            image_limit = content_limits.get('images', [3, 6])[1]
+            table_limit = content_limits.get('tables', [2, 4])[1]
         
-        # Enhanced sorting: prioritize chunks with relevant images for image-focused queries
-        if 'images' in priority_order and priority_order.index('images') <= 1:  # Images are high priority
-            # Create separate lists for image chunks and others
-            image_chunks = [c for c in sorted_chunks if c.get('contains_image')]
-            other_chunks = [c for c in sorted_chunks if not c.get('contains_image')]
-            
-            # Sort image chunks by image relevance indicators
-            image_chunks.sort(key=lambda x: (
-                x.get('image_count', 0),  # Prefer multiple images
-                len([s for s in x.get('image_summaries', []) if s and len(s) > 50]),  # Rich summaries
-                x['relevance_score']  # Fallback to relevance score
-            ), reverse=True)
-            
-            # Recombine with image chunks having priority
-            sorted_chunks = image_chunks + other_chunks
+        # Smart priority-based sorting with enhanced logic
+        sorted_chunks = self._apply_smart_priority_sorting(sorted_chunks, priority_order, selection_strategy)
         
         # Select content according to priority order and limits
         selected_chunks = []
@@ -2040,7 +2106,126 @@ RELEVANCE SCORES:
         clustered_chunks = self._apply_semantic_clustering(selected_chunks, selection_strategy)
         
         return clustered_chunks
-    
+
+    def _apply_smart_priority_sorting(self, chunks: List[Dict], priority_order: List[str], selection_strategy: str) -> List[Dict]:
+        """Apply smart priority-based sorting based on query type and strategy."""
+        if not priority_order or not chunks:
+            return chunks
+
+        # Strategy-specific sorting enhancements
+        if selection_strategy == 'visual_heavy':
+            # For visual queries, prioritize chunks with multiple/high-quality images
+            image_chunks = [c for c in chunks if c.get('contains_image')]
+            text_chunks = [c for c in chunks if c.get('text') and not c.get('contains_image')]
+            table_chunks = [c for c in chunks if c.get('contains_table') and not c.get('contains_image')]
+
+            # Sort image chunks by visual content quality
+            image_chunks.sort(key=lambda x: (
+                x.get('image_count', 0),  # More images = higher priority
+                len([s for s in x.get('image_summaries', []) if s and len(s) > 50]),  # Rich descriptions
+                x['relevance_score']
+            ), reverse=True)
+
+            return image_chunks + text_chunks + table_chunks
+
+        elif selection_strategy == 'data_heavy':
+            # For data queries, prioritize tables and structured content
+            table_chunks = [c for c in chunks if c.get('contains_table')]
+            text_chunks = [c for c in chunks if c.get('text') and not c.get('contains_table')]
+            image_chunks = [c for c in chunks if c.get('contains_image') and not c.get('contains_table')]
+
+            # Sort table chunks by data richness
+            table_chunks.sort(key=lambda x: (
+                x.get('table_row_count', 0),  # More data = higher priority
+                x.get('table_column_count', 0),
+                x['relevance_score']
+            ), reverse=True)
+
+            return table_chunks + text_chunks + image_chunks
+
+        elif selection_strategy == 'comparative_analysis':
+            # For comparisons, balance structured data and explanatory text
+            comparison_chunks = []
+            table_chunks = [c for c in chunks if c.get('contains_table')]
+            text_chunks = [c for c in chunks if c.get('text')]
+            image_chunks = [c for c in chunks if c.get('contains_image')]
+
+            # Interleave content types for better comparison flow
+            max_len = max(len(table_chunks), len(text_chunks), len(image_chunks))
+            for i in range(max_len):
+                if i < len(table_chunks):
+                    comparison_chunks.append(table_chunks[i])
+                if i < len(text_chunks):
+                    comparison_chunks.append(text_chunks[i])
+                if i < len(image_chunks):
+                    comparison_chunks.append(image_chunks[i])
+
+            return comparison_chunks
+
+        elif selection_strategy in ['research_depth', 'comprehensive']:
+            # For research, maintain balanced coverage with quality focus
+            chunks_by_type = {
+                'text': [c for c in chunks if c.get('text')],
+                'images': [c for c in chunks if c.get('contains_image')],
+                'tables': [c for c in chunks if c.get('contains_table')]
+            }
+
+            # Sort each type by relevance and quality indicators
+            for chunk_type, chunk_list in chunks_by_type.items():
+                if chunk_type == 'text':
+                    chunk_list.sort(key=lambda x: (
+                        len(x.get('text', '')),  # Longer text for comprehensive coverage
+                        x['relevance_score']
+                    ), reverse=True)
+                elif chunk_type == 'images':
+                    chunk_list.sort(key=lambda x: (
+                        len(x.get('image_summary', '')),  # Better descriptions
+                        x['relevance_score']
+                    ), reverse=True)
+                elif chunk_type == 'tables':
+                    chunk_list.sort(key=lambda x: (
+                        x.get('table_row_count', 0) * x.get('table_column_count', 0),  # Data richness
+                        x['relevance_score']
+                    ), reverse=True)
+
+            # Respect original priority order but with enhanced sorting
+            result = []
+            for priority_type in priority_order:
+                if priority_type in chunks_by_type:
+                    result.extend(chunks_by_type[priority_type])
+
+            return result
+
+        else:
+            # Default enhanced sorting based on priority order
+            if 'images' in priority_order and priority_order.index('images') <= 1:
+                # Images are high priority
+                image_chunks = [c for c in chunks if c.get('contains_image')]
+                other_chunks = [c for c in chunks if not c.get('contains_image')]
+
+                image_chunks.sort(key=lambda x: (
+                    x.get('image_count', 0),
+                    len([s for s in x.get('image_summaries', []) if s and len(s) > 50]),
+                    x['relevance_score']
+                ), reverse=True)
+
+                return image_chunks + other_chunks
+
+            elif 'tables' in priority_order and priority_order.index('tables') == 0:
+                # Tables are highest priority
+                table_chunks = [c for c in chunks if c.get('contains_table')]
+                other_chunks = [c for c in chunks if not c.get('contains_table')]
+
+                table_chunks.sort(key=lambda x: (
+                    x.get('table_row_count', 0),
+                    x['relevance_score']
+                ), reverse=True)
+
+                return table_chunks + other_chunks
+
+            # Default: maintain original order but enhance relevance sorting
+            return sorted(chunks, key=lambda x: x['relevance_score'], reverse=True)
+
     def _apply_semantic_clustering(self, selected_chunks: List[Dict], selection_strategy: str) -> List[Dict]:
         """Phase 2 Enhancement: Apply semantic clustering to group related chunks for better coherence."""
         if len(selected_chunks) <= 3:
@@ -2237,7 +2422,24 @@ PERFORM COMPREHENSIVE ANALYSIS:
 
 1. SEMANTIC INTENT ANALYSIS:
    - What is the user's underlying information need?
-   - Is this factual, analytical, exploratory, comparative, or summarization?
+   - Query Type Classification:
+     * factual: Direct facts, definitions, or specific information
+     * analytical: Deep analysis, evaluation, interpretation of data/concepts
+     * exploratory: Open-ended investigation, discovery of patterns/relationships
+     * comparative: Comparing multiple items, pros/cons, differences/similarities
+     * summarization: Condensing information, overview, key points
+     * visual: Requires diagrams, charts, visual representation
+     * procedural: Step-by-step processes, how-to instructions, workflows
+     * definitional: Understanding concepts, terminology, what something means
+     * instructional: Learning-focused, educational content, tutorials
+     * evaluative: Assessment, judgment, critique, quality evaluation
+     * diagnostic: Problem identification, troubleshooting, error analysis
+     * research: Comprehensive investigation, academic-style inquiry
+     * synthesis: Combining multiple sources/concepts into coherent understanding
+     * data_extraction: Specific numbers, statistics, quantitative information
+     * trend_analysis: Patterns over time, historical development, evolution
+     * relationship_mapping: Connections between concepts, cause-effect, dependencies
+     * troubleshooting: Problem-solving, fixing issues, solution finding
    - What domain knowledge areas are involved?
    - What level of detail is expected?
 
@@ -2248,26 +2450,78 @@ PERFORM COMPREHENSIVE ANALYSIS:
    - Mixed: Would a combination provide the best answer?
 
 3. SEARCH STRATEGY OPTIMIZATION:
-   - Precision: User wants highly relevant, specific results
-   - Recall: User wants comprehensive coverage, don't miss anything
-   - Balanced: Standard approach balancing precision and recall
-   - Semantic: Focus on conceptual similarity over keyword matching
-   - Hybrid: Combine multiple approaches for complex queries
+   - precision: User wants highly relevant, specific results
+   - recall: User wants comprehensive coverage, don't miss anything
+   - balanced: Standard approach balancing precision and recall
+   - semantic: Focus on conceptual similarity over keyword matching
+   - hybrid: Combine multiple approaches for complex queries
+   - comprehensive: Exhaustive search across all content types
+   - visual_focused: Prioritize image and diagram content
+   - data_focused: Prioritize tables, statistics, numerical content
+   - comparative: Optimize for side-by-side analysis content
+   - contextual: Emphasize surrounding context and relationships
+   - exhaustive: Maximum coverage with minimal filtering
+   - targeted: Laser-focused on specific criteria or page references
 
-4. QUERY COMPLEXITY & SCOPE:
-   - Simple: Single concept, direct question, factual lookup
-   - Medium: Multiple related concepts, requires some analysis
-   - Complex: Multi-faceted, requires synthesis, comparison, or deep analysis
-   - Comprehensive: User wants complete coverage of topic
-   - Specific: User wants targeted, focused information
-   - Focused: User wants particular aspect or content type
+4. ENHANCED QUERY COMPLEXITY & SCOPE ASSESSMENT:
 
-5. RESPONSE SCOPE INTELLIGENCE (Critical - determines response size):
-   - Minimal: Simple definition/fact questions (e.g., "What is decoder?", "What is X?", "Define Y", "How many?") - NO IMAGES/TABLES
-   - Concise: Brief explanations (e.g., "Explain briefly", "Quick overview", "Summarize") - MINIMAL MULTIMEDIA  
-   - Standard: Normal detailed response with multiple content types (most queries)
-   - Detailed: Thorough analysis with multiple elements (e.g., "Compare", "Analyze deeply")  
-   - Comprehensive: Complete coverage with all relevant content (e.g., "Everything about", "Complete guide")
+   COMPLEXITY LEVELS:
+   - simple: Single concept, direct question, factual lookup, basic definition
+     * Indicators: "What is...", "Define...", "How many...", single entity queries
+     * Content needs: 1-3 text sections, minimal multimedia
+
+   - moderate: Multiple related concepts, requires some analysis, 2-3 sub-questions
+     * Indicators: "Explain how...", "What are the advantages...", simple comparisons
+     * Content needs: 2-5 text sections, some multimedia support
+
+   - complex: Multi-faceted, requires synthesis, comparison, deep analysis
+     * Indicators: "Analyze the relationship...", "Compare and contrast...", multi-step processes
+     * Content needs: 3-8 text sections, rich multimedia integration
+
+   - research: Academic-level inquiry, comprehensive investigation, literature review style
+     * Indicators: "Comprehensive analysis...", "Research on...", "Everything about..."
+     * Content needs: 4-10 text sections, extensive multimedia support
+
+   SCOPE DETERMINATION:
+   - targeted: User wants specific, focused information on narrow topic
+   - balanced: Standard coverage with relevant details
+   - comprehensive: Complete coverage including background, details, examples, implications
+   - exhaustive: Maximum possible coverage, leave nothing out
+
+5. ENHANCED RESPONSE SCOPE INTELLIGENCE (Critical - determines response size and depth):
+
+   SCOPE LEVEL ANALYSIS:
+   - minimal: Single fact, basic definition, number answer
+     * Triggers: "What is X?", "Define Y", "How many?", "When did?"
+     * Content: 1-2 sentences, no multimedia needed
+     * Strategy: text_focused with minimal limits
+
+   - concise: Brief explanations, quick overviews, summaries
+     * Triggers: "Briefly explain", "Quick overview", "Summarize", "In short"
+     * Content: 1-2 paragraphs, minimal multimedia (0-1 image/table)
+     * Strategy: focused with light multimedia
+
+   - standard: Normal detailed response with balanced content types
+     * Triggers: Most queries without specific scope indicators
+     * Content: 3-5 paragraphs, balanced multimedia (1-2 images, 1 table)
+     * Strategy: balanced with standard limits
+
+   - detailed: Thorough analysis with rich multimedia integration
+     * Triggers: "Analyze", "Compare", "Explain in detail", "How does X work?"
+     * Content: 5-8 paragraphs, rich multimedia (2-3 images, 1-2 tables)
+     * Strategy: comprehensive with enhanced limits
+
+   - comprehensive: Complete coverage with all relevant content
+     * Triggers: "Everything about", "Complete guide", "Comprehensive analysis", "All aspects"
+     * Content: 8+ paragraphs, extensive multimedia (3+ images, 2+ tables)
+     * Strategy: research_depth with maximum limits
+
+   SCOPE MODIFIERS:
+   - "step-by-step" → Add procedural structure
+   - "with examples" → Include more illustrations
+   - "for beginners" → Simplify language, add more explanations
+   - "advanced" → Increase technical depth
+   - "practical" → Focus on applications and implementations
 
 6. CONDITIONAL LOGIC DETECTION:
    - Positive filters: "show", "include", "focus on", "with", "containing"
@@ -2275,19 +2529,23 @@ PERFORM COMPREHENSIVE ANALYSIS:
    - Content preferences: "only tables", "just images", "text only"
    - Quality requirements: "detailed", "brief", "comprehensive"
 
-7. CONTEXTUAL UNDERSTANDING:
-   - Temporal context: "recent", "historical", "current", "latest"
-   - Comparative context: "compare", "versus", "difference", "similar"
-   - Analytical context: "analyze", "evaluate", "assess", "interpret"
-   - Visual context: "show me", "display", "visualize"
+7. ENHANCED CONTEXTUAL UNDERSTANDING:
+   - Temporal context: "recent", "historical", "current", "latest", "previous", "next"
+   - Comparative context: "compare", "versus", "difference", "similar", "contrast", "between"
+   - Analytical context: "analyze", "evaluate", "assess", "interpret", "examine", "investigate"
+   - Visual context: "show me", "display", "visualize", "diagram", "figure", "illustration"
+   - Page references: "see page X", "page X", "(see page X)", "on page X", "refer to page X"
+   - Cross-references: "as mentioned", "above", "below", "previously discussed", "following"
+   - Domain-specific: Extract technical terms, acronyms, and specialized vocabulary
+   - Multi-part queries: Break down complex queries with multiple sub-questions
 
 RESPOND WITH THIS EXACT JSON FORMAT:
 {{
-    "query_type": "factual|analytical|exploratory|comparative|summarization|visual|procedural",
-    "search_strategy": "precision|recall|balanced|semantic|hybrid",
+    "query_type": "factual|analytical|exploratory|comparative|summarization|visual|procedural|definitional|instructional|evaluative|diagnostic|research|synthesis|data_extraction|trend_analysis|relationship_mapping|troubleshooting",
+    "search_strategy": "precision|recall|balanced|semantic|hybrid|comprehensive|visual_focused|data_focused|comparative|contextual|exhaustive|targeted",
     "content_preferences": ["text", "images", "tables"],
-    "complexity_level": "simple|medium|complex", 
-    "scope": "comprehensive|specific|focused",
+    "complexity_level": "simple|moderate|complex|research", 
+    "scope": "targeted|balanced|comprehensive|exhaustive",
     "response_scope": "minimal|concise|standard|detailed|comprehensive",
     "semantic_concepts": ["concept1", "concept2", "concept3"],
     "intent_keywords": ["key1", "key2", "key3"],
@@ -2307,7 +2565,14 @@ RESPOND WITH THIS EXACT JSON FORMAT:
         "semantic_expansion": true
     }},
     "confidence_score": 0.95,
-    "reasoning": "Detailed explanation of analysis and strategy selection"
+    "reasoning": "Detailed explanation of analysis and strategy selection",
+    "context_extracted": {{
+        "page_references": ["page numbers mentioned"],
+        "temporal_indicators": ["time-related terms"],
+        "domain_terms": ["technical terms and acronyms"],
+        "cross_references": ["connecting phrases"],
+        "multi_part_breakdown": ["if query has multiple parts"]
+    }}
 }}
 
 Think step-by-step about what the user really wants and how to optimally retrieve it."""

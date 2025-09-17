@@ -96,7 +96,7 @@ class QuestionPaperAnalysis:
             return [
                 DocumentChunk(id=m["id"], content=m["metadata"].get("text", ""), metadata=m["metadata"])
                 for m in resp.get("matches", [])
-                if m["metadata"].get("text", "").strip()
+                if m["metadata"].get("text", "").strip() and m.get("score", 0) > 0.3
             ]
         except Exception as e:
             logging.error(f"Error searching relevant content: {e}")
@@ -120,6 +120,9 @@ class QuestionPaperAnalysis:
             
             prompt = f"""
             You are an expert academic analyst. Analyze the following question using the provided document content.
+
+            CRITICAL VALIDATION: Only provide analysis if the document content contains substantial information to answer: "{question}"
+            If insufficient relevant content exists, respond with: {{"error": "insufficient_content", "message": "Not enough relevant content to answer this question"}}
 
             Question: {question}
 
@@ -171,7 +174,19 @@ class QuestionPaperAnalysis:
                 content = content[:-3]
             content = content.strip()
             
-            return json.loads(content)
+            parsed_content = json.loads(content)
+            
+            # Check for AI validation response
+            if isinstance(parsed_content, dict) and "error" in parsed_content and parsed_content["error"] == "insufficient_content":
+                logging.info(f"🚫 AI detected insufficient content for question: '{question}'")
+                return {
+                    "question": question,
+                    "answer": "The document does not contain sufficient information to answer this question comprehensively.",
+                    "key_concept": "",
+                    "page_references": []
+                }
+            
+            return parsed_content
             
         except Exception as e:
             logging.error(f"Error analyzing question: {e}")
@@ -223,6 +238,18 @@ class QuestionPaperAnalysis:
                 })
                 continue
             
+            # Enhanced validation: require minimum chunks for quality analysis
+            if len(relevant_chunks) < 3:
+                logging.warning(f"Insufficient relevant content for question: {question}")
+                results.append({
+                    "question_number": i,
+                    "question": question,
+                    "answer": "Insufficient relevant content found in the document for this question. The document may not contain substantial information about this topic.",
+                    "key_concept": "",
+                    "page_references": []
+                })
+                continue
+            
             analysis = self._analyze_question_with_topics(question, relevant_chunks)
             analysis["question_number"] = i
             results.append(analysis)
@@ -232,14 +259,16 @@ class QuestionPaperAnalysis:
 
 def main():
     """Example usage of QuestionPaperAnalysis"""
-    from config import AdvancedConfig
+    import sys
+    import os
+    sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+    from config import config
     
-    config = AdvancedConfig()
     analyzer = QuestionPaperAnalysis(config)
     
     # Example questions text
     questions_text = """
-    Q1. How a Thunderstorm become a cyclone ?
+    Q1. What is abhishek doing ?
     Q2. Name of all the acids and where they are found in.
     Q3. Explain the process of photosynthesis on the plant.
     Q4. What are all the indian breeds of sheep ?
@@ -256,5 +285,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
     

@@ -151,7 +151,7 @@ class QueryBasedPaperQuizGenerator:
                 if matches:
                     for match in matches:
                         # Only include chunks with reasonable similarity score
-                        if match.score > 0.2:  # Adjust threshold as needed
+                        if match.score > 0.3:  # Adjust threshold as needed
                             content = self._extract_text_content(match.metadata)
                             if content and len(content.strip()) > 20:  # Filter out very short content
                                 relevant_chunks.append({
@@ -166,6 +166,7 @@ class QueryBasedPaperQuizGenerator:
             relevant_chunks.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
             
             print(f"📊 Retrieved {len(relevant_chunks)} relevant chunks from namespace: {namespace}")
+            print(relevant_chunks)
             return relevant_chunks[:30]  # Limit to top 30 for processing efficiency
             
         except Exception as e:
@@ -226,7 +227,19 @@ class QueryBasedPaperQuizGenerator:
             )
             
             if not relevant_chunks:
-                return self._error_response("No relevant content found for the specified query")
+                return {
+                    "success": True,
+                    "message": f"Did not find any relevant content from the document for the query '{quiz_request.user_query}'. Please try again.",
+                    "quiz": {},
+                    "metadata": {
+                        "user_id": quiz_request.user_id,
+                        "document_uuid": quiz_request.document_uuid,
+                        "user_query": quiz_request.user_query,
+                        "total_questions": 0,
+                        "chunks_analyzed": 0,
+                        "topics_covered": []
+                    }
+                }
             
             print(f"📄 Found {len(relevant_chunks)} relevant chunks for query: '{quiz_request.user_query}'")
             
@@ -237,6 +250,22 @@ class QueryBasedPaperQuizGenerator:
                 quiz_request.num_questions,
                 quiz_request.difficulty_mix or self._default_difficulty_mix(quiz_request.num_questions)
             )
+            
+            # Handle AI refusal
+            if questions == "AI_INSUFFICIENT_CONTENT":
+                return {
+                    "success": True,
+                    "message": f"Did not find any relevant content from the document for the query '{quiz_request.user_query}'. Please try again.",
+                    "quiz": {},
+                    "metadata": {
+                        "user_id": quiz_request.user_id,
+                        "document_uuid": quiz_request.document_uuid,
+                        "user_query": quiz_request.user_query,
+                        "total_questions": 0,
+                        "chunks_analyzed": len(relevant_chunks),
+                        "topics_covered": []
+                    }
+                }
             
             # Step 5: Format output
             formatted_quiz = self._format_quiz_output(questions)
@@ -304,38 +333,55 @@ class QueryBasedPaperQuizGenerator:
         if len(focused_content) > max_chars:
             focused_content = focused_content[:max_chars] + "..."
         
-        # Create quiz generation prompt
+        # Create quiz generation prompt with validation
         quiz_prompt = f"""
 You are an expert quiz generator. Generate {num_questions} multiple choice questions based on the paper content below, focused specifically on the user's query: "{user_query}".
+
+CRITICAL VALIDATION: Only generate questions if the provided content contains substantial, meaningful information about "{user_query}". If the content doesn't contain enough relevant information about "{user_query}", respond with: {{"error": "insufficient_content", "message": "Not enough relevant content about {user_query} found in document"}}
 
 RELEVANT PAPER CONTENT:
 {focused_content}
 
 REQUIREMENTS:
-- All questions must relate directly to "{user_query}"
+- Verify content actually discusses "{user_query}" before generating questions
+- All questions must relate directly to "{user_query}" with factual basis from the content
+- Create generalized knowledge-based questions, NOT document-specific questions
+- Avoid phrases like "according to the document", "as described in the content", "the document states"
+- Frame questions as general knowledge about the topic
 - Each question has exactly 4 options (a, b, c, d)
 - Only ONE correct answer per question
 - Include page references and reasoning
+- Do NOT generate generic questions if content is insufficient
 
 OUTPUT FORMAT (JSON only):
 {{
     "Q1": {{
-        "question": "Question about {user_query}?",
+        "question": "What is {user_query}?",
         "options": {{
             "a": "Option A",
-            "b": "Option B",
+            "b": "Option B", 
             "c": "Option C",
             "d": "Option D"
         }},
         "answer": {{
-            "a": "Option A"
+            "b": "Option B"
         }},
         "difficulty": "easy",
         "topic": "{user_query.lower().replace(' ', '_')}",
         "page": "4",
-        "reasoning": "Explanation why this is correct..."
+        "reasoning": "Explanation based on content without referencing the document..."
     }}
 }}
+
+EXAMPLE GOOD QUESTIONS:
+- "What is data mining?"
+- "Which technique is used for data cleaning?"
+- "What are the main types of data?"
+
+AVOID THESE PATTERNS:
+- "According to the document, what is data?"
+- "As described in the content, data mining is..."
+- "The document states that..."
 """
 
         try:
@@ -365,9 +411,16 @@ OUTPUT FORMAT (JSON only):
             
             if json_start >= 0 and json_end > json_start:
                 quiz_json = json.loads(response_text[json_start:json_end])
+                
+                # Check for AI validation response
+                if "error" in quiz_json and quiz_json["error"] == "insufficient_content":
+                    print(f"🚫 AI detected insufficient content for query: '{user_query}'")
+                    return "AI_INSUFFICIENT_CONTENT"
+                
                 return self._parse_questions_from_json(quiz_json, user_query, chunks, num_questions)
             else:
-                return self._generate_fallback_questions(chunks, user_query, num_questions)
+                print(f"⚠️ Failed to parse AI response for query: '{user_query}'")
+                return []
                 
         except Exception as e:
             print(f"❌ Question generation failed: {e}")
@@ -488,9 +541,9 @@ async def generate_query_based_quiz(user_id: str, document_uuid: str, user_query
 async def test_query_based_quiz_generation():
     """Test function for query-based quiz generation"""
     result = await generate_query_based_quiz(
-        user_id="5",
-        document_uuid="9e51cc77-49ed-403e-906e-9882ef8a236d",
-        user_query="Lists in Python",
+        user_id="65",
+        document_uuid="e2dab53b-f0f5-4dff-9eb5-fc419a6e3894",
+        user_query="Data",
         num_questions=5
     )
     

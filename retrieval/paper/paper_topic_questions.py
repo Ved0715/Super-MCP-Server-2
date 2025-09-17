@@ -99,7 +99,7 @@ class PaperTopicQuestionGenerator:
                     metadata=match["metadata"]
                 )
                 for match in response.get("matches", [])
-                if match["metadata"].get("text", "").strip()
+                if match["metadata"].get("text", "").strip() and match.get("score", 0) > 0.3
             ]
             
         except Exception as e:
@@ -132,6 +132,8 @@ class PaperTopicQuestionGenerator:
         try:
             # Combine all relevant content
             combined_content = "\n\n".join([chunk.content for chunk in chunks])
+
+            print( combined_content)
             
             # No need to extract page numbers anymore
             
@@ -141,6 +143,8 @@ class PaperTopicQuestionGenerator:
             # Single API call to generate all questions with answers
             prompt = f"""
 You are an expert educator. Based on the query "{query}", generate {num_questions} educational questions with detailed answers from the following document content.
+
+CRITICAL VALIDATION: Only generate questions if the provided content contains substantial, meaningful educational information about "{query}". If the content doesn't contain enough relevant information about "{query}", respond with: {{"error": "insufficient_content", "message": "Not enough relevant content about {query} found in document"}}
 
 Document Content:
 {combined_content[:4000]}  
@@ -152,6 +156,7 @@ Generate questions that:
 2. Test understanding of "{query}" topic
 3. Vary in difficulty (easy, medium, hard)
 4. Include comprehensive answers based on the document content
+5. Do NOT generate questions if content is just glossary terms, index entries, or unrelated material
 
 Return ONLY a JSON array with this format:
 [
@@ -190,6 +195,12 @@ CRITICAL REQUIREMENTS FOR ANSWERS:
                 content = content[3:-3]
             
             questions_data = json.loads(content)
+            
+            # Check for AI validation response
+            if isinstance(questions_data, dict) and "error" in questions_data and questions_data["error"] == "insufficient_content":
+                self.logger.info(f"🚫 AI detected insufficient content for query: '{query}'")
+                # Return special marker to indicate AI refusal
+                return "AI_INSUFFICIENT_CONTENT"
             
             # Convert to TopicQuestion objects
             questions = []
@@ -256,10 +267,28 @@ CRITICAL REQUIREMENTS FOR ANSWERS:
                     "questions": []
                 }
             
+            # Enhanced validation: require minimum chunks and content quality
+            if len(relevant_chunks) < 3:
+                return {
+                    "success": False,
+                    "error": f"Insufficient relevant content found for query '{query}'. The document may not contain substantial information about this topic.",
+                    "query": query,
+                    "questions": []
+                }
+            
             self.logger.info(f"Found {len(relevant_chunks)} relevant chunks")
             
             # Generate questions efficiently (1 API call)
             questions = self._generate_questions_efficiently(query, relevant_chunks, num_questions)
+            
+            # Handle AI refusal
+            if questions == "AI_INSUFFICIENT_CONTENT":
+                return {
+                    "success": False,
+                    "error": f"The document does not contain sufficient content about '{query}'. Please try a different topic that exists in the document.",
+                    "query": query,
+                    "questions": []
+                }
             
             if not questions:
                 return {
@@ -373,7 +402,7 @@ def main():
     
     # Generate questions
     result = generator.generate_questions_from_query(
-        query="photosynthesis process",
+        query="photosynthesis",
         user_id="61",
         document_uuid="0443d74c-d23b-4360-858a-d9dcd7b60fb8",
         num_questions=5

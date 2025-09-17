@@ -378,7 +378,9 @@ Create a comprehensive, well-structured response that naturally integrates multi
    - "The following table illustrates"
    - "Refer to the image for visual context"
    - "The data in the table demonstrates"
-   - IMPORTANT: Only reference specific images (IMAGE_1, IMAGE_2, etc.) if you actually place them in your response
+   - CRITICAL: DO NOT use markdown image syntax like ![...] or specific placeholders like IMAGE_1, IMAGE_2
+   - CRITICAL: Only use general references like "the image below" or "the following table"
+   - The system will automatically place multimedia content - you just write the text
 
 3. CONTENT UTILIZATION: Use the full text content provided to create a comprehensive response. Build your explanation around the available text, supplemented by multimedia elements.
 

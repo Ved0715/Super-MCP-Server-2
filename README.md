@@ -192,7 +192,7 @@ ENABLE_STATISTICAL_EXTRACTION=true
 #### Option 1: HTTP MCP Server (Production Ready)
 ```bash
 # Start the enterprise-grade HTTP server with full MCP v2.0 compliance
-python start_mcp_server.py --host localhost --port 3003
+python start_mcp_server.py --host localhost --port 3001
 
 # Server available at: http://localhost:3003
 # Health check: curl http://localhost:3003/health

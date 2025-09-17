@@ -568,48 +568,35 @@ INSTRUCTIONS:
                 max_chunks=total_chunks
             )
             
-            # Process and filter results by content type
+            # Process and filter results by content type - preserve original order
             if results and 'inline_elements' in results:
                 inline_elements = results['inline_elements']
-                
-                # Separate elements by type
-                images = []
-                tables = []
-                text_chunks = []
-                
-                # Collect all elements by type first
-                all_images = []
-                all_tables = []
-                all_text_chunks = []
-                
+
+                # Simply append elements as they are, just apply limits
+                filtered_elements = []
+                image_count = 0
+                table_count = 0
+                text_count = 0
+
                 for element in inline_elements:
                     element_type = element.get('type', '').lower()
-                    
-                    if element_type == 'image':
-                        all_images.append(element)
-                    elif element_type == 'table':
-                        all_tables.append(element)
-                    elif element_type in ['text', 'composite']:
-                        all_text_chunks.append(element)
-                
-                # Apply intelligent selection for images (existing behavior)
-                images = all_images[:max_images]
-                
-                # Apply intelligent table selection with quality filtering
-                tables = self._select_best_tables(all_tables, query, max_tables)
-                
-                # Apply basic selection for text chunks
-                text_chunks = all_text_chunks[:max_text_chunks]
-                
-                # Rebuild filtered inline elements
-                filtered_elements = images + tables + text_chunks
-                
+
+                    if element_type == 'image' and image_count < max_images:
+                        filtered_elements.append(element)
+                        image_count += 1
+                    elif element_type == 'table' and table_count < max_tables:
+                        filtered_elements.append(element)
+                        table_count += 1
+                    elif element_type in ['text', 'composite'] and text_count < max_text_chunks:
+                        filtered_elements.append(element)
+                        text_count += 1
+
                 # Update results with filtered elements
                 results['inline_elements'] = filtered_elements
                 results['element_counts'] = {
-                    'images': len(images),
-                    'tables': len(tables),
-                    'text_chunks': len(text_chunks),
+                    'images': image_count,
+                    'tables': table_count,
+                    'text_chunks': text_count,
                     'total': len(filtered_elements)
                 }
             

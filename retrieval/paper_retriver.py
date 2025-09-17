@@ -548,6 +548,8 @@ Use [Page X] format and bullet points where necessary.
                 max_chunks= max_chunks,
                 conversation_context=conversation_context
             )
+            
+            logger.info(f"Multimodel Integrator Result: {results}")
 
             logger.debug(f"Multimodal integrator returned: {type(results)}")
             logger.debug(f"Results keys: {list(results.keys()) if isinstance(results, dict) else 'Not a dict'}")

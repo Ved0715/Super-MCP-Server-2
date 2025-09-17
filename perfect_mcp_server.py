@@ -4147,7 +4147,7 @@ The operation has been successfully cancelled and will stop as soon as possible.
             max_text_chunks=max_chunks  # Our method uses max_text_chunks
             # Note: conversation_context handling is now built into the lesson plan generator
         )
-        
+        logger.info(f"🔍Responce: {result}")
         # Convert multimodal elements to a seamless markdown response for UI
         if result and 'inline_elements' in result:
             

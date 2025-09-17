@@ -174,20 +174,46 @@ class InlineMultimodalGenerator:
         unique_images = []
         seen_image_ids = set()
         
-        for image in sorted(filtered_content['images'], key=lambda x: x.get('relevance_score', 0), reverse=True):
+        # Filter images by relevance score - only keep the most relevant ones
+        sorted_images = sorted(filtered_content['images'], key=lambda x: x.get('relevance_score', 0), reverse=True)
+
+        # Smart image selection: Only select the most relevant images that will be used
+        max_images = 2  # Conservative limit - only select images that will definitely be used
+        relevance_threshold = 0.2  # Higher threshold for more selective filtering
+
+        # Process images in relevance order and select only the best ones
+        for image in sorted_images:
+            relevance_score = image.get('relevance_score', 0)
+
+            # For show-all queries, be more permissive
+            effective_threshold = 0.1 if is_show_all_query else relevance_threshold
+            effective_max = 6 if is_show_all_query else max_images
+
+            # Skip low-relevance images
+            if relevance_score < effective_threshold:
+                logger.debug(f"Filtered out low-relevance image: relevance={relevance_score:.3f} < threshold={effective_threshold}")
+                continue
+
+            # Stop if we've reached the maximum
+            if len(unique_images) >= effective_max:
+                logger.info(f"Reached maximum images limit ({effective_max}), selecting only top {len(unique_images)} most relevant images")
+                break
+
             image_id = image.get('image_id', '')
             s3_url = image.get('s3_url', '')
             page_number = image.get('page_number', 0)
-            
+
             # Create a unique identifier using multiple criteria for better deduplication
             unique_key = f"{image_id}_{page_number}" if image_id else f"{s3_url}_{page_number}" if s3_url else f"page_{page_number}_image_{len(unique_images)}"
-            
+
             if unique_key not in seen_image_ids:
                 unique_images.append(image)
                 seen_image_ids.add(unique_key)
-                logger.debug(f"Added unique image: {unique_key}")
+                logger.info(f"Selected image {len(unique_images)}: {unique_key} (relevance: {relevance_score:.3f})")
             else:
                 logger.debug(f"Skipped duplicate image: {unique_key}")
+
+        logger.info(f"Smart image selection complete: {len(unique_images)} high-quality images selected from {len(sorted_images)} available")
 
         # Remove duplicate tables by table_id
         unique_tables = []
@@ -352,16 +378,21 @@ Create a comprehensive, well-structured response that naturally integrates multi
    - "The following table illustrates"
    - "Refer to the image for visual context"
    - "The data in the table demonstrates"
+   - IMPORTANT: Only reference specific images (IMAGE_1, IMAGE_2, etc.) if you actually place them in your response
 
 3. CONTENT UTILIZATION: Use the full text content provided to create a comprehensive response. Build your explanation around the available text, supplemented by multimedia elements.
 
 4. LOGICAL STRUCTURE: Organize your response logically with clear sections, headings, and smooth transitions between concepts.
 
 5. MULTIMEDIA PLACEMENT STRATEGY:
-   - Place images after relevant explanatory text
+   - Only use the most relevant images that directly support your explanation
+   - Place images after relevant explanatory text where they add clear value
    - Insert tables when you need to present structured data
    - Don't cluster all multimedia at the end or beginning
    - Let the narrative flow determine optimal placement
+   - CRITICAL: Only reference multimedia that you actually use in your response
+   - IMPORTANT: Don't reference IMAGE_2, IMAGE_3, etc. unless you actually place them in your text
+   - Better to use fewer, more relevant multimedia than to create broken references
 
 6. RESPONSE SCOPE: Aim for a {response_scope} level response that thoroughly addresses the query.
 
@@ -730,37 +761,24 @@ Your integrated multimodal response:"""
                     logger.info(f"Added image after paragraph: {img_id}")
                     available_images = available_images[1:]  # Remove used image
         
-        # Add any remaining multimedia content at the end if not placed inline
-        if available_tables or available_images:
-            inline_elements.append({
-                'type': 'text',
-                'content': "Additional supporting data:"
-            })
-            
-            # Add remaining tables
-            for table_data in available_tables:
-                table_id = table_data.get('table_id', '')
-                page_number = table_data.get('page_number', 0)
-                unique_key = f"{table_id}_{page_number}" if table_id else f"page_{page_number}_table_1"
-                
-                if unique_key not in used_table_ids:
-                    inline_elements.append({
-                        'type': 'table',
-                        'data': table_data,
-                        'context': self._extract_table_context(table_data, content_map)
-                    })
-                    logger.info(f"Added remaining table at end: {unique_key}")
-            
-            # Add remaining images
-            for img_data in available_images:
-                img_id = f"page_{img_data['page_number']}_img_1"
-                if img_id not in used_image_ids:
-                    inline_elements.append({
-                        'type': 'image',
-                        'data': img_data,
-                        'context': self._extract_image_context(img_data, content_map)
-                    })
-                    logger.info(f"Added remaining image at end: {img_id}")
+        # Ensure ALL filtered images are used - add any remaining images at strategic points
+        while available_images:
+            img_data = available_images[0]
+            img_id = f"page_{img_data['page_number']}_img_1"
+            if img_id not in used_image_ids:
+                used_image_ids.add(img_id)
+                inline_elements.append({
+                    'type': 'image',
+                    'data': img_data,
+                    'context': self._extract_image_context(img_data, content_map)
+                })
+                logger.info(f"Added remaining filtered image: {img_id}")
+            available_images = available_images[1:]
+
+        # Log any unused tables for debugging
+        if available_tables:
+            unused_tables = len(available_tables)
+            logger.info(f"Skipped {unused_tables} unused tables to keep response focused")
         
         logger.info(f"LLM-driven inline placement complete: {len(inline_elements)} elements")
         return inline_elements
